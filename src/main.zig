@@ -118,7 +118,7 @@ const Token = struct {
         str_lit: []const u8,
         symbol: []const u8,
         keyword: KeywordID,
-        type: *const Type, // @ TODO: change this
+        type: *Type, // @ TODO: change this
         sign: u8,
         //intrinsic: u64, // @ TODO: change this
     };
@@ -151,11 +151,11 @@ const Tokenizer = struct {
             // print("Keyword not found\n", .{});
         }
 
-        for (types.items) |type_decl| {
+        for (types.items) |*type_decl| {
             if (std.mem.eql(u8, type_decl.name, name)) {
                 // print("Found type", .{});
                 const result = Token.Value{
-                    .type = &type_decl,
+                    .type = type_decl,
                 };
 
                 return result;
@@ -171,7 +171,7 @@ const Tokenizer = struct {
 const NodeRefBuffer = std.ArrayList(*Node);
 
 const IntegerLiteral = struct {
-    lit: u64,
+    value: u64,
     bit_count: u16,
     signed: bool,
     // padding
@@ -268,7 +268,7 @@ const BreakExpression = struct {
 };
 
 const FunctionDeclaration = struct {
-    scope_blocks: NodeRefBuffer,
+    blocks: NodeRefBuffer,
     arguments: NodeRefBuffer,
     variables: NodeRefBuffer,
     name: []const u8,
@@ -339,7 +339,7 @@ const TokenConsumer = struct {
     tokens: []const Token,
     next_index: usize,
 
-    inline fn peek(self: *TokenConsumer) Token {
+    fn peek(self: *TokenConsumer) Token {
         const token = self.tokens[self.next_index];
         return token;
     }
@@ -376,8 +376,12 @@ const TokenConsumer = struct {
         self.next_index += 1;
 
         switch (t.value) {
+            Token.ID.type => {
+                var result = t.value.type;
+                return result;
+            },
             else => {
-                panic("Couldn't find type for token {}", .{t.value});
+                panic("Couldn't find type for token {}", .{t});
             },
         }
     }
@@ -390,31 +394,202 @@ const Parser = struct {
 
     compiler: *Compiler,
 
-    fn allocate_node(self: *Parser, parent_node: ?*Node) !*Node {
-        const node = Node{
-            .value = undefined,
-            .parent = parent_node,
-            .value_type = Node.ValueType.LValue,
+    fn append_and_get_ref(self: *Parser, node: Node) *Node {
+        self.nb.append(node) catch |err| {
+            panic("Couldn't allocate memory for node", .{});
         };
-        try self.nb.append(node);
-        var node_ptr = &self.nb.items[self.nb.items.len - 1];
-        return node_ptr;
+        const result = &self.nb.items[self.nb.items.len - 1];
+        return result;
     }
 
-    fn expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type)) ?*Node {
+    fn primary_expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
         const token = consumer.peek();
         switch (token.value) {
+            Token.ID.int_lit => {
+                consumer.next_index += 1;
+                const int_value = token.value.int_lit;
+                print("Found int literal: {}\n", .{int_value});
+                const int_lit_node = Node{
+                    .value = Node.Value{
+                        .int_lit = IntegerLiteral{
+                            .value = int_value,
+                            .bit_count = 32,
+                            .signed = false,
+                        },
+                    },
+                    .value_type = Node.ValueType.RValue,
+                    .parent = parent_node,
+                };
+
+                return self.append_and_get_ref(int_lit_node);
+            },
             Token.ID.sign => {
                 panic("Not implemented: {c}\n", .{token.value.sign});
             },
             else => {
                 panic("Not implemented: {}\n", .{token.value});
-            }
+            },
         }
     }
 
-    fn statement(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type)) ?*Node {
-        panic("Not implemented", .{});
+    fn expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+        const left_expr_result = self.primary_expression(consumer, types, parent_node);
+        if (left_expr_result == null) {
+            return null;
+        }
+
+        var left = left_expr_result.?;
+        if (left.value == Node.Value.var_decl) {
+            panic("Variable declaration not implemented\n", .{});
+        } else {
+            return self.right_expression(consumer, types, parent_node, &left);
+        }
+    }
+
+    fn right_expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node, left_ptr: **Node) ?*Node {
+        while (true) {
+            var token = consumer.peek();
+            var maybe_binop: ?BinaryExpression.ID = undefined;
+            switch (token.value) {
+                Token.ID.sign => {
+                    const sign = token.value.sign;
+                    switch (sign) {
+                        ':' => {
+                            consumer.next_index += 1;
+                            if (consumer.expect_and_consume_sign(':') != null) {
+                                if (consumer.expect_sign('(') != null) {
+                                    panic("Unreachable. Unexpected function here\n", .{});
+                                } else {
+                                    maybe_binop = null;
+                                }
+                            } else {
+                                maybe_binop = BinaryExpression.ID.VariableDeclaration;
+                            }
+                        },
+                        '=' => {
+                            if (consumer.expect_and_consume_sign('=') != null) {
+                                maybe_binop = BinaryExpression.ID.Compare_Equal;
+                            } else {
+                                maybe_binop = BinaryExpression.ID.Assignment;
+                            }
+                        },
+                        '+' => {
+                            consumer.next_index += 1;
+                            maybe_binop = BinaryExpression.ID.Plus;
+                        },
+                        '-' => {
+                            consumer.next_index += 1;
+                            maybe_binop = BinaryExpression.ID.Minus;
+                        },
+                        '<' => {
+                            consumer.next_index += 1;
+                            if (consumer.expect_and_consume_sign('=') != null) {
+                                maybe_binop = BinaryExpression.ID.Compare_LessThanOrEqual;
+                            } else {
+                                maybe_binop = BinaryExpression.ID.Compare_LessThan;
+                            }
+                        },
+                        '>' => {
+                            consumer.next_index += 1;
+                            if (consumer.expect_and_consume_sign('=') != null) {
+                                maybe_binop = BinaryExpression.ID.Compare_GreaterThanOrEqual;
+                            } else {
+                                maybe_binop = BinaryExpression.ID.Compare_GreaterThan;
+                            }
+                        },
+                        '*' => {
+                            consumer.next_index += 1;
+                            maybe_binop = BinaryExpression.ID.Multiplication;
+                        },
+                        '[' => {
+                            consumer.next_index += 1;
+                            maybe_binop = BinaryExpression.ID.Subscript;
+                        },
+                        '/' => {
+                            consumer.next_index += 1;
+                            panic("/ to binary expression sign not implemented\n", .{});
+                        },
+                        else => {
+                            maybe_binop = null;
+                        },
+                    }
+                },
+                else => {
+                    maybe_binop = null;
+                },
+            }
+
+            if (maybe_binop == null) {
+                break;
+            }
+
+            const binop = maybe_binop.?;
+            assert(binop != BinaryExpression.ID.VariableDeclaration);
+            var left_expr = left_ptr.*;
+
+            if (binop == BinaryExpression.ID.Subscript) {
+                panic("Array subscript not implemented\n", .{});
+            } else {
+                panic("Binary expression not implemented\n", .{});
+            }
+        }
+
+        return left_ptr.*;
+    }
+
+    fn parse_return(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+        consumer.next_index += 1;
+        var return_node_value = Node{
+            .value = Node.Value{
+                .return_expr = ReturnExpression{
+                    .expression = undefined,
+                },
+            },
+            .value_type = Node.ValueType.LValue,
+            .parent = parent_node,
+        };
+
+        var return_node = self.append_and_get_ref(return_node_value);
+        const ret_expr = self.expression(consumer, types, return_node);
+        if (ret_expr != null) {
+            return_node.value.return_expr.expression = ret_expr.?;
+        } else {
+            self.compiler.report_error("Failed to parse return expression\n", .{});
+            std.os.exit(1);
+        }
+
+        return return_node;
+    }
+
+    fn statement(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+        const token = consumer.peek();
+        var statement_node: ?*Node = null;
+
+        switch (token.value) {
+            Token.ID.keyword => {
+                const keyword = token.value.keyword;
+                switch (keyword) {
+                    KeywordID.@"return" => {
+                        statement_node = self.parse_return(consumer, types, parent_node);
+                    },
+                    else => {
+                        panic("Keyword unhandled: {}\n", .{keyword});
+                    },
+                }
+            },
+            else => {
+                panic("Case: {}\n", .{token.value});
+            },
+        }
+
+        if (statement_node != null and statement_node.?.value != Node.Value.branch_expr and statement_node.?.value != Node.Value.loop_expr) {
+            if (consumer.expect_and_consume_sign(';') == null) {
+                self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                std.os.exit(1);
+            }
+        }
+
+        return statement_node;
     }
 
     fn block(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), block_node: *Node, allow_no_braces: bool) void {
@@ -430,10 +605,10 @@ const Parser = struct {
 
         if (has_braces) {
             var next_token = consumer.tokens[consumer.next_index];
-            var statements_left_to_parse = consumer.expect_sign(expected_end) != null;
+            var statements_left_to_parse = consumer.expect_sign(expected_end) == null;
 
             while (statements_left_to_parse) {
-                const statement_result = self.statement(consumer, types);
+                const statement_result = self.statement(consumer, types, block_node);
                 if (statement_result == null) {
                     self.compiler.report_error("Error parsing statement\n", .{});
                     std.os.exit(1);
@@ -443,16 +618,16 @@ const Parser = struct {
                     panic("Failed to allocate memory for statement", .{});
                 };
                 next_token = consumer.tokens[consumer.next_index];
-                statements_left_to_parse = consumer.expect_sign(expected_end) != null;
+                statements_left_to_parse = consumer.expect_sign(expected_end) == null;
             }
 
             const end = consumer.expect_and_consume_sign(expected_end);
             if (end == null) {
-                self.compiler.report_error("Expected end at the end of the block", .{});
+                self.compiler.report_error("Expected end sign at the end of the block", .{});
                 std.os.exit(1);
             }
         } else {
-            const statement_result = self.statement(consumer, types);
+            const statement_result = self.statement(consumer, types, block_node);
             if (statement_result == null) {
                 self.compiler.report_error("Error parsing statement\n", .{});
                 std.os.exit(1);
@@ -472,7 +647,7 @@ const Parser = struct {
             return null;
         }
 
-        print("Name found: {}\n", .{function_name.?.value.symbol});
+        print("Name found: {s}\n", .{function_name.?.value.symbol});
 
         if (consumer.next_index + 2 >= consumer.tokens.len) {
             return null;
@@ -493,28 +668,29 @@ const Parser = struct {
             std.os.exit(1);
         }
 
-        var function_node = self.allocate_node(null) catch |err| {
-            panic("Couldn't allocate memory for function node", .{});
+        var function_node_value = Node{
+            .value = Node.Value{
+                .function_decl = FunctionDeclaration{
+                    .name = function_name.?.value.symbol,
+                    .arguments = std.ArrayList(*Node).init(allocator),
+                    .blocks = std.ArrayList(*Node).init(allocator),
+                    .variables = std.ArrayList(*Node).init(allocator),
+                    .type = null,
+                },
+            },
+            .parent = null,
+            .value_type = Node.ValueType.LValue,
         };
 
-        const function_decl_value = FunctionDeclaration{
-            .name = function_name.?.value.symbol,
-            .arguments = std.ArrayList(*Node).init(allocator),
-            .scope_blocks = std.ArrayList(*Node).init(allocator),
-            .variables = std.ArrayList(*Node).init(allocator),
-            .type = null,
-        };
-
-        var function_node_value = Node.Value{
-            .function_decl = function_decl_value,
-        };
+        var function_node = self.append_and_get_ref(function_node_value);
+        self.current_function = function_node;
 
         var function_type: Type.Function = undefined;
         var next_token = consumer.tokens[consumer.next_index];
         var args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
 
         while (args_left_to_parse) {
-            const arg_node_result = self.expression(consumer, types);
+            const arg_node_result = self.expression(consumer, types, function_node);
 
             if (arg_node_result == null) {
                 self.compiler.report_error("Error parsing argument\n", .{});
@@ -585,10 +761,10 @@ const Parser = struct {
             },
         };
 
-        self.nb.append(block_node_value) catch |err| {
-            panic("Failed to allocate block node", .{});
+        var block_node = self.append_and_get_ref(block_node_value);
+        self.current_function.?.value.function_decl.blocks.append(block_node) catch |err| {
+            panic("Failed to allocate memory for block node reference\n", .{});
         };
-        var block_node = &self.nb.items[self.nb.items.len - 1];
 
         self.block(consumer, types, block_node, false);
 
@@ -762,5 +938,15 @@ pub fn main() anyerror!void {
             parser.compiler.report_error("Couldn't parse the function\n", .{});
             std.os.exit(1);
         }
+
+        for (function_node.?.value.function_decl.blocks.items) |block| {
+            print("{}\n", .{block});
+            for (block.value.block_expr.statements.items) |statement| {
+                print("statement here\n", .{});
+            }
+        }
     }
+
+
+    print("Finished parsing\n", .{});
 }
