@@ -267,8 +267,7 @@ const TokenConsumer = struct
 
 };
 
-const Parser = struct
-{
+const Parser = struct {
     nb: std.ArrayList(Node),
     current_function: ?*Node,
     current_block: ?*Node,

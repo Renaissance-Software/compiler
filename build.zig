@@ -1,6 +1,7 @@
 const std = @import("std");
 
-pub fn build(b: *std.build.Builder) void {
+pub fn build(b: *std.build.Builder) void
+{
     // Standard target options allows the person running `zig build` to choose
     // what target to build for. Here we do not override the defaults, which
     // means any target is allowed, and the default is native. Other options
@@ -11,14 +12,15 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("zig_exp", "src/main.zig");
+    const exe = b.addExecutable("compiler", "src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
 
     const run_cmd = exe.run();
     run_cmd.step.dependOn(b.getInstallStep());
-    if (b.args) |args| {
+    if (b.args) |args|
+    {
         run_cmd.addArgs(args);
     }
 

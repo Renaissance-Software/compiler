@@ -6,14 +6,16 @@ const Internal = @import("compiler.zig");
 const KeywordID = Internal.KeywordID;
 const Type = Internal.Type;
 
-pub const Token = struct {
+pub const Token = struct
+{
     value: Value,
     start: u64,
     end: u64,
     line: u32,
     column: u32,
 
-    pub const ID = enum(u8) {
+    pub const ID = enum(u8)
+    {
         int_lit,
         float_lit,
         char_lit,
@@ -24,7 +26,9 @@ pub const Token = struct {
         sign,
         //intrinsic,
     };
-    const Value = union(ID) {
+
+    const Value = union(ID)
+    {
         int_lit: u64,
         float_lit: f64,
         char_lit: u8,
@@ -37,10 +41,12 @@ pub const Token = struct {
     };
 };
 
-const Tokenizer = struct {
+const Tokenizer = struct
+{
     tokens: std.ArrayList(Token),
 
-    fn new_token(self: *Tokenizer, value: Token.Value, start: u64, end: u64, line: u32, column: u32) void {
+    fn new_token(self: *Tokenizer, value: Token.Value, start: u64, end: u64, line: u32, column: u32) void
+    {
         var token = Token{
             .value = value,
             .start = start,
@@ -53,20 +59,23 @@ const Tokenizer = struct {
             panic("Failed to allocate a new token\n", .{});
         };
     }
-
-    fn match_name(self: Tokenizer, name: []const u8, types: *std.ArrayList(Type)) Token.Value {
-        const keyword = std.meta.stringToEnum(KeywordID, name);
-        if (keyword != null) {
+    fn match_name(self: Tokenizer, name: []const u8, types: *std.ArrayList(Type)) Token.Value
+    {
+        if (std.meta.stringToEnum(KeywordID, name)) |keyword|
+        {
             // print("Keyword: {}\n", .{keyword.?});
             const result = Token.Value{
-                .keyword = keyword.?,
+                .keyword = keyword,
             };
             return result;
-        } else {
+        }
+        else
+        {
             // print("Keyword not found\n", .{});
         }
 
-        for (types.items) |*type_decl| {
+        for (types.items) |*type_decl|
+        {
             if (std.mem.eql(u8, type_decl.name, name)) {
                 // print("Found type", .{});
                 const result = Token.Value{
@@ -81,12 +90,14 @@ const Tokenizer = struct {
     }
 };
 
-pub const LexerResult = struct {
+pub const LexerResult = struct
+{
     tokens: []Token,
     line_count: u32,
 };
 
-pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *std.ArrayList(Type)) LexerResult {
+pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *std.ArrayList(Type)) LexerResult
+{
     var tokenizer = Tokenizer{ .tokens = std.ArrayList(Token).init(allocator) };
 
     var current_line_start: u64 = 0;

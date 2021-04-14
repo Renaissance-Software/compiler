@@ -10,11 +10,10 @@ const Compiler = Internal.Compiler;
 const Type = Internal.Type;
 const Allocator = std.mem.Allocator;
 
-
 pub fn main() anyerror!void
 {
     const src_file = "main :: () -> s32 { return 0; }";
-    var compiler = Compiler {
+    var compiler = Compiler{
         .errors_reported = false,
     };
     var allocator = std.heap.page_allocator;
@@ -26,7 +25,6 @@ pub fn main() anyerror!void
     print("Parser\n", .{});
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
-
 
     print("IR\n", .{});
 
