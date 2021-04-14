@@ -1,5 +1,10 @@
 const std = @import("std");
+const assert = std.debug.assert;
+const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
+const Internal = @import("compiler.zig");
+const Parser = @import("parser.zig");
+const Node = Parser.Node;
 
 const Type = struct {
     name: []const u8,
@@ -434,6 +439,27 @@ const Function = struct {
         base: Value,
         arg_index: usize,
     };
+
+    fn create(allocator: *Allocator, module: *Module, type_expr: *Type, name: []const u8) void
+    {
+        const function_type = @ptrCast(*FunctionType, type_expr);
+        const ret_type = function_type.ret_type;
+
+        const function_value = Function {
+            .base = Value {
+                .type = ret_type,
+                .id = Value.ID.GlobalFunction,
+            },
+            .basic_blocks = std.ArrayList(*BasicBlock).init(allocator),
+            .arguments = undefined, // @Info: this is defined later as the arguments are collected, and not in the function declaration
+            .name = name,
+            .type = type_expr,
+            .parent = module,
+        };
+        module.functions.append(function_value) catch |err| {
+            panic("Cannot allocate memory for bytecode function\n", .{});
+        };
+    }
 };
 
 const Instruction = struct{
@@ -548,16 +574,17 @@ const Builder = struct {
     explicit_return: bool,
 };
 
-const Context = struct {
+const Context = struct
+{
     void_type: Type,
     label_type: Type,
-    i1_type: Type,
-    i8_type: Type,
-    i16_type: Type,
-    i32_type: Type,
-    i64_type: Type,
-    f32_type: Type,
-    f64_type: Type,
+    i1_type:  IntegerType,
+    i8_type:  IntegerType,
+    i16_type: IntegerType,
+    i32_type: IntegerType,
+    i64_type: IntegerType,
+    f32_type: FloatType,
+    f64_type: FloatType,
 
     function_types: std.ArrayList(FunctionType),
     array_types: std.ArrayList(ArrayType),
@@ -566,18 +593,79 @@ const Context = struct {
     constant_ints: std.ArrayList(ConstantInt),
     intrinsics: std.ArrayList(Intrinsic),
 
-    fn create() Context {
+    fn create(allocator: *Allocator) Context
+    {
         var context : Context = undefined;
+
         context.void_type = Type { .name = "void", .id = Type.ID.@"void" };
+        context.label_type = Type { .name = "label", .id = Type.ID.@"label" };
+
+        context.i1_type = IntegerType { .base =  Type { .name = "i1", .id = Type.ID.@"integer" }, .bits = 1, };
+
+        context.i8_type = IntegerType { .base =  Type { .name = "i8", .id = Type.ID.@"integer" }, .bits = 8, };
+        context.i16_type = IntegerType { .base =  Type { .name = "i16", .id = Type.ID.@"integer" }, .bits = 16, };
+        context.i32_type = IntegerType { .base =  Type { .name = "i32", .id = Type.ID.@"integer" }, .bits = 32, };
+        context.i64_type = IntegerType { .base =  Type { .name = "i64", .id = Type.ID.@"integer" }, .bits = 64, };
+
+        context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float" }, .bits = 32, };
+        context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float" }, .bits = 64, };
+
+        context.function_types = std.ArrayList(FunctionType).init(allocator);
+        context.array_types = std.ArrayList(ArrayType).init(allocator);
+        context.pointer_types = std.ArrayList(PointerType).init(allocator);
+
+        context.constant_arrays = std.ArrayList(ConstantArray).init(allocator);
+        context.constant_ints = std.ArrayList(ConstantInt).init(allocator);
+
+        context.intrinsics = std.ArrayList(Intrinsic).init(allocator);
 
         return context;
     }
 };
 
-pub fn encode(allocator: *Allocator) void {
+pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
+{
     var module = Module {
         .functions = std.ArrayList(Function).init(allocator),
     };
 
-    var context = Context.create();
+    var context = Context.create(allocator);
+
+    for (ast_function_declarations) |ast_function|
+    {
+        assert(ast_function.value == Node.ID.function_decl);
+        const ast_function_type = ast_function.value.function_decl.type;
+        assert(ast_function_type.?.value == Internal.Type.ID.function);
+        // @TODO: get RNS function type
+        var function_type : Type = undefined;
+        Function.create(allocator, &module, &function_type, ast_function.value.function_decl.name);
+    }
+
+    assert(ast_function_declarations.len == module.functions.items.len);
+
+    var basic_block_buffer = std.ArrayList(BasicBlock).init(allocator);
+    var instruction_buffer = std.ArrayList(Instruction).init(allocator);
+
+    var function_index: u64 = 0;
+    while (function_index < ast_function_declarations.len) : (function_index += 1) 
+    {
+        const ast_function = &ast_function_declarations[function_index];
+        var function = &module.functions.items[function_index];
+
+        var builder = Builder {
+            .context = &context,
+            .function = function,
+            .basic_block_buffer = &basic_block_buffer,
+            .instruction_buffer = &instruction_buffer,
+            .module = &module,
+            .next_alloca_index = 0,
+            .conditional_alloca = false,
+            .emitted_return = false,
+            .explicit_return = false,
+            .current = undefined,
+            .return_alloca = undefined,
+            .exit_block = undefined,
+        };
+
+    }
 }

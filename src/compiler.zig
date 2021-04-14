@@ -53,7 +53,8 @@ pub const Type = struct {
         count: u64,
     };
 
-    pub fn get_void_type(types: *std.ArrayList(Type)) ?*Type {
+    pub fn get_void_type(types: *std.ArrayList(Type)) ?*Type
+    {
         for (types.items) |*t| {
             if (t.value == Type.ID.void) {
                 return t;
@@ -61,6 +62,39 @@ pub const Type = struct {
         }
 
         return null;
+    }
+
+    pub fn get_pointer_type(p_type: *Type, types: *std.ArrayList(Type)) *Type
+    {
+        panic("Not implemented\n", .{});
+    }
+
+    pub fn get_array_type(arr_type: *Type, count: usize, types: *std.ArrayList(Type)) *Type
+    {
+        for (types.items) |*type_decl|
+        {
+            if (type_decl.value == Type.ID.array and type_decl == arr_type and type_decl.value.array.count == count)
+            {
+                return type_decl;
+            }
+        }
+
+        const new_type = Type {
+            .value = Type.Value {
+                .array = Type.Array {
+                    .type = arr_type,
+                    .count = count,
+                },
+            },
+            .name = undefined,
+        };
+
+        types.append(new_type) catch |err| {
+            panic("Failing to allocate a new type\n", .{});
+        };
+
+        const result = &types.items[types.items.len - 1];
+        return result;
     }
 
     pub fn get_function_type(types: *std.ArrayList(Type), function_type: Function) *Type {

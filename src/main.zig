@@ -25,10 +25,10 @@ pub fn main() anyerror!void
 
     print("Parser\n", .{});
 
-    Parser.parse(allocator, &compiler, lexer_result, &types);
+    const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
 
 
     print("IR\n", .{});
 
-    IR.encode(allocator);
+    IR.encode(allocator, parser_result.function_declarations);
 }

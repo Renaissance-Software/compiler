@@ -133,12 +133,12 @@ const ArrayLiteral = struct {
     type_expression: *Type,
 };
 
-const Node = struct {
+pub const Node = struct {
     value: Value,
     parent: ?*Node,
     value_type: ValueType,
 
-    const Value = union(ID) {
+    pub const Value = union(ID) {
         var_decl: VariableDeclaration,
         function_decl: FunctionDeclaration,
         int_lit: IntegerLiteral,
@@ -155,7 +155,7 @@ const Node = struct {
         subscript_expr: SubscriptExpression,
     };
 
-    const ID = enum {
+    pub const ID = enum {
         var_decl,
         function_decl,
         int_lit,
@@ -172,13 +172,14 @@ const Node = struct {
         subscript_expr,
     };
 
-    const ValueType = enum {
+    pub const ValueType = enum {
         RValue,
         LValue,
     };
 };
 
-const TokenConsumer = struct {
+const TokenConsumer = struct
+{
     tokens: []const Token,
     next_index: usize,
 
@@ -214,20 +215,56 @@ const TokenConsumer = struct {
         return token;
     }
 
-    fn get_type_consuming_tokens(self: *TokenConsumer, types: *std.ArrayList(Type)) ?*Type {
+    fn get_type_consuming_tokens(self: *TokenConsumer, types: *std.ArrayList(Type)) *Type {
         const t = self.tokens[self.next_index];
         self.next_index += 1;
 
-        switch (t.value) {
+        switch (t.value)
+        {
             Token.ID.type => {
                 var result = t.value.type;
                 return result;
             },
-            else => {
-                panic("Couldn't find type for token {}", .{t});
+            Token.ID.sign => {
+                const sign = t.value.sign;
+                switch (sign)
+                {
+                    '&' => {
+                        const pointer_type = self.get_type_consuming_tokens(types);
+                        const result = Type.get_pointer_type(pointer_type, types);
+                        return result;
+                    },
+                    '[' => {
+                        const in_brackets_token = self.expect_and_consume(Token.ID.int_lit);
+                        var array_length: u64 = 0;
+                        if (in_brackets_token != null)
+                        {
+                            array_length = in_brackets_token.?.value.int_lit;
+                        }
+                        else
+                        {
+                            panic("Not implemented\n", .{});
+                        }
+                        const right_bracket = self.expect_and_consume_sign(']');
+                        if (right_bracket == null)
+                        {
+                            panic("Expected ] after array index\n", .{});
+                        }
+
+                        const array_elem_type = self.get_type_consuming_tokens(types);
+
+                        const array_type = Type.get_array_type(array_elem_type, array_length, types);
+                        return array_type;
+                    },
+                    else => {}
+                }
             },
+            else => {}
         }
+
+        panic("Couldn't find type for token {}", .{t});
     }
+
 };
 
 const Parser = struct
@@ -535,16 +572,19 @@ const Parser = struct
         var next_token = consumer.tokens[consumer.next_index];
         var args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
 
-        while (args_left_to_parse) {
+        while (args_left_to_parse)
+        {
             const arg_node_result = self.expression(consumer, types, function_node);
 
-            if (arg_node_result == null) {
+            if (arg_node_result == null)
+            {
                 self.compiler.report_error("Error parsing argument\n", .{});
                 return null;
             }
 
             var arg_node = arg_node_result.?;
-            if (arg_node.value != Node.ID.var_decl) {
+            if (arg_node.value != Node.ID.var_decl)
+            {
                 // @TODO: improve error message
                 self.compiler.report_error("Error parsing argument\n", .{});
                 return null;
@@ -557,9 +597,11 @@ const Parser = struct
 
             next_token = consumer.tokens[consumer.next_index];
             args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
-            if (args_left_to_parse) {
+            if (args_left_to_parse)
+            {
                 const comma = consumer.expect_and_consume_sign(',');
-                if (comma == null) {
+                if (comma == null)
+                {
                     // print error
                     self.compiler.report_error("Expected comma after function argument", .{});
                     return null;
@@ -578,12 +620,7 @@ const Parser = struct
                 return null;
             }
 
-            const ret_type_result = consumer.get_type_consuming_tokens(types);
-            if (ret_type_result == null) {
-                panic("Couldn't find result type", .{});
-            }
-
-            const ret_type = ret_type_result.?;
+            const ret_type = consumer.get_type_consuming_tokens(types);
             function_type.ret_type = ret_type;
         } else {
             const void_type = Type.get_void_type(types);
@@ -618,7 +655,13 @@ const Parser = struct
     }
 };
 
-pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult, types: *std.ArrayList(Type)) void
+pub const ParserResult = struct
+{
+    node_buffer: []Node,
+    function_declarations: []*Node,
+};
+
+pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult, types: *std.ArrayList(Type)) ParserResult
 {
     const token_count = lexer_result.tokens.len;
     assert(token_count > 0);
@@ -636,7 +679,8 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
         .function_declarations = NodeRefBuffer.init(allocator),
     };
 
-    while (token_consumer.next_index < token_count) {
+    while (token_consumer.next_index < token_count)
+    {
         var function_node = parser.function(&token_consumer, types) catch |err| {
             parser.compiler.report_error("Couldn't parse the function\n", .{});
             std.os.exit(0);
@@ -651,5 +695,11 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
             std.os.exit(1);
         }
     }
-}
 
+    const result = ParserResult {
+        .node_buffer = parser.nb.items,
+        .function_declarations = parser.function_declarations.items,
+    };
+
+    return result;
+}
