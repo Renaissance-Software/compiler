@@ -1,7 +1,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
+const print = std.debug.print;
 const Allocator = std.mem.Allocator;
+
 const Internal = @import("compiler.zig");
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
@@ -468,6 +470,7 @@ const Instruction = struct
     id: ID,
     parent: *BasicBlock,
     value: InstructionValue,
+    operands: std.ArrayList(*Value),
 
     const InstructionValue = extern union {
         alloca: Alloca,
@@ -575,14 +578,14 @@ const BasicBlock = struct
 const Builder = struct
 {
     context: *Context,
-    current: *BasicBlock,
+    current: ?*BasicBlock,
     function: *Function,
     basic_block_buffer: *std.ArrayList(BasicBlock),
     instruction_buffer: *std.ArrayList(Instruction),
     module: *Module,
     next_alloca_index: usize,
-    return_alloca: *Instruction,
-    exit_block: *BasicBlock,
+    return_alloca: ?*Instruction,
+    exit_block: ?*BasicBlock,
     conditional_alloca: bool,
     emitted_return: bool,
     explicit_return: bool,
@@ -632,6 +635,8 @@ const Builder = struct
             },
             .id = Instruction.ID.Alloca,
             .parent = undefined,
+            .operands = undefined,
+            //.operands = std.ArrayList(*Value).init(allocator),
             .value = Instruction.InstructionValue
             {
                 .alloca = Instruction.Alloca {
@@ -655,17 +660,135 @@ const Builder = struct
         return result;
     }
 
+    fn create_store(self: *Builder, value: *Value, ptr: *Value) *Instruction
+    {
+        panic("Not implemented\n", .{});
+    }
+
+    fn create_load(self: *Builder, load_type: *Type, value: *Value) *Instruction
+    {
+        panic("Not implemented\n", .{});
+    }
+
+    fn create_ret(self: *Builder, allocator: *Allocator, value: *Value) *Instruction
+    {
+        const function_type = @ptrCast(*FunctionType, self.function.type);
+
+        const function_ret_type = function_type.ret_type;
+        assert(function_ret_type == value.type);
+
+        if (!self.is_terminated())
+        {
+            var i = Instruction
+            {
+                .base = Value {
+                    .type = value.type,
+                    .id = Value.ID.Instruction,
+                },
+                .id = Instruction.ID.Ret,
+                .operands = std.ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                    panic("Can't allocate memory for ret operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+            };
+            i.operands.append(value) catch |err| {
+                panic("Failed to allocate memory for ret operand\n", .{});
+            };
+
+            return self.insert_at_the_end(i);
+        }
+        else
+        {
+            panic("Trying to create a ret in a terminated basic block\n", .{});
+        }
+    }
+
+    fn create_ret_void(self: *Builder) *Instruction
+    {
+        panic("Not implemented\n", .{});
+    }
+
+    // @TODO: this assumes the instruction is going to be appended to the current basic block and it's going to jump to the dst_basic_block
+    fn create_br(self: *Builder, allocator: *Allocator, dst_basic_block: *BasicBlock) *Instruction
+    {
+        if (!self.is_terminated())
+        {
+            var i = Instruction
+            {
+                .base = Value {
+                    .type = dst_basic_block.base.type,
+                    .id = Value.ID.Instruction,
+                },
+                .id = Instruction.ID.Br,
+                .operands = std.ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                    panic("Failed to allocate memory for br operand\n", .{});
+                },
+                .parent = undefined,
+                .value = undefined,
+            };
+            i.operands.append(@ptrCast(*Value, dst_basic_block)) catch |err| {
+                panic("Failed to allocate memory for br operand\n", .{});
+            };
+
+            return self.insert_at_the_end(i);
+        }
+        else
+        {
+            panic("Trying to terminate basic block with a br instruction but block is already terminated\n", .{});
+        }
+    }
+
+    fn is_terminated(self: *Builder) bool
+    {
+        if (self.current) |current|
+        {
+            if (current.instructions.items.len > 0)
+            {
+                const last_instruction = current.instructions.items[current.instructions.items.len - 1];
+
+                switch (last_instruction.id)
+                {
+                    Instruction.ID.Br, Instruction.ID.Ret => 
+                    {
+                        return true;
+                    },
+                    else => 
+                    {
+                        return false;
+                    }
+                }
+            }
+            else
+            {
+                return false;
+            }
+        }
+        else
+        {
+            panic("No basic block is bound to the builder\n", .{});
+        }
+    }
+
     fn insert_at_the_end(self: *Builder, instruction: Instruction) *Instruction
     {
-        self.instruction_buffer.append(instruction) catch |err| {
-            panic("Failed to allocate memory for instruction\n", .{});
-        };
+        if (self.current) |current|
+        {
+            self.instruction_buffer.append(instruction) catch |err| {
+                panic("Failed to allocate memory for instruction\n", .{});
+            };
+            const result = &self.instruction_buffer.items[self.instruction_buffer.items.len - 1];
+            current.instructions.append(result) catch |err| {
+                panic("Failed to allocate memory for instruction\n", .{});
+            };
+            result.parent = current;
 
-        const result = &self.instruction_buffer.items[self.instruction_buffer.items.len - 1];
-        self.current.instructions.append(result);
-        result.base.parent = self.current;
-
-        return result;
+            return result;
+        }
+        else
+        {
+            panic("No basic block is bound to the builder\n", .{});
+        }
     }
 };
 
@@ -717,14 +840,80 @@ const Context = struct
         return context;
     }
 
+    fn get_void_type(self: *Context) *Type
+    {
+        return &self.void_type;
+    }
+
     fn get_label_type(self: *Context) *Type
     {
-        panic("Not implemented\n", .{});
+        return &self.label_type;
+    }
+
+    fn get_integer_type(self: *Context, bits: u16) *Type
+    {
+        switch (bits)
+        {
+            1 => return @ptrCast(*Type, &self.i1_type),
+            8 => return @ptrCast(*Type, &self.i8_type),
+            16 => return @ptrCast(*Type, &self.i16_type),
+            32 => return @ptrCast(*Type, &self.i32_type),
+            64 => return @ptrCast(*Type, &self.i64_type),
+            else => {
+                panic("Integer type with {} bits not implemented\n", .{bits});
+            }
+        }
     }
     
     fn get_pointer_type(self: *Context, p_type: *Type) *Type
     {
-        panic("Not implemented\n", .{});
+        for (self.pointer_types.items) |*pointer_type|
+        {
+            if (pointer_type.type == p_type)
+            {
+                return @ptrCast(*Type, pointer_type);
+            }
+        }
+
+        const pointer_type_value = PointerType
+        {
+            .base = Type {
+                .name = undefined,
+                .id = Type.ID.@"pointer",
+            },
+            .type = p_type,
+        };
+
+        self.pointer_types.append(pointer_type_value) catch |err| {
+            panic("Failed to allocate memory for pointer type\n", .{});
+        };
+
+        const result = &self.pointer_types.items[self.pointer_types.items.len - 1];
+        return @ptrCast(*Type, result);
+    }
+
+    fn get_constant_int(self: *Context, int_type: *Type, value: u64, is_signed: bool) *ConstantInt
+    {
+        const integer_type = @ptrCast(*IntegerType, int_type);
+        const bits = integer_type.bits;
+        assert(bits == 1 or bits == 8 or bits == 16 or bits == 32 or bits == 64);
+
+        const new_int = ConstantInt
+        {
+            .base = Value {
+                .type = int_type,
+                .id = Value.ID.ConstantInt,
+            }, 
+            .int_value = value,
+            .bit_count = bits,
+            .is_signed = is_signed,
+        };
+
+        self.constant_ints.append(new_int) catch |err| {
+            panic("Fail to allocate memory for constant int\n", .{});
+        };
+        const result = &self.constant_ints.items[self.constant_ints.items.len - 1];
+        return result;
     }
 };
 
@@ -759,6 +948,171 @@ fn introspect_for_allocas(builder: *Builder, ast_block: *Node) bool
     return false;
 }
 
+fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type: ?*Type) ?*Value
+{
+    switch (node.value)
+    {
+        Node.ID.block_expr =>
+        {
+            for (node.value.block_expr.statements.items) |ast_statement|
+            {
+                if (!builder.emitted_return)
+                {
+                    _ = do_node(allocator, builder, ast_statement, null);
+                }
+            }
+        },
+        Node.ID.return_expr =>
+        {
+            // @TODO: tolerate this in the future?
+            assert(!builder.emitted_return);
+
+            if (node.value.return_expr.expression) |ast_return_expression|
+            {
+                builder.emitted_return = true;
+                builder.explicit_return = true;
+
+                // @TODO: typecheck return expression with return type
+                if (do_node(allocator, builder, ast_return_expression, null)) |ret_value|
+                {
+                    if (builder.conditional_alloca)
+                    {
+                        assert(builder.return_alloca != null);
+                        assert(builder.exit_block != null);
+                        _ = builder.create_store(ret_value, @ptrCast(*Value, builder.return_alloca));
+                        _ = builder.create_br(allocator, builder.exit_block.?);
+                    }
+                    else
+                    {
+                        _ = builder.create_ret(allocator, ret_value);
+                    }
+                }
+                else
+                {
+                    panic("Couldn't infer return expression\n", .{});
+                }
+            }
+            else
+            {
+                if (!builder.explicit_return)
+                {
+                    _ = builder.create_ret_void();
+                }
+                else
+                {
+                    assert(builder.exit_block != null);
+                    _ = builder.create_br(allocator, builder.exit_block.?);
+                    builder.emitted_return = true;
+                    builder.explicit_return = true;
+                }
+            }
+        },
+        Node.ID.int_lit =>
+        {
+            const result = builder.context.get_constant_int(builder.context.get_integer_type(32), node.value.int_lit.value, node.value.int_lit.signed);
+            return @ptrCast(*Value, result);
+        },
+        Node.ID.var_decl => panic("Not implemented\n", .{}),
+        Node.ID.function_decl => panic("Not implemented\n", .{}),
+        Node.ID.array_lit => panic("Not implemented\n", .{}),
+        Node.ID.unary_expr => panic("Not implemented\n", .{}),
+        Node.ID.binary_expr => panic("Not implemented\n", .{}),
+        Node.ID.var_expr => panic("Not implemented\n", .{}),
+        Node.ID.invoke_expr => panic("Not implemented\n", .{}),
+        Node.ID.branch_expr => panic("Not implemented\n", .{}),
+        Node.ID.loop_expr => panic("Not implemented\n", .{}),
+        Node.ID.break_expr => panic("Not implemented\n", .{}),
+        Node.ID.subscript_expr => panic("Not implemented\n", .{}),
+        //else => panic("Not implemented\n", .{}),
+    }
+
+    return null;
+}
+
+/// This function gets the compiler (AST-Lexer) type and transform it into a "LLVM" type
+fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type) *Type
+{
+    switch (ast_type.value)
+    {
+        Internal.Type.ID.function => 
+        {
+            const ret_type = get_type(allocator, context, ast_type.value.function.ret_type);
+            const arg_count = ast_type.value.function.arg_types.items.len;
+
+            for (context.function_types.items) |*function_type|
+            {
+                if (ret_type != function_type.ret_type)
+                {
+                    continue;
+                }
+
+                if (arg_count != function_type.arg_types.len)
+                {
+                    continue;
+                }
+
+                var arg_i : u64 = 0;
+                while (arg_i < arg_count) : (arg_i += 1)
+                {
+                    const ast_arg_type = ast_type.value.function.arg_types.items[arg_i];
+                    const new_arg_type = get_type(allocator, context, ast_arg_type);
+                    const already_registered_arg_type = function_type.arg_types[arg_i];
+                    if (new_arg_type == already_registered_arg_type)
+                    {
+                        continue;
+                    }
+
+                    break;
+                }
+
+                return @ptrCast(*Type, function_type);
+            }
+
+            var function_type = FunctionType {
+                .base = Type {
+                    .name = undefined,
+                    .id = Type.ID.@"function",
+                },
+                .arg_types = undefined,
+                .ret_type = ret_type,
+            };
+
+            if (arg_count > 0)
+            {
+                var arg_types = std.ArrayList(*Type).init(allocator);
+                arg_types.resize(arg_count) catch |err| {
+                    panic("Resize to {} elements failed for array slice for function argument types\n", .{arg_count});
+                };
+
+                for (ast_type.value.function.arg_types.items) |ast_arg_type|
+                {
+                    const new_arg_type = get_type(allocator, context, ast_arg_type);
+                    arg_types.append(new_arg_type) catch |err| {
+                        panic("Failed to allocate memory for argument type\n", .{});
+                    };
+                }
+
+                function_type.arg_types = arg_types.items;
+            }
+
+            context.function_types.append(function_type) catch |err| {
+                panic("Failed to allocate function type\n", .{});
+            };
+            const result = &context.function_types.items[context.function_types.items.len - 1];
+            return @ptrCast(*Type, result);
+        },
+        Internal.Type.ID.integer => {
+            const bits = ast_type.value.integer.bits;
+            const result = context.get_integer_type(bits);
+            return result;
+        },
+        else => 
+        {
+            panic("Can't get type: {}\n", .{ast_type});
+        }
+    }
+}
+
 pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
 {
     var module = Module {
@@ -771,10 +1125,11 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
     {
         assert(ast_function.value == Node.ID.function_decl);
         const ast_function_type = ast_function.value.function_decl.type;
+        assert(ast_function_type != null);
         assert(ast_function_type.?.value == Internal.Type.ID.function);
         // @TODO: get RNS function type
-        var function_type : Type = undefined;
-        Function.create(allocator, &module, &function_type, ast_function.value.function_decl.name);
+        const function_type = get_type(allocator, &context, ast_function_type.?);
+        Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
     }
 
     assert(ast_function_declarations.len == module.functions.items.len);
@@ -783,9 +1138,10 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
     var instruction_buffer = std.ArrayList(Instruction).init(allocator);
 
     var function_index: u64 = 0;
+
     while (function_index < ast_function_declarations.len) : (function_index += 1) 
     {
-        const ast_function = &ast_function_declarations[function_index];
+        const ast_function = ast_function_declarations[function_index];
         var function = &module.functions.items[function_index];
 
         var builder = Builder {
@@ -799,8 +1155,8 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             .emitted_return = false,
             .explicit_return = false,
             .current = undefined,
-            .return_alloca = undefined,
-            .exit_block = undefined,
+            .return_alloca = null,
+            .exit_block = null,
         };
 
         // Pointer to the function main block
@@ -808,7 +1164,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
         builder.append_to_current_function(entry_block);
         builder.set_block(entry_block);
 
-        const arg_count = ast_function.*.value.function_decl.arguments.items.len;
+        const arg_count = ast_function.value.function_decl.arguments.items.len;
         const function_base_type = builder.function.type;
         const function_type = @ptrCast(*FunctionType, function_base_type);
         const ret_type = function_type.ret_type;
@@ -850,16 +1206,16 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             }
         }
 
-        builder.conditional_alloca = !returns_something and builder.explicit_return;
+        builder.conditional_alloca = returns_something and builder.explicit_return;
 
         if (builder.explicit_return)
         {
             builder.exit_block = builder.create_block(allocator);
-        }
 
-        if (builder.conditional_alloca)
-        {
-            builder.return_alloca = builder.create_alloca(ret_type, null);
+            if (builder.conditional_alloca)
+            {
+                builder.return_alloca = builder.create_alloca(ret_type, null);
+            }
         }
 
         if (arg_count > 0)
@@ -873,16 +1229,101 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             for (ast_function.*.value.function_decl.arguments.items) |ast_arg|
             {
                 assert(ast_arg.value == Node.ID.var_decl);
+                assert(ast_arg.value.var_decl.is_function_arg);
                 const ast_arg_type = ast_arg.value.var_decl.var_type;
-                panic("Keep implementing it\n", .{});
+                const arg_type = get_type(allocator, &context, ast_arg_type);
+
+                const index = argument_list.items.len;
+                const arg = Function.Argument {
+                    .base = Value {
+                        .type = arg_type,
+                        .id = Value.ID.Argument,
+                    },
+                    .arg_index = index,
+                };
+
+                const arg_alloca = builder.create_alloca(arg_type, null);
+                ast_arg.value.var_decl.backend_ref = @ptrCast(*void, arg_alloca);
+
+                argument_list.append(arg) catch |err| {
+                    panic("Error allocating argument in function\n", .{});
+                };
+                const arg_ref = &argument_list.items[index];
+                _ = builder.create_store(@ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
             }
-
-
-
-            panic("implement arguments\n", .{});
         }
 
-        panic("implement do_node()\n", .{});
+        _ = do_node(allocator, &builder, ast_main_block, null);
 
+        if (builder.conditional_alloca)
+        {
+            assert(builder.current != null);
+            assert(builder.current.?.instructions.items.len > 0);
+            assert(builder.exit_block != null);
+            assert(builder.return_alloca != null);
+
+            builder.append_to_current_function(builder.exit_block.?);
+            builder.set_block(builder.exit_block.?);
+
+            const loaded_return = builder.create_load(builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
+            _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
+        }
+        else if (!returns_something)
+        {
+            if (builder.explicit_return)
+            {
+                assert(builder.exit_block != null);
+                if (builder.current) |current_block|
+                {
+                    if (current_block.instructions.items.len == 0)
+                    {
+                        const saved_current = current_block;
+                        builder.set_block(builder.exit_block.?);
+
+                        var block_ptr : ?*BasicBlock = null;
+                        var block_index : u64 = 0;
+                        while (block_index < builder.function.basic_blocks.items.len) : (block_index += 1)
+                        {
+                            const block = builder.function.basic_blocks.items[block_index];
+                            if (block == saved_current)
+                            {
+                                block_ptr = block;
+                                break;
+                            }
+                        }
+
+                        if (block_ptr) |block|
+                        {
+                            if (block_index == 0)
+                            {
+                                builder.function.basic_blocks.items[block_index] = builder.current.?;
+                                builder.current.?.parent = builder.function;
+                            }
+                            else
+                            {
+                                panic("This should be the main block\n", .{});
+                            }
+                        }
+                        else
+                        {
+                            panic("Block is not found in the function block list\n", .{});
+                        }
+                    }
+                    else
+                    {
+                        builder.append_to_current_function(builder.exit_block.?);
+                        builder.set_block(builder.exit_block.?);
+                    }
+                }
+                else
+                {
+                    panic("No current basic block\n", .{});
+                }
+            }
+
+            _ = builder.create_ret_void();
+        }
+
+        // @TODO: here we should be printing the function
     }
 }

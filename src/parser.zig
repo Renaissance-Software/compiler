@@ -58,7 +58,7 @@ const BinaryExpression = struct {
 };
 
 const ReturnExpression = struct {
-    expression: *Node,
+    expression: ?*Node,
 };
 
 // @Info: Variable expression must reference a variable declaration (in which function arguments are included)
@@ -267,7 +267,8 @@ const TokenConsumer = struct
 
 };
 
-const Parser = struct {
+const Parser = struct
+{
     nb: std.ArrayList(Node),
     current_function: ?*Node,
     current_block: ?*Node,
@@ -424,7 +425,7 @@ const Parser = struct {
         var return_node_value = Node{
             .value = Node.Value{
                 .return_expr = ReturnExpression{
-                    .expression = undefined,
+                    .expression = null,
                 },
             },
             .value_type = Node.ValueType.LValue,
@@ -521,7 +522,8 @@ const Parser = struct {
         }
     }
 
-    fn function(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type)) !?*Node {
+    fn function(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type)) !?*Node
+    {
         var allocator = std.heap.page_allocator;
 
         const function_name = consumer.expect_and_consume(Token.ID.symbol);
@@ -567,7 +569,11 @@ const Parser = struct {
         var function_node = self.append_and_get_ref(function_node_value);
         self.current_function = function_node;
 
-        var function_type: Type.Function = undefined;
+        var function_type =  Type.Function {
+            .arg_types = std.ArrayList(*Type).init(allocator),
+            .ret_type = undefined,
+        };
+
         var next_token = consumer.tokens[consumer.next_index];
         var args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
 
@@ -608,35 +614,46 @@ const Parser = struct {
             }
         }
 
-        if (consumer.expect_and_consume_sign(')') == null) {
+        if (consumer.expect_and_consume_sign(')') == null)
+        {
             self.compiler.report_error("Expected end of argument list\n", .{});
             return null;
         }
 
-        if (consumer.expect_and_consume_sign('-') != null) {
-            if (consumer.expect_and_consume_sign('>') == null) {
+        if (consumer.expect_and_consume_sign('-') != null)
+        {
+            if (consumer.expect_and_consume_sign('>') == null)
+            {
                 self.compiler.report_error("Expected > after - in the function declaration return part\n", .{});
                 return null;
             }
 
             const ret_type = consumer.get_type_consuming_tokens(types);
             function_type.ret_type = ret_type;
-        } else {
+        }
+        else
+        {
             const void_type = Type.get_void_type(types);
-            if (void_type != null) {
+            if (void_type != null)
+            {
                 function_type.ret_type = void_type.?;
-            } else {
+            }
+            else
+            {
                 panic("Couldn't find void type", .{});
             }
         }
 
         function_node.value.function_decl.type = Type.get_function_type(types, function_type);
 
-        var block_node_value = Node{
+        var block_node_value = Node
+        {
             .parent = function_node,
             .value_type = Node.ValueType.LValue,
-            .value = Node.Value{
-                .block_expr = BlockExpression{
+            .value = Node.Value
+            {
+                .block_expr = BlockExpression
+                {
                     .statements = NodeRefBuffer.init(allocator),
                     .id = BlockExpression.ID.Function,
                 },

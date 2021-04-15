@@ -2,13 +2,14 @@ const std = @import("std");
 const print = std.debug.print;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
+const Allocator = std.mem.Allocator;
+
 const Parser = @import("parser.zig");
 const Lexer = @import("lexer.zig");
 const IR = @import("bytecode.zig");
 const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
 const Type = Internal.Type;
-const Allocator = std.mem.Allocator;
 
 pub fn main() anyerror!void
 {
