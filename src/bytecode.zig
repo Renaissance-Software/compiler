@@ -13,16 +13,51 @@ const Type = struct {
     id: ID,
 
     const ID = enum {
-        @"void",
-        @"label",
-        @"integer",
-        @"float",
-        @"pointer",
-        @"vector",
+        void,
+        label,
+        integer,
+        float,
+        pointer,
+        vector,
         @"struct",
-        @"array",
-        @"function",
+        array,
+        function,
     };
+
+    pub fn format(self: *const Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self.id)
+        {
+            Type.ID.pointer => 
+            {
+                const pointer_type = @ptrCast(*const PointerType, self);
+                // @TODO: this can be buggy, use std.fmt.format?
+                try pointer_type.type.format("{}", options, writer);
+                try writer.writeAll("*");
+            },
+            Type.ID.integer =>
+            {
+                const integer_type = @ptrCast(*const IntegerType, self);
+                const bits = integer_type.bits;
+                try std.fmt.format(writer, "i{}", .{bits});
+            },
+            Type.ID.void =>
+            {
+                try writer.writeAll("void");
+            },
+            Type.ID.array =>
+            {
+                const array_type = @ptrCast(*const ArrayType, self);
+                const length = array_type.count;
+                const arr_type = array_type.type;
+                try std.fmt.format(writer, "[{} x {}]", .{length, arr_type});
+            },
+            else =>
+            {
+                panic("Not implemented: {}\n", .{self.id});
+            }
+        }
+    }
 };
 
 const FloatType = struct {
@@ -57,11 +92,13 @@ const FunctionType = struct {
     ret_type: *Type,
 };
 
-const Value = struct {
+const Value = struct
+{
     type: *Type,
     id: ID,
 
-    const ID = enum {
+    const ID = enum
+    {
         Undefined,
         Argument,
         BasicBlock,
@@ -103,6 +140,22 @@ const Value = struct {
         OperatorFPMathOperator,
         // @TODO: figure out Signed-wrapping
     };
+
+    pub fn format(self: *const Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self.id)
+        {
+            Value.ID.ConstantInt =>
+            {
+                const constant_int = @ptrCast(*const ConstantInt, self);
+                try std.fmt.format(writer, "{}", .{constant_int});
+            },
+            else =>
+            {
+                panic("Not implemented\n", .{});
+            }
+        }
+    }
 };
 
 const ConstantArray = struct {
@@ -418,6 +471,18 @@ const ConstantInt = struct{
     int_value: u64,
     bit_count: u32,
     is_signed: bool,
+
+    pub fn format(self: *const ConstantInt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        if (self.is_signed)
+        {
+            try std.fmt.format(writer, "i{} -{}", .{self.bit_count, self.int_value});
+        }
+        else
+        {
+            try std.fmt.format(writer, "i{} {}", .{self.bit_count, self.int_value});
+        }
+    }
 };
 
 const OperatorBitCast = struct{
@@ -440,6 +505,11 @@ const Function = struct {
     const Argument = struct {
         base: Value,
         arg_index: usize,
+
+        pub fn format(self: Argument, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+        {
+            try std.fmt.format(writer, "{} {}", .{self.base.type, self.arg_index});
+        }
     };
 
     fn create(allocator: *Allocator, module: *Module, type_expr: *Type, name: []const u8) void
@@ -1154,7 +1224,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             .conditional_alloca = false,
             .emitted_return = false,
             .explicit_return = false,
-            .current = undefined,
+            .current = null,
             .return_alloca = null,
             .exit_block = null,
         };
@@ -1218,9 +1288,9 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             }
         }
 
+        var argument_list = std.ArrayList(Function.Argument).init(allocator);
         if (arg_count > 0)
         {
-            var argument_list = std.ArrayList(Function.Argument).init(allocator);
             argument_list.resize(arg_count) catch |err| {
                 panic("Error resizing argument buffer\n", .{});
             };
@@ -1252,6 +1322,8 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
                 _ = builder.create_store(@ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
             }
         }
+
+        builder.function.arguments = argument_list.items;
 
         _ = do_node(allocator, &builder, ast_main_block, null);
 
@@ -1323,7 +1395,213 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
 
             _ = builder.create_ret_void();
         }
-
-        // @TODO: here we should be printing the function
+        print_function(allocator, function);
     }
+}
+
+const SlotTracker = struct
+{
+    next_id : u64,
+    not_used: u64,
+    starting_id: u64,
+    map: std.ArrayList(*Value),
+
+    fn find(self: *SlotTracker, value: *Value) u64
+    {
+        var i : u64 = 0;
+        while (i < self.map.items.len) : (i += 1)
+        {
+            if (self.map.items[i] == value)
+            {
+                return i + starting_id;
+            }
+        }
+    }
+
+    fn new_id(self: *SlotTracker, value: *Value) u64
+    {
+        const id = self.next_id;
+        self.next_id += 1;
+        self.map.append(value) catch |err| {
+            panic("Failed to allocate memory for printer map\n", .{});
+        };
+
+        return id;
+    }
+};
+
+const BlockPrinter = struct
+{
+    instruction_printers: std.ArrayList(InstructionPrinter),
+    id: u64,
+    block: *BasicBlock,
+
+    pub fn format(self: *const BlockPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        if (self.block.parent.basic_blocks.items[0] != self.block)
+        {
+            try std.fmt.format(writer, "{}:", .{self.id});
+        }
+
+        for (self.instruction_printers.items) |i_printer|
+        {
+            try std.fmt.format(writer, "    {}\n", .{i_printer});
+        }
+    }
+};
+
+const InstructionPrinter = struct
+{
+    ref: *Instruction,
+    result: u64,
+    list_ref: *std.ArrayList(InstructionPrinter),
+
+    pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self.ref.id)
+        {
+            Instruction.ID.Ret =>
+            {
+                if (self.ref.operands.items.len != 0)
+                {
+                    const return_value_operand = self.ref.operands.items[0];
+                    if (return_value_operand.id != Value.ID.Instruction)
+                    {
+                        // @Info: this calls Value formatter
+                        try std.fmt.format(writer, "ret {}", .{return_value_operand});
+                    }
+                    else
+                    {
+                        panic("Not implemented: instruction operand\n", .{});
+                    }
+                }
+                else
+                {
+                    try writer.writeAll("ret void");
+                }
+            },
+            else =>
+            {
+                panic("Not implemented: {}\n", .{self.ref.id});
+            }
+        }
+    }
+};
+
+fn print_function(allocator: *Allocator, function: *Function) void
+{
+    // @TODO: change hardcoding (starting_id, next_id)
+    var slot_tracker = SlotTracker {
+        .next_id = 0,
+        .not_used = 0,
+        .starting_id = 0,
+        .map = std.ArrayList(*Value).init(allocator),
+    };
+
+    for (function.arguments) |*argument|
+    {
+        _ = slot_tracker.new_id(@ptrCast(*Value, argument));
+    }
+
+    var foo_element : Value = undefined;
+    _ = slot_tracker.new_id(&foo_element);
+
+    var block_printers = std.ArrayList(BlockPrinter).initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
+        panic("Failed to allocate block printers array\n", .{});
+    };
+
+    const entry_block_id = 0xffffffffffffffff;
+    for (function.basic_blocks.items) |basic_block|
+    {
+        var block_printer = BlockPrinter {
+            .instruction_printers = std.ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
+                panic("Failed to allocate memory for instruction printer buffer\n", .{});
+            },
+            .id = block_id_label: {
+                var id: u64 = undefined;
+                if (basic_block.parent.basic_blocks.items[0] != basic_block)
+                {
+                    id = slot_tracker.new_id(@ptrCast(*Value, basic_block));
+                }
+                else
+                {
+                    id = entry_block_id;
+                }
+                break :block_id_label id;
+            },
+            .block = basic_block,
+        };
+
+        for (basic_block.instructions.items) |instruction|
+        {
+            var instruction_printer = InstructionPrinter {
+                .ref = instruction,
+                .result = undefined,
+                .list_ref = &block_printer.instruction_printers,
+            };
+            switch (instruction.id)
+            {
+                Instruction.ID.Ret => {
+                    instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
+                },
+                else => {
+                    panic("Not implemented: {}\n", .{instruction.id});
+                }
+            }
+
+            block_printer.instruction_printers.append(instruction_printer) catch |err| {
+                panic("Couldn't allocate memory for instruction printer\n", .{});
+            };
+        }
+
+        block_printers.append(block_printer) catch |err| {
+            panic("Error allocating a new block printer\n", .{});
+        };
+    }
+
+    // @Info: iterate again to patch up branches
+    var block_index: u64 = 0;
+    for (function.basic_blocks.items) |basic_block|
+    {
+        var block_printer = &block_printers.items[block_index];
+        var instruction_index : u64 = 0;
+        for (basic_block.instructions.items) |instruction|
+        {
+            if (instruction.id == Instruction.ID.Br)
+            {
+                // @TODO: abstract this away to call it also in the previous loop
+                var instruction_printer = &block_printer.instruction_printers.items[instruction_index];
+                // @TODO: is this totally unnecessary???
+                panic("Revise comment\n", .{});
+            }
+
+            instruction_index += 1;
+        }
+
+        block_index += 1;
+    }
+
+    const function_type = @ptrCast(*FunctionType, function.type);
+    const ret_type = function_type.ret_type;
+    print("\ndefine dso_local {} @{s}(", .{ret_type, function.name});
+
+    const arg_count = function.arguments.len;
+    if (arg_count > 0)
+    {
+        var arg_i : u64 = 0;
+        while (arg_i < arg_count - 1)
+        {
+            print("{}, ", .{function.arguments[arg_i]});
+        }
+        print("{}", .{function.arguments[arg_i]});
+    }
+
+    print(")\n{c}\n", .{'{'});
+
+    for (block_printers.items) |*block_printer|
+    {
+        print("{}", .{block_printer});
+    }
+
+    print("{c}\n", .{'}'});
 }
