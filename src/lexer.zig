@@ -1,8 +1,10 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
 const print = std.debug.print;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const Internal = @import("compiler.zig");
+const TypeBuffer = Internal.TypeBuffer;
 const KeywordID = Internal.KeywordID;
 const Type = Internal.Type;
 
@@ -43,7 +45,7 @@ pub const Token = struct
 
 const Tokenizer = struct
 {
-    tokens: std.ArrayList(Token),
+    tokens: ArrayList(Token),
 
     fn new_token(self: *Tokenizer, value: Token.Value, start: u64, end: u64, line: u32, column: u32) void
     {
@@ -59,7 +61,7 @@ const Tokenizer = struct
             panic("Failed to allocate a new token\n", .{});
         };
     }
-    fn match_name(self: Tokenizer, name: []const u8, types: *std.ArrayList(Type)) Token.Value
+    fn match_name(self: Tokenizer, name: []const u8, types: *TypeBuffer) Token.Value
     {
         if (std.meta.stringToEnum(KeywordID, name)) |keyword|
         {
@@ -74,16 +76,9 @@ const Tokenizer = struct
             // print("Keyword not found\n", .{});
         }
 
-        for (types.items) |*type_decl|
+        if (Type.get_type_by_name(types, name)) |type_decl|
         {
-            if (std.mem.eql(u8, type_decl.name, name)) {
-                // print("Found type", .{});
-                const result = Token.Value{
-                    .type = type_decl,
-                };
-
-                return result;
-            }
+            return Token.Value{ .type = type_decl };
         }
 
         return Token.Value{ .symbol = name };
@@ -96,9 +91,9 @@ pub const LexerResult = struct
     line_count: u32,
 };
 
-pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *std.ArrayList(Type)) LexerResult
+pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *TypeBuffer) LexerResult
 {
-    var tokenizer = Tokenizer{ .tokens = std.ArrayList(Token).init(allocator) };
+    var tokenizer = Tokenizer{ .tokens = ArrayList(Token).init(allocator) };
 
     var current_line_start: u64 = 0;
     var line_count: u32 = 0;

@@ -4,14 +4,18 @@ const assert = std.debug.assert;
 const print = std.debug.print;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+
 const Internal = @import("compiler.zig");
 const Type = Internal.Type;
+const TypeBuffer = Internal.TypeBuffer;
+const TypeRefBuffer = Internal.TypeRefBuffer;
 const Compiler = Internal.Compiler;
 const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
 const Token = Lexer.Token;
 const LexerResult = Lexer.LexerResult;
-const NodeRefBuffer = std.ArrayList(*Node);
+const NodeRefBuffer = ArrayList(*Node);
 
 const IntegerLiteral = struct {
     value: u64,
@@ -115,7 +119,7 @@ const FunctionDeclaration = struct {
     arguments: NodeRefBuffer,
     variables: NodeRefBuffer,
     name: []const u8,
-    type: ?*Type,
+    type: *Type,
 };
 
 const InvokeExpression = struct {
@@ -215,7 +219,7 @@ const TokenConsumer = struct
         return token;
     }
 
-    fn get_type_consuming_tokens(self: *TokenConsumer, types: *std.ArrayList(Type)) *Type {
+    fn get_type_consuming_tokens(self: *TokenConsumer, types: *TypeBuffer) *Type {
         const t = self.tokens[self.next_index];
         self.next_index += 1;
 
@@ -269,7 +273,7 @@ const TokenConsumer = struct
 
 const Parser = struct
 {
-    nb: std.ArrayList(Node),
+    nb: ArrayList(Node),
     current_function: ?*Node,
     current_block: ?*Node,
 
@@ -277,7 +281,8 @@ const Parser = struct
 
     compiler: *Compiler,
 
-    fn append_and_get_ref(self: *Parser, node: Node) *Node {
+    fn append_and_get_ref(self: *Parser, node: Node) *Node
+    {
         self.nb.append(node) catch |err| {
             panic("Couldn't allocate memory for node", .{});
         };
@@ -285,14 +290,17 @@ const Parser = struct
         return result;
     }
 
-    fn primary_expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+    fn primary_expression(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node {
         const token = consumer.peek();
-        switch (token.value) {
-            Token.ID.int_lit => {
+        switch (token.value)
+        {
+            Token.ID.int_lit =>
+            {
                 consumer.next_index += 1;
                 const int_value = token.value.int_lit;
                 print("Found int literal: {}\n", .{int_value});
-                const int_lit_node = Node{
+                const int_lit_node = Node
+                {
                     .value = Node.Value{
                         .int_lit = IntegerLiteral{
                             .value = int_value,
@@ -315,28 +323,38 @@ const Parser = struct
         }
     }
 
-    fn expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+    fn expression(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    {
         const left_expr_result = self.primary_expression(consumer, types, parent_node);
-        if (left_expr_result == null) {
+        if (left_expr_result == null)
+        {
             return null;
         }
 
         var left = left_expr_result.?;
-        if (left.value == Node.Value.var_decl) {
+        if (left.value == Node.Value.var_decl)
+        {
             panic("Variable declaration not implemented\n", .{});
-        } else {
+        }
+        else
+        {
             return self.right_expression(consumer, types, parent_node, &left);
         }
     }
 
-    fn right_expression(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node, left_ptr: **Node) ?*Node {
-        while (true) {
+    fn right_expression(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node, left_ptr: **Node) ?*Node
+    {
+        while (true)
+        {
             var token = consumer.peek();
             var maybe_binop: ?BinaryExpression.ID = undefined;
-            switch (token.value) {
-                Token.ID.sign => {
+            switch (token.value)
+            {
+                Token.ID.sign =>
+                {
                     const sign = token.value.sign;
-                    switch (sign) {
+                    switch (sign)
+                    {
                         ':' => {
                             consumer.next_index += 1;
                             if (consumer.expect_and_consume_sign(':') != null) {
@@ -397,12 +415,14 @@ const Parser = struct
                         },
                     }
                 },
-                else => {
+                else =>
+                {
                     maybe_binop = null;
                 },
             }
 
-            if (maybe_binop == null) {
+            if (maybe_binop == null)
+            {
                 break;
             }
 
@@ -410,9 +430,12 @@ const Parser = struct
             assert(binop != BinaryExpression.ID.VariableDeclaration);
             var left_expr = left_ptr.*;
 
-            if (binop == BinaryExpression.ID.Subscript) {
+            if (binop == BinaryExpression.ID.Subscript)
+            {
                 panic("Array subscript not implemented\n", .{});
-            } else {
+            }
+            else
+            {
                 panic("Binary expression not implemented\n", .{});
             }
         }
@@ -420,7 +443,7 @@ const Parser = struct
         return left_ptr.*;
     }
 
-    fn parse_return(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+    fn parse_return(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node {
         consumer.next_index += 1;
         var return_node_value = Node{
             .value = Node.Value{
@@ -444,7 +467,7 @@ const Parser = struct
         return return_node;
     }
 
-    fn statement(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), parent_node: ?*Node) ?*Node {
+    fn statement(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node {
         const token = consumer.peek();
         var statement_node: ?*Node = null;
 
@@ -475,7 +498,7 @@ const Parser = struct
         return statement_node;
     }
 
-    fn block(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type), block_node: *Node, allow_no_braces: bool) void {
+    fn block(self: *Parser, consumer: *TokenConsumer, types: *TypeBuffer, block_node: *Node, allow_no_braces: bool) void {
         self.current_block = block_node;
 
         const has_braces = consumer.expect_and_consume_sign('{') != null;
@@ -522,10 +545,8 @@ const Parser = struct
         }
     }
 
-    fn function(self: *Parser, consumer: *TokenConsumer, types: *std.ArrayList(Type)) !?*Node
+    fn function(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer) !?*Node
     {
-        var allocator = std.heap.page_allocator;
-
         const function_name = consumer.expect_and_consume(Token.ID.symbol);
         if (function_name == null) {
             return null;
@@ -556,10 +577,10 @@ const Parser = struct
             .value = Node.Value{
                 .function_decl = FunctionDeclaration{
                     .name = function_name.?.value.symbol,
-                    .arguments = std.ArrayList(*Node).init(allocator),
-                    .blocks = std.ArrayList(*Node).init(allocator),
-                    .variables = std.ArrayList(*Node).init(allocator),
-                    .type = null,
+                    .arguments = ArrayList(*Node).init(allocator),
+                    .blocks = ArrayList(*Node).init(allocator),
+                    .variables = ArrayList(*Node).init(allocator),
+                    .type = undefined,
                 },
             },
             .parent = null,
@@ -569,8 +590,8 @@ const Parser = struct
         var function_node = self.append_and_get_ref(function_node_value);
         self.current_function = function_node;
 
-        var function_type =  Type.Function {
-            .arg_types = std.ArrayList(*Type).init(allocator),
+        var function_type = Type.Function {
+            .arg_types = TypeRefBuffer.init(allocator),
             .ret_type = undefined,
         };
 
@@ -677,7 +698,7 @@ pub const ParserResult = struct
     function_declarations: []*Node,
 };
 
-pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult, types: *std.ArrayList(Type)) ParserResult
+pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult, types: *TypeBuffer) ParserResult
 {
     const token_count = lexer_result.tokens.len;
     assert(token_count > 0);
@@ -688,7 +709,7 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     };
 
     var parser = Parser{
-        .nb = std.ArrayList(Node).init(allocator),
+        .nb = ArrayList(Node).init(allocator),
         .current_function = null,
         .current_block = null,
         .compiler = compiler,
@@ -697,7 +718,7 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
 
     while (token_consumer.next_index < token_count)
     {
-        var function_node = parser.function(&token_consumer, types) catch |err| {
+        var function_node = parser.function(allocator, &token_consumer, types) catch |err| {
             parser.compiler.report_error("Couldn't parse the function\n", .{});
             std.os.exit(0);
         };

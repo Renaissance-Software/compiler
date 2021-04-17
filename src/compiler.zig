@@ -1,9 +1,14 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
+const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
+const _BucketArrayModule = @import("bucket_array.zig");
+const BucketArrayList = _BucketArrayModule.BucketArrayList;
 
-pub const KeywordID = enum {
+pub const KeywordID = enum
+{
     @"if",
     @"else",
     @"for",
@@ -13,8 +18,10 @@ pub const KeywordID = enum {
     @"return",
 };
 
-const TypeRefBuffer = std.ArrayList(*Type);
-pub const Type = struct {
+pub const TypeBuffer = BucketArrayList(Type, 64);
+pub const TypeRefBuffer = ArrayList(*Type);
+pub const Type = struct
+{
     value: Value,
     name: []const u8,
 
@@ -53,35 +60,50 @@ pub const Type = struct {
         count: u64,
     };
 
-    pub fn get_void_type(types: *std.ArrayList(Type)) ?*Type
+    pub fn get_void_type(types: *TypeBuffer) ?*Type
     {
-        for (types.items) |*t| {
-            if (t.value == Type.ID.void) {
-                return t;
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.void)
+                {
+                    return type_decl;
+                }
             }
         }
 
-        return null;
+        panic("Void type is not registered\n", .{});
     }
 
-    pub fn get_pointer_type(p_type: *Type, types: *std.ArrayList(Type)) *Type
+    pub fn get_pointer_type(p_type: *Type, types: *TypeBuffer) *Type
     {
         panic("Not implemented\n", .{});
     }
 
-    pub fn get_array_type(arr_type: *Type, count: usize, types: *std.ArrayList(Type)) *Type
+    pub fn get_array_type(arr_type: *Type, count: usize, types: *TypeBuffer) *Type
     {
-        for (types.items) |*type_decl|
+        for (types.list.items) |type_bucket|
         {
-            if (type_decl.value == Type.ID.array and type_decl == arr_type and type_decl.value.array.count == count)
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
             {
-                return type_decl;
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.array and type_decl == arr_type and type_decl.value.array.count == count)
+                {
+                    return type_decl;
+                }
             }
         }
 
-        const new_type = Type {
-            .value = Type.Value {
-                .array = Type.Array {
+        const new_type = Type
+        {
+            .value = Type.Value
+            {
+                .array = Type.Array
+                {
                     .type = arr_type,
                     .count = count,
                 },
@@ -89,45 +111,96 @@ pub const Type = struct {
             .name = undefined,
         };
 
-        types.append(new_type) catch |err| {
+        const result = types.append(new_type) catch |err| {
             panic("Failing to allocate a new type\n", .{});
         };
 
-        const result = &types.items[types.items.len - 1];
         return result;
     }
 
-    pub fn get_function_type(types: *std.ArrayList(Type), function_type: Function) *Type {
-        for (types.items) |*t| {
-            if (t.value == Type.ID.function and t.value.function.ret_type == function_type.ret_type and t.value.function.arg_types.items.len == function_type.arg_types.items.len) {
-                var i: usize = 0;
-                while (i < function_type.arg_types.items.len) {
-                    if (function_type.arg_types.items[i] == t.value.function.arg_types.items[i]) {
-                        return t;
+    pub fn find_type_slow(types: *TypeBuffer, type_to_find: *Type) ?*Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl == type_to_find)
+                {
+                    return type_decl;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    pub fn get_function_type(types: *TypeBuffer, function_type: Function) *Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.function and type_decl.value.function.ret_type == function_type.ret_type and type_decl.value.function.arg_types.items.len == function_type.arg_types.items.len)
+                {
+                    var i: usize = 0;
+                    while (i < function_type.arg_types.items.len)
+                    {
+                        if (function_type.arg_types.items[i] == type_decl.value.function.arg_types.items[i])
+                        {
+                            // @Info: this is the function type to be returned
+                            return type_decl;
+                        }
                     }
                 }
             }
         }
 
-        const type_value = Type.Value{
-            .function = function_type,
-        };
 
         const fn_type = Type{
-            .value = type_value,
+            .value = Type.Value {
+                .function = function_type,
+            },
             .name = undefined,
         };
 
-        types.append(fn_type) catch |err| {
+        assert(fn_type.value.function.ret_type.value == Type.ID.integer);
+
+        const result = types.append(fn_type) catch |err| {
             panic("Failed to allocate function type", .{});
         };
+        assert(fn_type.value.function.ret_type.value == Type.ID.integer);
 
-        const result = &types.items[types.items.len - 1];
+        print("Function type: {}", .{result.value.function.ret_type});
         return result;
     }
 
-    pub fn init(allocator: *Allocator) std.ArrayList(Type) {
-        var types = std.ArrayList(Type).init(allocator);
+    pub fn get_type_by_name(types: *TypeBuffer, name: []const u8) ?*Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (std.mem.eql(u8, type_decl.name, name))
+                {
+                    return type_decl;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    pub fn init(allocator: *Allocator) TypeBuffer
+    {
+        var types = TypeBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate type buffer\n", .{});
+        };
         const int_bits = [_]u8{ 8, 16, 32, 64 };
         const names = [8][]const u8{ "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64" };
         var bit_index: u64 = 0;
@@ -145,13 +218,13 @@ pub const Type = struct {
                 .value = t_type,
                 .name = names[bit_index * 2],
             };
-            types.append(integer_type) catch |err| {
+            _ = types.append(integer_type) catch |err| {
                 panic("Error allocating memory for primitive type\n", .{});
             };
 
             integer_type.value.integer.signed = true;
             integer_type.name = names[bit_index * 2 + 1];
-            types.append(integer_type) catch |err| {
+            _ = types.append(integer_type) catch |err| {
                 panic("Error allocating memory for primitive type\n", .{});
             };
         }
@@ -160,7 +233,8 @@ pub const Type = struct {
     }
 };
 
-pub const Compiler = struct {
+pub const Compiler = struct
+{
     errors_reported: bool,
     pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) void {
         self.errors_reported = true;

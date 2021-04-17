@@ -3,16 +3,19 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
 
 const Internal = @import("compiler.zig");
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
 
-const Type = struct {
+const Type = struct
+{
     name: []const u8,
     id: ID,
 
-    const ID = enum {
+    const ID = enum
+    {
         void,
         label,
         integer,
@@ -491,14 +494,14 @@ const OperatorBitCast = struct{
 };
 
 pub const Module = struct {
-    functions: std.ArrayList(Function),
+    functions: ArrayList(Function),
 };
 
 const Function = struct {
     base: Value,
     name: []const u8,
     type: *Type,
-    basic_blocks: std.ArrayList(*BasicBlock),
+    basic_blocks: ArrayList(*BasicBlock),
     arguments: []Argument,
     parent: *Module,
 
@@ -522,7 +525,7 @@ const Function = struct {
                 .type = ret_type,
                 .id = Value.ID.GlobalFunction,
             },
-            .basic_blocks = std.ArrayList(*BasicBlock).init(allocator),
+            .basic_blocks = ArrayList(*BasicBlock).init(allocator),
             .arguments = undefined, // @Info: this is defined later as the arguments are collected, and not in the function declaration
             .name = name,
             .type = type_expr,
@@ -540,7 +543,7 @@ const Instruction = struct
     id: ID,
     parent: *BasicBlock,
     value: InstructionValue,
-    operands: std.ArrayList(*Value),
+    operands: ArrayList(*Value),
 
     const InstructionValue = extern union {
         alloca: Alloca,
@@ -641,7 +644,7 @@ const BasicBlock = struct
 {
     base: Value,
     parent: *Function,
-    instructions: std.ArrayList(*Instruction),
+    instructions: ArrayList(*Instruction),
     use_count: u32,
 };
 
@@ -650,8 +653,8 @@ const Builder = struct
     context: *Context,
     current: ?*BasicBlock,
     function: *Function,
-    basic_block_buffer: *std.ArrayList(BasicBlock),
-    instruction_buffer: *std.ArrayList(Instruction),
+    basic_block_buffer: *ArrayList(BasicBlock),
+    instruction_buffer: *ArrayList(Instruction),
     module: *Module,
     next_alloca_index: usize,
     return_alloca: ?*Instruction,
@@ -668,7 +671,7 @@ const Builder = struct
                 .id = Value.ID.BasicBlock,
             },
             .parent = undefined,
-            .instructions = std.ArrayList(*Instruction).init(allocator),
+            .instructions = ArrayList(*Instruction).init(allocator),
             .use_count = 0,
         };
 
@@ -706,7 +709,7 @@ const Builder = struct
             .id = Instruction.ID.Alloca,
             .parent = undefined,
             .operands = undefined,
-            //.operands = std.ArrayList(*Value).init(allocator),
+            //.operands = ArrayList(*Value).init(allocator),
             .value = Instruction.InstructionValue
             {
                 .alloca = Instruction.Alloca {
@@ -756,7 +759,7 @@ const Builder = struct
                     .id = Value.ID.Instruction,
                 },
                 .id = Instruction.ID.Ret,
-                .operands = std.ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                     panic("Can't allocate memory for ret operands\n", .{});
             },
             .parent = undefined,
@@ -791,7 +794,7 @@ const Builder = struct
                     .id = Value.ID.Instruction,
                 },
                 .id = Instruction.ID.Br,
-                .operands = std.ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                     panic("Failed to allocate memory for br operand\n", .{});
                 },
                 .parent = undefined,
@@ -874,12 +877,12 @@ const Context = struct
     f32_type: FloatType,
     f64_type: FloatType,
 
-    function_types: std.ArrayList(FunctionType),
-    array_types: std.ArrayList(ArrayType),
-    pointer_types: std.ArrayList(PointerType),
-    constant_arrays: std.ArrayList(ConstantArray),
-    constant_ints: std.ArrayList(ConstantInt),
-    intrinsics: std.ArrayList(Intrinsic),
+    function_types: ArrayList(FunctionType),
+    array_types: ArrayList(ArrayType),
+    pointer_types: ArrayList(PointerType),
+    constant_arrays: ArrayList(ConstantArray),
+    constant_ints: ArrayList(ConstantInt),
+    intrinsics: ArrayList(Intrinsic),
 
     fn create(allocator: *Allocator) Context
     {
@@ -898,14 +901,14 @@ const Context = struct
         context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float" }, .bits = 32, };
         context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float" }, .bits = 64, };
 
-        context.function_types = std.ArrayList(FunctionType).init(allocator);
-        context.array_types = std.ArrayList(ArrayType).init(allocator);
-        context.pointer_types = std.ArrayList(PointerType).init(allocator);
+        context.function_types = ArrayList(FunctionType).init(allocator);
+        context.array_types = ArrayList(ArrayType).init(allocator);
+        context.pointer_types = ArrayList(PointerType).init(allocator);
 
-        context.constant_arrays = std.ArrayList(ConstantArray).init(allocator);
-        context.constant_ints = std.ArrayList(ConstantInt).init(allocator);
+        context.constant_arrays = ArrayList(ConstantArray).init(allocator);
+        context.constant_ints = ArrayList(ConstantInt).init(allocator);
 
-        context.intrinsics = std.ArrayList(Intrinsic).init(allocator);
+        context.intrinsics = ArrayList(Intrinsic).init(allocator);
 
         return context;
     }
@@ -1100,13 +1103,13 @@ fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type:
 }
 
 /// This function gets the compiler (AST-Lexer) type and transform it into a "LLVM" type
-fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type) *Type
+fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, ast_types: *Internal.TypeBuffer) *Type
 {
     switch (ast_type.value)
     {
         Internal.Type.ID.function => 
         {
-            const ret_type = get_type(allocator, context, ast_type.value.function.ret_type);
+            const ret_type = get_type(allocator, context, ast_type.value.function.ret_type, ast_types);
             const arg_count = ast_type.value.function.arg_types.items.len;
 
             for (context.function_types.items) |*function_type|
@@ -1125,7 +1128,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type) 
                 while (arg_i < arg_count) : (arg_i += 1)
                 {
                     const ast_arg_type = ast_type.value.function.arg_types.items[arg_i];
-                    const new_arg_type = get_type(allocator, context, ast_arg_type);
+                    const new_arg_type = get_type(allocator, context, ast_arg_type, ast_types);
                     const already_registered_arg_type = function_type.arg_types[arg_i];
                     if (new_arg_type == already_registered_arg_type)
                     {
@@ -1149,14 +1152,14 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type) 
 
             if (arg_count > 0)
             {
-                var arg_types = std.ArrayList(*Type).init(allocator);
+                var arg_types = ArrayList(*Type).init(allocator);
                 arg_types.resize(arg_count) catch |err| {
                     panic("Resize to {} elements failed for array slice for function argument types\n", .{arg_count});
                 };
 
                 for (ast_type.value.function.arg_types.items) |ast_arg_type|
                 {
-                    const new_arg_type = get_type(allocator, context, ast_arg_type);
+                    const new_arg_type = get_type(allocator, context, ast_arg_type, ast_types);
                     arg_types.append(new_arg_type) catch |err| {
                         panic("Failed to allocate memory for argument type\n", .{});
                     };
@@ -1183,10 +1186,10 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type) 
     }
 }
 
-pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
+pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
 {
     var module = Module {
-        .functions = std.ArrayList(Function).init(allocator),
+        .functions = ArrayList(Function).init(allocator),
     };
 
     var context = Context.create(allocator);
@@ -1195,17 +1198,16 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
     {
         assert(ast_function.value == Node.ID.function_decl);
         const ast_function_type = ast_function.value.function_decl.type;
-        assert(ast_function_type != null);
-        assert(ast_function_type.?.value == Internal.Type.ID.function);
+        assert(ast_function_type.value == Internal.Type.ID.function);
         // @TODO: get RNS function type
-        const function_type = get_type(allocator, &context, ast_function_type.?);
+        const function_type = get_type(allocator, &context, ast_function_type, ast_types);
         Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
     }
 
     assert(ast_function_declarations.len == module.functions.items.len);
 
-    var basic_block_buffer = std.ArrayList(BasicBlock).init(allocator);
-    var instruction_buffer = std.ArrayList(Instruction).init(allocator);
+    var basic_block_buffer = ArrayList(BasicBlock).init(allocator);
+    var instruction_buffer = ArrayList(Instruction).init(allocator);
 
     var function_index: u64 = 0;
 
@@ -1288,7 +1290,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
             }
         }
 
-        var argument_list = std.ArrayList(Function.Argument).init(allocator);
+        var argument_list = ArrayList(Function.Argument).init(allocator);
         if (arg_count > 0)
         {
             argument_list.resize(arg_count) catch |err| {
@@ -1301,7 +1303,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node) void
                 assert(ast_arg.value == Node.ID.var_decl);
                 assert(ast_arg.value.var_decl.is_function_arg);
                 const ast_arg_type = ast_arg.value.var_decl.var_type;
-                const arg_type = get_type(allocator, &context, ast_arg_type);
+                const arg_type = get_type(allocator, &context, ast_arg_type, ast_types);
 
                 const index = argument_list.items.len;
                 const arg = Function.Argument {
@@ -1404,7 +1406,7 @@ const SlotTracker = struct
     next_id : u64,
     not_used: u64,
     starting_id: u64,
-    map: std.ArrayList(*Value),
+    map: ArrayList(*Value),
 
     fn find(self: *SlotTracker, value: *Value) u64
     {
@@ -1432,7 +1434,7 @@ const SlotTracker = struct
 
 const BlockPrinter = struct
 {
-    instruction_printers: std.ArrayList(InstructionPrinter),
+    instruction_printers: ArrayList(InstructionPrinter),
     id: u64,
     block: *BasicBlock,
 
@@ -1454,7 +1456,7 @@ const InstructionPrinter = struct
 {
     ref: *Instruction,
     result: u64,
-    list_ref: *std.ArrayList(InstructionPrinter),
+    list_ref: *ArrayList(InstructionPrinter),
 
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
@@ -1495,7 +1497,7 @@ fn print_function(allocator: *Allocator, function: *Function) void
         .next_id = 0,
         .not_used = 0,
         .starting_id = 0,
-        .map = std.ArrayList(*Value).init(allocator),
+        .map = ArrayList(*Value).init(allocator),
     };
 
     for (function.arguments) |*argument|
@@ -1506,7 +1508,7 @@ fn print_function(allocator: *Allocator, function: *Function) void
     var foo_element : Value = undefined;
     _ = slot_tracker.new_id(&foo_element);
 
-    var block_printers = std.ArrayList(BlockPrinter).initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
+    var block_printers = ArrayList(BlockPrinter).initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
         panic("Failed to allocate block printers array\n", .{});
     };
 
@@ -1514,7 +1516,7 @@ fn print_function(allocator: *Allocator, function: *Function) void
     for (function.basic_blocks.items) |basic_block|
     {
         var block_printer = BlockPrinter {
-            .instruction_printers = std.ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
+            .instruction_printers = ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
                 panic("Failed to allocate memory for instruction printer buffer\n", .{});
             },
             .id = block_id_label: {
