@@ -40,7 +40,48 @@ pub const Token = struct
         type: *Type, // @ TODO: change this
         sign: u8,
         //intrinsic: u64, // @ TODO: change this
+
+        pub fn format(self: Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+        {
+            switch (self)
+            {
+                Token.Value.symbol =>
+                {
+                    try std.fmt.format(writer, "Value {c} .symbol = \"{s}\" {c}", .{'{', self.symbol, '}'});
+                },
+                Token.Value.str_lit =>
+                {
+                    try std.fmt.format(writer, "Value {c} .str_lit = \"{s}\" {c}", .{'{', self.str_lit, '}'});
+                },
+                Token.Value.int_lit =>
+                {
+                    try std.fmt.format(writer, "Value {c} .int_lit = {} {c}", .{'{', self.int_lit, '}'});
+                },
+                Token.Value.float_lit =>
+                {
+                    try std.fmt.format(writer, "Value {c} .float_lit = {} {c}", .{'{', self.float_lit, '}'});
+                },
+                Token.Value.char_lit =>
+                {
+                    try std.fmt.format(writer, "Value {c} .char_lit = '{c}' {c}", .{'{', self.char_lit, '}'});
+                },
+                Token.Value.keyword =>
+                {
+                    try std.fmt.format(writer, "Value {c} .keyword = {} {c}", .{'{', self.keyword, '}'});
+                },
+                Token.Value.type =>
+                {
+                    try std.fmt.format(writer, "Value {c} .type = {} {c}", .{'{', self.type, '}'});
+                },
+                Token.Value.sign =>
+                {
+                    try std.fmt.format(writer, "Value {c} .sign = {c} {c}", .{'{', self.sign, '}'});
+                },
+            }
+        }
     };
+
+
 };
 
 const Tokenizer = struct
