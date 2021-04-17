@@ -67,6 +67,28 @@ pub fn BucketArrayList(comptime T: type, comptime cap: usize) type
             };
         }
 
+        pub fn len(self: *Self) u64
+        {
+            return (self.current_index * 64) + self.list.items[self.current_index].len;
+        }
+
+        pub fn get(self: *Self, index: u64) ?*T
+        {
+            const bucket_index = index / cap;
+            if (bucket_index <= self.current_index)
+            {
+                const bucket = &self.list.items[bucket_index];
+                const element_index = index % cap;
+                if (element_index < bucket.len)
+                {
+                    const result = &bucket.items[element_index];
+                    return result;
+                }
+            }
+
+            return null;
+        }
+
         pub fn init(allocator: *Allocator) !Self
         {
             var bucket_arraylist = Self {

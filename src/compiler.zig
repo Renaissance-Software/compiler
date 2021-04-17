@@ -118,24 +118,6 @@ pub const Type = struct
         return result;
     }
 
-    pub fn find_type_slow(types: *TypeBuffer, type_to_find: *Type) ?*Type
-    {
-        for (types.list.items) |type_bucket|
-        {
-            var index : u64 = 0;
-            while (index < type_bucket.len) : (index += 1)
-            {
-                const type_decl = &type_bucket.items[index];
-                if (type_decl == type_to_find)
-                {
-                    return type_decl;
-                }
-            }
-        }
-
-        return null;
-    }
-
     pub fn get_function_type(types: *TypeBuffer, function_type: Function) *Type
     {
         for (types.list.items) |type_bucket|

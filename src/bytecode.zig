@@ -5,9 +5,12 @@ const print = std.debug.print;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
+const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
+
 const Internal = @import("compiler.zig");
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
+
 
 const Type = struct
 {
@@ -161,17 +164,20 @@ const Value = struct
     }
 };
 
-const ConstantArray = struct {
+const ConstantArray = struct
+{
     base: Value,
     array_type: *Type,
     array_values: []*Value,
 };
 
-const Intrinsic = struct {
+const Intrinsic = struct
+{
     base: Value,
     id: ID,
 
-    const ID = enum(u16) {
+    const ID = enum(u16)
+    {
         addressofreturnaddress = 1, // llvm.addressofreturnaddress
         adjust_trampoline, // llvm.adjust.trampoline
         annotation, // llvm.annotation
@@ -469,7 +475,8 @@ const Intrinsic = struct {
     };
 };
 
-const ConstantInt = struct{
+const ConstantInt = struct
+{
     base: Value,
     int_value: u64,
     bit_count: u32,
@@ -488,16 +495,21 @@ const ConstantInt = struct{
     }
 };
 
-const OperatorBitCast = struct{
+const OperatorBitCast = struct
+{
     base: Value,
     cast_value: *Value,
 };
 
-pub const Module = struct {
-    functions: ArrayList(Function),
+const FunctionBuffer = BucketArrayList(Function, 64);
+pub const Module = struct
+{
+    // @TODO: convert to bucket array
+    functions: FunctionBuffer,
 };
 
-const Function = struct {
+const Function = struct
+{
     base: Value,
     name: []const u8,
     type: *Type,
@@ -505,7 +517,8 @@ const Function = struct {
     arguments: []Argument,
     parent: *Module,
 
-    const Argument = struct {
+    const Argument = struct
+    {
         base: Value,
         arg_index: usize,
 
@@ -531,7 +544,7 @@ const Function = struct {
             .type = type_expr,
             .parent = module,
         };
-        module.functions.append(function_value) catch |err| {
+        _ = module.functions.append(function_value) catch |err| {
             panic("Cannot allocate memory for bytecode function\n", .{});
         };
     }
@@ -648,13 +661,20 @@ const BasicBlock = struct
     use_count: u32,
 };
 
+const BlockBuffer = BucketArrayList(BasicBlock, 64);
+const InstructionBuffer = BucketArrayList(Instruction, 64);
+
 const Builder = struct
 {
     context: *Context,
     current: ?*BasicBlock,
     function: *Function,
-    basic_block_buffer: *ArrayList(BasicBlock),
-    instruction_buffer: *ArrayList(Instruction),
+
+    // @TODO: convert to bucket array
+    basic_block_buffer: *BlockBuffer,
+    // @TODO: convert to bucket array
+    instruction_buffer: *InstructionBuffer,
+
     module: *Module,
     next_alloca_index: usize,
     return_alloca: ?*Instruction,
@@ -675,10 +695,9 @@ const Builder = struct
             .use_count = 0,
         };
 
-        self.basic_block_buffer.append(basic_block_value) catch |err| {
+        const result = self.basic_block_buffer.append(basic_block_value) catch |err| {
             panic("Couldn't allocate memory for basic block\n", .{});
         };
-        const result = &self.basic_block_buffer.items[self.basic_block_buffer.items.len - 1];
         return result;
     }
 
@@ -718,11 +737,10 @@ const Builder = struct
             }
         };
 
-        self.instruction_buffer.append(instruction) catch |err| {
+        const result = self.instruction_buffer.append(instruction) catch |err| {
             panic("Failed to allocate memory for instruction\n", .{});
         };
 
-        const result = &self.instruction_buffer.items[self.instruction_buffer.items.len - 1];
         var entry_block = self.function.basic_blocks.items[0];
         entry_block.instructions.insert(self.next_alloca_index, result) catch |err| {
             panic("Failed to insert alloca instruction reference inside the entry block\n", .{});
@@ -761,7 +779,7 @@ const Builder = struct
                 .id = Instruction.ID.Ret,
                 .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                     panic("Can't allocate memory for ret operands\n", .{});
-            },
+                },
             .parent = undefined,
             .value = undefined,
             };
@@ -847,10 +865,9 @@ const Builder = struct
     {
         if (self.current) |current|
         {
-            self.instruction_buffer.append(instruction) catch |err| {
+            const result = self.instruction_buffer.append(instruction) catch |err| {
                 panic("Failed to allocate memory for instruction\n", .{});
             };
-            const result = &self.instruction_buffer.items[self.instruction_buffer.items.len - 1];
             current.instructions.append(result) catch |err| {
                 panic("Failed to allocate memory for instruction\n", .{});
             };
@@ -865,6 +882,13 @@ const Builder = struct
     }
 };
 
+const FunctionTypeBuffer   = BucketArrayList(FunctionType, 64);
+const ArrayTypeBuffer      = BucketArrayList(ArrayType, 64);
+const PointerTypeBuffer    = BucketArrayList(PointerType, 64);
+const ConstantArrayBuffer  = BucketArrayList(ConstantArray, 64);
+const ConstantIntBuffer    = BucketArrayList(ConstantInt, 64);
+const IntrinsicBuffer      = BucketArrayList(Intrinsic, 64);
+
 const Context = struct
 {
     void_type: Type,
@@ -877,12 +901,18 @@ const Context = struct
     f32_type: FloatType,
     f64_type: FloatType,
 
-    function_types: ArrayList(FunctionType),
-    array_types: ArrayList(ArrayType),
-    pointer_types: ArrayList(PointerType),
-    constant_arrays: ArrayList(ConstantArray),
-    constant_ints: ArrayList(ConstantInt),
-    intrinsics: ArrayList(Intrinsic),
+    // @TODO: convert to bucket array
+    function_types: FunctionTypeBuffer,
+    // @TODO: convert to bucket array
+    array_types: ArrayTypeBuffer,
+    // @TODO: convert to bucket array
+    pointer_types: PointerTypeBuffer,
+    // @TODO: convert to bucket array
+    constant_arrays: ConstantArrayBuffer,
+    // @TODO: convert to bucket array
+    constant_ints: ConstantIntBuffer,
+    // @TODO: convert to bucket array
+    intrinsics: IntrinsicBuffer,
 
     fn create(allocator: *Allocator) Context
     {
@@ -901,14 +931,25 @@ const Context = struct
         context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float" }, .bits = 32, };
         context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float" }, .bits = 64, };
 
-        context.function_types = ArrayList(FunctionType).init(allocator);
-        context.array_types = ArrayList(ArrayType).init(allocator);
-        context.pointer_types = ArrayList(PointerType).init(allocator);
+        context.function_types  = FunctionTypeBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.array_types     = ArrayTypeBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.pointer_types   = PointerTypeBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.constant_arrays = ConstantArrayBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.constant_ints   = ConstantIntBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.intrinsics      = IntrinsicBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
 
-        context.constant_arrays = ArrayList(ConstantArray).init(allocator);
-        context.constant_ints = ArrayList(ConstantInt).init(allocator);
-
-        context.intrinsics = ArrayList(Intrinsic).init(allocator);
 
         return context;
     }
@@ -940,11 +981,17 @@ const Context = struct
     
     fn get_pointer_type(self: *Context, p_type: *Type) *Type
     {
-        for (self.pointer_types.items) |*pointer_type|
+        for (self.pointer_types.list.items) |pointer_type_bucket|
         {
-            if (pointer_type.type == p_type)
+            var type_index : u64 = 0;
+
+            while (type_index < pointer_type_bucket.len) : (type_index += 1)
             {
-                return @ptrCast(*Type, pointer_type);
+                const pointer_type = &pointer_type_bucket.items[type_index];
+                if (pointer_type.type == p_type)
+                {
+                    return @ptrCast(*Type, pointer_type);
+                }
             }
         }
 
@@ -957,11 +1004,10 @@ const Context = struct
             .type = p_type,
         };
 
-        self.pointer_types.append(pointer_type_value) catch |err| {
+        const result = self.pointer_types.append(pointer_type_value) catch |err| {
             panic("Failed to allocate memory for pointer type\n", .{});
         };
 
-        const result = &self.pointer_types.items[self.pointer_types.items.len - 1];
         return @ptrCast(*Type, result);
     }
 
@@ -982,10 +1028,9 @@ const Context = struct
             .is_signed = is_signed,
         };
 
-        self.constant_ints.append(new_int) catch |err| {
+        const result = self.constant_ints.append(new_int) catch |err| {
             panic("Fail to allocate memory for constant int\n", .{});
         };
-        const result = &self.constant_ints.items[self.constant_ints.items.len - 1];
         return result;
     }
 };
@@ -1112,33 +1157,40 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const ret_type = get_type(allocator, context, ast_type.value.function.ret_type, ast_types);
             const arg_count = ast_type.value.function.arg_types.items.len;
 
-            for (context.function_types.items) |*function_type|
+            // @Info: Iterate over the bucket array
+            //
+            for (context.function_types.list.items) |function_type_bucket|
             {
-                if (ret_type != function_type.ret_type)
+                var elem_index : u64 = 0;
+                while (elem_index < function_type_bucket.len) : (elem_index += 1)
                 {
-                    continue;
-                }
-
-                if (arg_count != function_type.arg_types.len)
-                {
-                    continue;
-                }
-
-                var arg_i : u64 = 0;
-                while (arg_i < arg_count) : (arg_i += 1)
-                {
-                    const ast_arg_type = ast_type.value.function.arg_types.items[arg_i];
-                    const new_arg_type = get_type(allocator, context, ast_arg_type, ast_types);
-                    const already_registered_arg_type = function_type.arg_types[arg_i];
-                    if (new_arg_type == already_registered_arg_type)
+                    const function_type = &function_type_bucket.items[elem_index];
+                    if (ret_type != function_type.ret_type)
                     {
                         continue;
                     }
 
-                    break;
-                }
+                    if (arg_count != function_type.arg_types.len)
+                    {
+                        continue;
+                    }
 
-                return @ptrCast(*Type, function_type);
+                    var arg_i : u64 = 0;
+                    while (arg_i < arg_count) : (arg_i += 1)
+                    {
+                        const ast_arg_type = ast_type.value.function.arg_types.items[arg_i];
+                        const new_arg_type = get_type(allocator, context, ast_arg_type, ast_types);
+                        const already_registered_arg_type = function_type.arg_types[arg_i];
+                        if (new_arg_type == already_registered_arg_type)
+                        {
+                            continue;
+                        }
+
+                        break;
+                    }
+
+                    return @ptrCast(*Type, function_type);
+                }
             }
 
             var function_type = FunctionType {
@@ -1168,13 +1220,13 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
                 function_type.arg_types = arg_types.items;
             }
 
-            context.function_types.append(function_type) catch |err| {
+            const result = context.function_types.append(function_type) catch |err| {
                 panic("Failed to allocate function type\n", .{});
             };
-            const result = &context.function_types.items[context.function_types.items.len - 1];
             return @ptrCast(*Type, result);
         },
-        Internal.Type.ID.integer => {
+        Internal.Type.ID.integer =>
+        {
             const bits = ast_type.value.integer.bits;
             const result = context.get_integer_type(bits);
             return result;
@@ -1189,7 +1241,9 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
 pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
 {
     var module = Module {
-        .functions = ArrayList(Function).init(allocator),
+        .functions = FunctionBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate function bucket array\n", .{});
+        },
     };
 
     var context = Context.create(allocator);
@@ -1204,17 +1258,22 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
         Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
     }
 
-    assert(ast_function_declarations.len == module.functions.items.len);
+    assert(ast_function_declarations.len == module.functions.len());
 
-    var basic_block_buffer = ArrayList(BasicBlock).init(allocator);
-    var instruction_buffer = ArrayList(Instruction).init(allocator);
+    var basic_block_buffer = BlockBuffer.init(allocator) catch |block_err| {
+        panic("Couldn't allocate big block buffer\n", .{});
+    };
+    var instruction_buffer = InstructionBuffer.init(allocator) catch |instr_err| {
+        panic("Couldn't allocate big instruction buffer\n", .{});
+    };
 
     var function_index: u64 = 0;
 
     while (function_index < ast_function_declarations.len) : (function_index += 1) 
     {
         const ast_function = ast_function_declarations[function_index];
-        var function = &module.functions.items[function_index];
+        // @TODO: code this access faster
+        var function = module.functions.get(function_index).?;
 
         var builder = Builder {
             .context = &context,
@@ -1434,6 +1493,7 @@ const SlotTracker = struct
 
 const BlockPrinter = struct
 {
+    // @TODO: does this need pointer stability
     instruction_printers: ArrayList(InstructionPrinter),
     id: u64,
     block: *BasicBlock,
@@ -1456,6 +1516,7 @@ const InstructionPrinter = struct
 {
     ref: *Instruction,
     result: u64,
+    // @TODO: does this need pointer stability
     list_ref: *ArrayList(InstructionPrinter),
 
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void

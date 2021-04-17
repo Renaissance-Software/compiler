@@ -1,10 +1,11 @@
-// Parser
 const std = @import("std");
 const assert = std.debug.assert;
 const print = std.debug.print;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+
+const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 
 const Internal = @import("compiler.zig");
 const Type = Internal.Type;
@@ -16,36 +17,43 @@ const Lexer = @import("lexer.zig");
 const Token = Lexer.Token;
 const LexerResult = Lexer.LexerResult;
 const NodeRefBuffer = ArrayList(*Node);
+const NodeBuffer = BucketArrayList(Node, 64);
 
-const IntegerLiteral = struct {
+const IntegerLiteral = struct
+{
     value: u64,
     bit_count: u16,
     signed: bool,
     // padding
 };
 
-const UnaryExpression = struct {
+const UnaryExpression = struct
+{
     node_ref: *Node,
     id: ID,
     location: Location,
 
-    const ID = enum {
+    const ID = enum
+    {
         AddressOf,
         PointerDereference,
     };
-    const Location = enum {
+    const Location = enum
+    {
         Prefix,
         Postfix,
     };
 };
 
-const BinaryExpression = struct {
+const BinaryExpression = struct
+{
     left: *Node,
     right: *Node,
     id: ID,
     parenthesis: bool,
 
-    const ID = enum {
+    const ID = enum
+    {
         Plus,
         Minus,
         Multiplication,
@@ -61,16 +69,19 @@ const BinaryExpression = struct {
     };
 };
 
-const ReturnExpression = struct {
+const ReturnExpression = struct
+{
     expression: ?*Node,
 };
 
 // @Info: Variable expression must reference a variable declaration (in which function arguments are included)
-const VariableExpression = struct {
+const VariableExpression = struct
+{
     declaration: *Node,
 };
 
-const BlockExpression = struct {
+const BlockExpression = struct
+{
     statements: NodeRefBuffer,
     id: ID,
 
@@ -84,7 +95,8 @@ const BlockExpression = struct {
     };
 };
 
-const VariableDeclaration = struct {
+const VariableDeclaration = struct
+{
     name: []const u8,
     var_type: *Type,
     var_value: *Node,
@@ -93,14 +105,16 @@ const VariableDeclaration = struct {
     is_function_arg: bool,
 };
 
-const BranchExpression = struct {
+const BranchExpression = struct
+{
     condition: *Node,
     if_block: *Node,
     else_block: *Node,
     exit_block_ref: *void,
 };
 
-const LoopExpression = struct {
+const LoopExpression = struct
+{
     prefix: *Node,
     body: *Node,
     postfix: *Node,
@@ -109,12 +123,14 @@ const LoopExpression = struct {
 };
 
 // @TODO: improve this one
-const BreakExpression = struct {
+const BreakExpression = struct
+{
     target: *Node,
     origin: *Node,
 };
 
-const FunctionDeclaration = struct {
+const FunctionDeclaration = struct
+{
     blocks: NodeRefBuffer,
     arguments: NodeRefBuffer,
     variables: NodeRefBuffer,
@@ -122,22 +138,26 @@ const FunctionDeclaration = struct {
     type: *Type,
 };
 
-const InvokeExpression = struct {
+const InvokeExpression = struct
+{
     arguments: NodeRefBuffer,
     expression: *Node,
 };
 
-const SubscriptExpression = struct {
+const SubscriptExpression = struct
+{
     expression: *Node,
     index: *Node,
 };
 
-const ArrayLiteral = struct {
+const ArrayLiteral = struct
+{
     elements: NodeRefBuffer,
     type_expression: *Type,
 };
 
-pub const Node = struct {
+pub const Node = struct
+{
     value: Value,
     parent: ?*Node,
     value_type: ValueType,
@@ -273,7 +293,7 @@ const TokenConsumer = struct
 
 const Parser = struct
 {
-    nb: ArrayList(Node),
+    nb: NodeBuffer,
     current_function: ?*Node,
     current_block: ?*Node,
 
@@ -281,12 +301,11 @@ const Parser = struct
 
     compiler: *Compiler,
 
-    fn append_and_get_ref(self: *Parser, node: Node) *Node
+    fn append_and_get(self: *Parser, node: Node) *Node
     {
-        self.nb.append(node) catch |err| {
+        const result = self.nb.append(node) catch |err| {
             panic("Couldn't allocate memory for node", .{});
         };
-        const result = &self.nb.items[self.nb.items.len - 1];
         return result;
     }
 
@@ -312,7 +331,7 @@ const Parser = struct
                     .parent = parent_node,
                 };
 
-                return self.append_and_get_ref(int_lit_node);
+                return self.append_and_get(int_lit_node);
             },
             Token.ID.sign => {
                 panic("Not implemented: {c}\n", .{token.value.sign});
@@ -455,7 +474,7 @@ const Parser = struct
             .parent = parent_node,
         };
 
-        var return_node = self.append_and_get_ref(return_node_value);
+        var return_node = self.append_and_get(return_node_value);
         const ret_expr = self.expression(consumer, types, return_node);
         if (ret_expr != null) {
             return_node.value.return_expr.expression = ret_expr.?;
@@ -587,7 +606,7 @@ const Parser = struct
             .value_type = Node.ValueType.LValue,
         };
 
-        var function_node = self.append_and_get_ref(function_node_value);
+        var function_node = self.append_and_get(function_node_value);
         self.current_function = function_node;
 
         var function_type = Type.Function {
@@ -681,7 +700,7 @@ const Parser = struct
             },
         };
 
-        var block_node = self.append_and_get_ref(block_node_value);
+        var block_node = self.append_and_get(block_node_value);
         self.current_function.?.value.function_decl.blocks.append(block_node) catch |err| {
             panic("Failed to allocate memory for block node reference\n", .{});
         };
@@ -694,7 +713,6 @@ const Parser = struct
 
 pub const ParserResult = struct
 {
-    node_buffer: []Node,
     function_declarations: []*Node,
 };
 
@@ -709,7 +727,9 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     };
 
     var parser = Parser{
-        .nb = ArrayList(Node).init(allocator),
+        .nb = NodeBuffer.init(allocator) catch |err| {
+            panic("Couldn't allocate the bucket node buffer\n", .{});
+        },
         .current_function = null,
         .current_block = null,
         .compiler = compiler,
@@ -734,7 +754,6 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     }
 
     const result = ParserResult {
-        .node_buffer = parser.nb.items,
         .function_declarations = parser.function_declarations.items,
     };
 
