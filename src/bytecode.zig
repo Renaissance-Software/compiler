@@ -1100,9 +1100,12 @@ fn introspect_for_allocas(builder: *Builder, ast_block: *Node) bool
             {
                 return true;
             }
-            if (introspect_for_allocas(builder, ast_statement.value.branch_expr.else_block))
+            if (ast_statement.value.branch_expr.else_block) |ast_else_block|
             {
-                return true;
+                if (introspect_for_allocas(builder, ast_else_block))
+                {
+                    return true;
+                }
             }
         }
         else if (ast_statement.value == Node.ID.loop_expr)
@@ -1414,10 +1417,13 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
                         builder.explicit_return = true;
                         break;
                     }
-                    if (introspect_for_allocas(&builder, ast_statement.value.branch_expr.else_block))
+                    if (ast_statement.value.branch_expr.else_block) |ast_else_block|
                     {
-                        builder.explicit_return = true;
-                        break;
+                        if (introspect_for_allocas(&builder, ast_else_block))
+                        {
+                            builder.explicit_return = true;
+                            break;
+                        }
                     }
                 },
                 Node.ID.loop_expr =>
