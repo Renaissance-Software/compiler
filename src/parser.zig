@@ -101,7 +101,7 @@ const VariableDeclaration = struct
     var_type: *Type,
     var_value: *Node,
     var_scope: *Node,
-    backend_ref: *void,
+    backend_ref: usize,
     is_function_arg: bool,
 };
 
@@ -162,7 +162,8 @@ pub const Node = struct
     parent: ?*Node,
     value_type: ValueType,
 
-    pub const Value = union(ID) {
+    pub const Value = union(ID)
+    {
         var_decl: VariableDeclaration,
         function_decl: FunctionDeclaration,
         int_lit: IntegerLiteral,
@@ -179,7 +180,8 @@ pub const Node = struct
         subscript_expr: SubscriptExpression,
     };
 
-    pub const ID = enum {
+    pub const ID = enum
+    {
         var_decl,
         function_decl,
         int_lit,
@@ -196,7 +198,8 @@ pub const Node = struct
         subscript_expr,
     };
 
-    pub const ValueType = enum {
+    pub const ValueType = enum
+    {
         RValue,
         LValue,
     };

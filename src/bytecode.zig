@@ -156,9 +156,20 @@ const Value = struct
                 const constant_int = @ptrCast(*const ConstantInt, self);
                 try std.fmt.format(writer, "{}", .{constant_int});
             },
+            Value.ID.Instruction =>
+            {
+                const instruction = @ptrCast(*const Instruction, self);
+                switch (instruction.id)
+                {
+                    else =>
+                    {
+                        panic("Instruction value printing not implemented: {}\n", .{instruction.id});
+                    }
+                }
+            },
             else =>
             {
-                panic("Not implemented\n", .{});
+                panic("Not implemented: {}\n", .{self.id});
             }
         }
     }
@@ -504,7 +515,6 @@ const OperatorBitCast = struct
 const FunctionBuffer = BucketArrayList(Function, 64);
 pub const Module = struct
 {
-    // @TODO: convert to bucket array
     functions: FunctionBuffer,
 };
 
@@ -670,9 +680,7 @@ const Builder = struct
     current: ?*BasicBlock,
     function: *Function,
 
-    // @TODO: convert to bucket array
     basic_block_buffer: *BlockBuffer,
-    // @TODO: convert to bucket array
     instruction_buffer: *InstructionBuffer,
 
     module: *Module,
@@ -751,14 +759,53 @@ const Builder = struct
         return result;
     }
 
-    fn create_store(self: *Builder, value: *Value, ptr: *Value) *Instruction
+    fn create_store(self: *Builder, allocator: *Allocator, value: *Value, ptr: *Value) *Instruction
     {
-        panic("Not implemented\n", .{});
+        var i = Instruction
+        {
+            .base = Value {
+                .type = self.context.get_void_type(),
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.Store,
+            .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
+                panic("Can't allocate memory for ret operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+
+        i.operands.append(value) catch |err| {
+            panic("Failed to allocate memory for store value operand\n", .{});
+        };
+        i.operands.append(ptr) catch |err| {
+            panic("Failed to allocate memory for store pointer operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
     }
 
-    fn create_load(self: *Builder, load_type: *Type, value: *Value) *Instruction
+    fn create_load(self: *Builder, allocator: *Allocator, load_type: *Type, value: *Value) *Instruction
     {
-        panic("Not implemented\n", .{});
+        var i = Instruction
+        {
+            .base = Value {
+                .type = load_type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.Load,
+            .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                panic("Can't allocate memory for ret operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+
+        i.operands.append(value) catch |err| {
+            panic("Failed to allocate memory for store value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
     }
 
     fn create_ret(self: *Builder, allocator: *Allocator, value: *Value) *Instruction
@@ -901,17 +948,11 @@ const Context = struct
     f32_type: FloatType,
     f64_type: FloatType,
 
-    // @TODO: convert to bucket array
     function_types: FunctionTypeBuffer,
-    // @TODO: convert to bucket array
     array_types: ArrayTypeBuffer,
-    // @TODO: convert to bucket array
     pointer_types: PointerTypeBuffer,
-    // @TODO: convert to bucket array
     constant_arrays: ConstantArrayBuffer,
-    // @TODO: convert to bucket array
     constant_ints: ConstantIntBuffer,
-    // @TODO: convert to bucket array
     intrinsics: IntrinsicBuffer,
 
     fn create(allocator: *Allocator) Context
@@ -1066,7 +1107,7 @@ fn introspect_for_allocas(builder: *Builder, ast_block: *Node) bool
     return false;
 }
 
-fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type: ?*Type) ?*Value
+fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type) ?*Value
 {
     switch (node.value)
     {
@@ -1076,7 +1117,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type:
             {
                 if (!builder.emitted_return)
                 {
-                    _ = do_node(allocator, builder, ast_statement, null);
+                    _ = do_node(allocator, builder, ast_types, ast_statement, null);
                 }
             }
         },
@@ -1091,13 +1132,13 @@ fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type:
                 builder.explicit_return = true;
 
                 // @TODO: typecheck return expression with return type
-                if (do_node(allocator, builder, ast_return_expression, null)) |ret_value|
+                if (do_node(allocator, builder, ast_types, ast_return_expression, null)) |ret_value|
                 {
                     if (builder.conditional_alloca)
                     {
                         assert(builder.return_alloca != null);
                         assert(builder.exit_block != null);
-                        _ = builder.create_store(ret_value, @ptrCast(*Value, builder.return_alloca));
+                        _ = builder.create_store(allocator, ret_value, @ptrCast(*Value, builder.return_alloca));
                         _ = builder.create_br(allocator, builder.exit_block.?);
                     }
                     else
@@ -1130,12 +1171,54 @@ fn do_node(allocator: *Allocator, builder: *Builder, node: *Node, expected_type:
             const result = builder.context.get_constant_int(builder.context.get_integer_type(32), node.value.int_lit.value, node.value.int_lit.signed);
             return @ptrCast(*Value, result);
         },
-        Node.ID.var_decl => panic("Not implemented\n", .{}),
+        Node.ID.var_decl => 
+        {
+            const ast_type = node.value.var_decl.var_type;
+            const rns_type = get_type(allocator, builder.context, ast_type, ast_types);
+            // @TODO: for arrays, consider creating an array alloca
+            // @TODO: verify that LLVM indeed does this
+            const var_alloca = builder.create_alloca(rns_type, null);
+            node.value.var_decl.backend_ref = @ptrToInt(var_alloca);
+
+            const value_node = node.value.var_decl.var_value;
+            // @TODO: assert that the value is not null: maybe turn into optional pointer?
+            // assert(value_node != 0);
+
+            switch (rns_type.id)
+            {
+                Type.ID.array =>
+                {
+                    // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
+                    panic("Variable declarations of type array are not implemented yet\n", .{});
+                },
+                else =>
+                {
+                    const value_result = do_node(allocator, builder, ast_types, value_node, rns_type);
+                    if (value_result) |value|
+                    {
+                        _ = builder.create_store(allocator, value, @ptrCast(*Value, var_alloca));
+                    }
+                    else
+                    {
+                        panic("Couldn't find value for variable declaration\n", .{});
+                    }
+                },
+            }
+        },
+        Node.ID.var_expr =>
+        {
+            const ast_declaration = node.value.var_expr.declaration;
+            const alloca_ptr = @intToPtr(*Value, ast_declaration.value.var_decl.backend_ref);
+            const ast_type = ast_declaration.value.var_decl.var_type;
+            const var_type = get_type(allocator, builder.context, ast_type, ast_types);
+
+            const var_load = builder.create_load(allocator, var_type, alloca_ptr);
+            return @ptrCast(*Value, var_load);
+        },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         Node.ID.array_lit => panic("Not implemented\n", .{}),
         Node.ID.unary_expr => panic("Not implemented\n", .{}),
         Node.ID.binary_expr => panic("Not implemented\n", .{}),
-        Node.ID.var_expr => panic("Not implemented\n", .{}),
         Node.ID.invoke_expr => panic("Not implemented\n", .{}),
         Node.ID.branch_expr => panic("Not implemented\n", .{}),
         Node.ID.loop_expr => panic("Not implemented\n", .{}),
@@ -1374,19 +1457,19 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
                 };
 
                 const arg_alloca = builder.create_alloca(arg_type, null);
-                ast_arg.value.var_decl.backend_ref = @ptrCast(*void, arg_alloca);
+                ast_arg.value.var_decl.backend_ref = @ptrToInt(arg_alloca);
 
                 argument_list.append(arg) catch |err| {
                     panic("Error allocating argument in function\n", .{});
                 };
                 const arg_ref = &argument_list.items[index];
-                _ = builder.create_store(@ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
+                _ = builder.create_store(allocator, @ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
             }
         }
 
         builder.function.arguments = argument_list.items;
 
-        _ = do_node(allocator, &builder, ast_main_block, null);
+        _ = do_node(allocator, &builder, ast_types, ast_main_block, null);
 
         if (builder.conditional_alloca)
         {
@@ -1398,7 +1481,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
             builder.append_to_current_function(builder.exit_block.?);
             builder.set_block(builder.exit_block.?);
 
-            const loaded_return = builder.create_load(builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
+            const loaded_return = builder.create_load(allocator, builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
             _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
         }
         else if (!returns_something)
@@ -1519,34 +1602,67 @@ const InstructionPrinter = struct
     // @TODO: does this need pointer stability
     list_ref: *ArrayList(InstructionPrinter),
 
+    // @TODO: add align
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         switch (self.ref.id)
         {
             Instruction.ID.Ret =>
             {
+                try writer.writeAll("return ");
                 if (self.ref.operands.items.len != 0)
                 {
                     const return_value_operand = self.ref.operands.items[0];
-                    if (return_value_operand.id != Value.ID.Instruction)
-                    {
-                        // @Info: this calls Value formatter
-                        try std.fmt.format(writer, "ret {}", .{return_value_operand});
-                    }
-                    else
-                    {
-                        panic("Not implemented: instruction operand\n", .{});
-                    }
+                    try self.value_format(return_value_operand, fmt, options, writer);
                 }
                 else
                 {
-                    try writer.writeAll("ret void");
+                    try writer.writeAll("void");
                 }
+            },
+            Instruction.ID.Alloca =>
+            {
+                try std.fmt.format(writer, "%{} = alloca {}", .{self.result, self.ref.value.alloca.type});
+            },
+            Instruction.ID.Store =>
+            {
+                try writer.writeAll("store ");
+                const operands = self.ref.operands.items;
+                assert(operands.len == 2);
+                try self.value_format(operands[0], fmt, options, writer);
+                try writer.writeAll(", ");
+                try self.value_format(operands[1], fmt, options, writer);
+            },
+            Instruction.ID.Load =>
+            {
+                try std.fmt.format(writer, "%{} = load {}, ", .{self.result, self.ref.base.type});
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
             },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.ref.id});
             }
+        }
+    }
+
+    fn value_format(self: *const InstructionPrinter, value: *Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        if (value.id == Value.ID.Instruction)
+        {
+            const instruction = @ptrCast(*Instruction, value);
+            for (self.list_ref.items) |instruction_printer|
+            {
+                if (instruction == instruction_printer.ref)
+                {
+                    try std.fmt.format(writer, "{} %{}", .{instruction.base.type, instruction_printer.result});
+                    return;
+                }
+            }
+            panic("Instruction was not found\n", .{});
+        }
+        else
+        {
+            try std.fmt.format(writer, "{}", .{value});
         }
     }
 };
@@ -1604,10 +1720,16 @@ fn print_function(allocator: *Allocator, function: *Function) void
             };
             switch (instruction.id)
             {
-                Instruction.ID.Ret => {
+                Instruction.ID.Ret,
+                Instruction.ID.Alloca,
+                Instruction.ID.Load,
+                =>
+                {
                     instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
                 },
-                else => {
+                Instruction.ID.Store => { },
+                else =>
+                {
                     panic("Not implemented: {}\n", .{instruction.id});
                 }
             }
