@@ -808,31 +808,41 @@ const Builder = struct
         return self.insert_at_the_end(i);
     }
 
-    fn create_ret(self: *Builder, allocator: *Allocator, value: *Value) *Instruction
+    fn create_ret(self: *Builder, allocator: *Allocator, maybe_value: ?*Value) *Instruction
     {
         const function_type = @ptrCast(*FunctionType, self.function.type);
-
         const function_ret_type = function_type.ret_type;
-        assert(function_ret_type == value.type);
 
         if (!self.is_terminated())
         {
             var i = Instruction
             {
                 .base = Value {
-                    .type = value.type,
+                    .type = undefined,
                     .id = Value.ID.Instruction,
                 },
                 .id = Instruction.ID.Ret,
-                .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
-                    panic("Can't allocate memory for ret operands\n", .{});
-                },
-            .parent = undefined,
-            .value = undefined,
+                .operands = ArrayList(*Value).init(allocator),
+                .parent = undefined,
+                .value = undefined,
             };
-            i.operands.append(value) catch |err| {
-                panic("Failed to allocate memory for ret operand\n", .{});
-            };
+
+            if (maybe_value) |value|
+            {
+                assert(function_ret_type == value.type);
+                i.base.type = value.type;
+                i.operands.resize(1) catch |err| {
+                    panic("Failed to allocate memory for ret operand\n", .{});
+                };
+                i.operands.append(value) catch |err| {
+                    panic("Failed to allocate memory for ret operand\n", .{});
+                };
+            }
+            else
+            {
+                assert(function_ret_type.id == Type.ID.void);
+                i.base.type = self.context.get_void_type();
+            }
 
             return self.insert_at_the_end(i);
         }
@@ -842,9 +852,9 @@ const Builder = struct
         }
     }
 
-    fn create_ret_void(self: *Builder) *Instruction
+    fn create_ret_void(self: *Builder, allocator: *Allocator) *Instruction
     {
-        panic("Not implemented\n", .{});
+        return self.create_ret(allocator, null);
     }
 
     // @TODO: this assumes the instruction is going to be appended to the current basic block and it's going to jump to the dst_basic_block
@@ -1155,7 +1165,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             {
                 if (!builder.explicit_return)
                 {
-                    _ = builder.create_ret_void();
+                    _ = builder.create_ret_void(allocator);
                 }
                 else
                 {
@@ -1312,6 +1322,11 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
         {
             const bits = ast_type.value.integer.bits;
             const result = context.get_integer_type(bits);
+            return result;
+        },
+        Internal.Type.ID.void_type =>
+        {
+            const result = context.get_void_type();
             return result;
         },
         else => 
@@ -1489,6 +1504,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
             if (builder.explicit_return)
             {
                 assert(builder.exit_block != null);
+
                 if (builder.current) |current_block|
                 {
                     if (current_block.instructions.items.len == 0)
@@ -1537,7 +1553,8 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
                 }
             }
 
-            _ = builder.create_ret_void();
+            // @TODO: figure out how to return here without causing a panic
+            _ = builder.create_ret_void(allocator);
         }
         print_function(allocator, function);
     }
@@ -1669,6 +1686,7 @@ const InstructionPrinter = struct
 
 fn print_function(allocator: *Allocator, function: *Function) void
 {
+    print("\n\nFunction printing\n\n", .{});
     // @TODO: change hardcoding (starting_id, next_id)
     var slot_tracker = SlotTracker {
         .next_id = 0,

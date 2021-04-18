@@ -26,7 +26,7 @@ pub const Type = struct
     name: []const u8,
 
     pub const Value = union(ID) {
-        void,
+        void_type,
         integer: Integer,
         function: Function,
         pointer: Pointer,
@@ -34,7 +34,7 @@ pub const Type = struct
     };
 
     pub const ID = enum {
-        void,
+        void_type,
         integer,
         function,
         pointer,
@@ -68,7 +68,7 @@ pub const Type = struct
             while (index < type_bucket.len) : (index += 1)
             {
                 const type_decl = &type_bucket.items[index];
-                if (type_decl.value == Type.ID.void)
+                if (type_decl.value == Type.ID.void_type)
                 {
                     return type_decl;
                 }
@@ -76,6 +76,24 @@ pub const Type = struct
         }
 
         panic("Void type is not registered\n", .{});
+    }
+
+    pub fn get_integer_type(bits: u16, signed: bool, types: *TypeBuffer) *Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.integer and type_decl.value.integer.bits == bits and type_decl.value.integer.signed == signed)
+                {
+                    return type_decl;
+                }
+            }
+        }
+
+        panic("Integer type with {} bits and signedness {} is not registered\n", .{bits, signed});
     }
 
     pub fn get_pointer_type(p_type: *Type, types: *TypeBuffer) *Type
@@ -149,12 +167,9 @@ pub const Type = struct
             .name = undefined,
         };
 
-        assert(fn_type.value.function.ret_type.value == Type.ID.integer);
-
         const result = types.append(fn_type) catch |err| {
             panic("Failed to allocate function type", .{});
         };
-        assert(fn_type.value.function.ret_type.value == Type.ID.integer);
 
         print("Function type: {}", .{result.value.function.ret_type});
         return result;
@@ -210,6 +225,15 @@ pub const Type = struct
                 panic("Error allocating memory for primitive type\n", .{});
             };
         }
+
+        const void_type = Type
+        {
+            .value = Type.ID.void_type,
+            .name = "void",
+        };
+        _ = types.append(void_type) catch |err| {
+            panic("Error allocating memory for void type\n", .{});
+        };
 
         return types;
     }

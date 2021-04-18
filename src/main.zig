@@ -56,7 +56,23 @@ pub fn main() anyerror!void
     }
     else
     {
-        const src_file = "main :: () -> s32 { a : s32 = 0; return a; }";
+        const src_file = 
+            \\ main :: () -> s32
+            \\ {
+            \\      sum : s32 = 0;
+            \\      for i : 4
+            \\      {
+            \\          if i == 2
+            \\          {
+            \\              break;
+            \\          }
+            \\
+            \\          sum = sum + i;
+            \\      }
+            \\      return sum;
+            \\ }
+            ;
+            
         var arena = std.heap.ArenaAllocator.init(page_allocator);
         defer arena.deinit();
         const allocator = &arena.allocator;
