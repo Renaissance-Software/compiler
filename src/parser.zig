@@ -609,34 +609,49 @@ const Parser = struct
                     const sign = token.value.sign;
                     switch (sign)
                     {
-                        ':' => {
+                        ':' =>
+                        {
                             consumer.next_index += 1;
-                            if (consumer.expect_and_consume_sign(':') != null) {
-                                if (consumer.expect_sign('(') != null) {
+                            if (consumer.expect_and_consume_sign(':') != null)
+                            {
+                                if (consumer.expect_sign('(') != null)
+                                {
                                     panic("Unreachable. Unexpected function here\n", .{});
-                                } else {
+                                }
+                                else
+                                {
                                     maybe_binop = null;
                                 }
-                            } else {
+                            }
+                            else
+                            {
                                 maybe_binop = BinaryExpression.ID.VariableDeclaration;
                             }
                         },
-                        '=' => {
-                            if (consumer.expect_and_consume_sign('=') != null) {
+                        '=' =>
+                        {
+                            consumer.next_index += 1;
+                            if (consumer.expect_and_consume_sign('=') != null)
+                            {
                                 maybe_binop = BinaryExpression.ID.Compare_Equal;
-                            } else {
+                            }
+                            else
+                            {
                                 maybe_binop = BinaryExpression.ID.Assignment;
                             }
                         },
-                        '+' => {
+                        '+' =>
+                        {
                             consumer.next_index += 1;
                             maybe_binop = BinaryExpression.ID.Plus;
                         },
-                        '-' => {
+                        '-' =>
+                        {
                             consumer.next_index += 1;
                             maybe_binop = BinaryExpression.ID.Minus;
                         },
-                        '<' => {
+                        '<' =>
+                        {
                             consumer.next_index += 1;
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
@@ -647,7 +662,8 @@ const Parser = struct
                                 maybe_binop = BinaryExpression.ID.Compare_LessThan;
                             }
                         },
-                        '>' => {
+                        '>' =>
+                        {
                             consumer.next_index += 1;
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
@@ -658,19 +674,23 @@ const Parser = struct
                                 maybe_binop = BinaryExpression.ID.Compare_GreaterThan;
                             }
                         },
-                        '*' => {
+                        '*' =>
+                        {
                             consumer.next_index += 1;
                             maybe_binop = BinaryExpression.ID.Multiplication;
                         },
-                        '[' => {
+                        '[' =>
+                        {
                             consumer.next_index += 1;
                             maybe_binop = BinaryExpression.ID.Subscript;
                         },
-                        '/' => {
+                        '/' =>
+                        {
                             consumer.next_index += 1;
                             panic("/ to binary expression sign not implemented\n", .{});
                         },
-                        else => {
+                        else =>
+                        {
                             maybe_binop = null;
                         },
                     }
@@ -726,6 +746,7 @@ const Parser = struct
 
                     if (self.primary_expression(allocator, consumer, types, parent_node)) |right_expr|
                     {
+                        print("{}", .{left_expr.value});
                         const left_bin_op = left_expr.value.binary_expr.id;
                         const right_bin_op = binop;
 
