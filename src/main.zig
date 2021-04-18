@@ -36,8 +36,6 @@ pub fn main() anyerror!void
 {
     const tests = false;
     var page_allocator = std.heap.page_allocator;
-    const cwd = std.fs.cwd();
-    print("CWD: {}\n", .{cwd});
 
     if (tests)
     {

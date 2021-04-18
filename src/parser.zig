@@ -747,27 +747,62 @@ const Parser = struct
                     if (self.primary_expression(allocator, consumer, types, parent_node)) |right_expr|
                     {
                         print("{}", .{left_expr.value});
-                        const left_bin_op = left_expr.value.binary_expr.id;
-                        const right_bin_op = binop;
+                        var right_precedes_left = false;
+                        if (left_expr.value == Node.ID.binary_expr)
+                        {
+                            const left_bin_op = left_expr.value.binary_expr.id;
+                            const right_bin_op = binop;
 
-                        const left_expr_operator_precedence = @enumToInt(left_bin_op.get_importance());
-                        const right_expr_operator_precedence = @enumToInt(right_bin_op.get_importance());
+                            const left_expr_operator_precedence = @enumToInt(left_bin_op.get_importance());
+                            const right_expr_operator_precedence = @enumToInt(right_bin_op.get_importance());
 
-                        const right_precedes_left = left_expr.value == Node.ID.binary_expr and right_expr_operator_precedence < left_expr_operator_precedence and !left_expr.value.binary_expr.parenthesis and (right_expr.value != Node.ID.binary_expr or (right_expr.value == Node.ID.binary_expr and !right_expr.value.binary_expr.parenthesis));
+                            right_precedes_left = left_expr.value == Node.ID.binary_expr and right_expr_operator_precedence < left_expr_operator_precedence and !left_expr.value.binary_expr.parenthesis and (right_expr.value != Node.ID.binary_expr or (right_expr.value == Node.ID.binary_expr and !right_expr.value.binary_expr.parenthesis));
+                        }
 
-                        panic("Not implemented\n", .{});
-                        //if (right_precedes_left)
-                        //{
-                        //}
-                        //else
-                        //{
-                        //}
+                        if (right_precedes_left)
+                        {
+                            const right_operand_of_left_binary_expression = left_expr.value.binary_expr.right;
+
+                            const new_prioritized_expression = Node
+                            {
+                                .value = Node.Value {
+                                    .binary_expr = BinaryExpression {
+                                        .left = right_operand_of_left_binary_expression,
+                                        .right = right_expr,
+                                        .id = binop,
+                                        .parenthesis = false,
+                                    }
+                                },
+                                .parent = parent_node,
+                                .value_type = Node.ValueType.RValue,
+                            };
+
+                            left_expr.value.binary_expr.right = self.append_and_get(new_prioritized_expression);
+                            left_ptr.* = left_expr;
+                        }
+                        else
+                        {
+                            const new_node = Node
+                            {
+                                .value = Node.Value {
+                                    .binary_expr = BinaryExpression {
+                                        .left = left_expr,
+                                        .right = right_expr,
+                                        .id = binop,
+                                        .parenthesis = false,
+                                    }
+                                },
+                                .parent = parent_node,
+                                .value_type = Node.ValueType.RValue,
+                            };
+
+                            left_ptr.* = self.append_and_get(new_node);
+                        }
                     }
                     else
                     {
                         return null;
                     }
-
                 }
             }
             else
@@ -1110,6 +1145,40 @@ const Parser = struct
         }
     }
 
+    fn parse_break(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    {
+        // consuming break keyword
+        consumer.next_index += 1;
+        var target = self.current_block;
+
+        while (target.value != Node.ID.loop_expr)
+        {
+            if (target.parent) |parent|
+            {
+                target = parent;
+            }
+            else
+            {
+                panic("Couldn't find any parent\n", .{});
+            }
+        }
+
+        const break_value = Node
+        {
+            .value = Node.Value {
+                .break_expr = BreakExpression {
+                    .target = target, 
+                    .origin = undefined,
+                }
+            },
+            .parent = parent_node,
+            .value_type = Node.ValueType.RValue,
+        };
+
+        const result = self.append_and_get(break_value);
+        return result;
+    }
+
     fn statement(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
     {
         const token = consumer.peek();
@@ -1133,6 +1202,10 @@ const Parser = struct
                     KeywordID.@"if" =>
                     {
                         statement_node = self.parse_if(allocator, consumer, types, parent_node);
+                    },
+                    KeywordID.@"break" =>
+                    {
+                        statement_node = self.parse_break(allocator, consumer, types, parent_node);
                     },
                     else =>
                     {
@@ -1181,18 +1254,19 @@ const Parser = struct
 
             while (statements_left_to_parse)
             {
-                const statement_result = self.statement(allocator, consumer, types, block_node);
-                if (statement_result == null)
+                if (self.statement(allocator, consumer, types, block_node)) |statement_node|
+                {
+                    block_node.value.block_expr.statements.append(statement_node) catch |err| {
+                        panic("Failed to allocate memory for statement", .{});
+                    };
+                    next_token = consumer.tokens[consumer.next_index];
+                    statements_left_to_parse = consumer.expect_sign(expected_end) == null;
+                }
+                else
                 {
                     self.compiler.report_error("Error parsing statement\n", .{});
                     std.os.exit(1);
                 }
-                const statement_node = statement_result.?;
-                block_node.value.block_expr.statements.append(statement_node) catch |err| {
-                    panic("Failed to allocate memory for statement", .{});
-                };
-                next_token = consumer.tokens[consumer.next_index];
-                statements_left_to_parse = consumer.expect_sign(expected_end) == null;
             }
 
             const end = consumer.expect_and_consume_sign(expected_end);
@@ -1204,16 +1278,17 @@ const Parser = struct
         }
         else
         {
-            const statement_result = self.statement(allocator, consumer, types, block_node);
-            if (statement_result == null)
+            if (self.statement(allocator, consumer, types, block_node)) |statement_node|
+            {
+                block_node.value.block_expr.statements.append(statement_node) catch |err| {
+                    panic("Failed to allocate memory for statement", .{});
+                };
+            }
+            else
             {
                 self.compiler.report_error("Error parsing statement\n", .{});
                 std.os.exit(1);
             }
-            const statement_node = statement_result.?;
-            block_node.value.block_expr.statements.append(statement_node) catch |err| {
-                panic("Failed to allocate memory for statement", .{});
-            };
         }
     }
 
@@ -1272,38 +1347,37 @@ const Parser = struct
 
         while (args_left_to_parse)
         {
-            const arg_node_result = self.expression(allocator, consumer, types, function_node);
-
-            if (arg_node_result == null)
+            if (self.expression(allocator, consumer, types, function_node)) |arg_node|
             {
-                self.compiler.report_error("Error parsing argument\n", .{});
-                return null;
-            }
-
-            var arg_node = arg_node_result.?;
-            if (arg_node.value != Node.ID.var_decl)
-            {
-                // @TODO: improve error message
-                self.compiler.report_error("Error parsing argument\n", .{});
-                return null;
-            }
-
-            arg_node.value.var_decl.is_function_arg = true;
-            const arg_type = arg_node.value.var_decl.var_type;
-            try function_type.arg_types.append(arg_type);
-            try function_node.value.function_decl.arguments.append(arg_node);
-
-            next_token = consumer.tokens[consumer.next_index];
-            args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
-            if (args_left_to_parse)
-            {
-                const comma = consumer.expect_and_consume_sign(',');
-                if (comma == null)
+                if (arg_node.value != Node.ID.var_decl)
                 {
-                    // print error
-                    self.compiler.report_error("Expected comma after function argument", .{});
+                    // @TODO: improve error message
+                    self.compiler.report_error("Error parsing argument\n", .{});
                     return null;
                 }
+
+                arg_node.value.var_decl.is_function_arg = true;
+                const arg_type = arg_node.value.var_decl.var_type;
+                try function_type.arg_types.append(arg_type);
+                try function_node.value.function_decl.arguments.append(arg_node);
+
+                next_token = consumer.tokens[consumer.next_index];
+                args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
+                if (args_left_to_parse)
+                {
+                    const comma = consumer.expect_and_consume_sign(',');
+                    if (comma == null)
+                    {
+                        // print error
+                        self.compiler.report_error("Expected comma after function argument", .{});
+                        return null;
+                    }
+                }
+            }
+            else
+            {
+                self.compiler.report_error("Error parsing argument\n", .{});
+                return null;
             }
         }
 
@@ -1379,7 +1453,8 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
         .next_index = 0,
     };
 
-    var parser = Parser{
+    var parser = Parser
+    {
         .nb = NodeBuffer.init(allocator) catch |err| {
             panic("Couldn't allocate the bucket node buffer\n", .{});
         },
