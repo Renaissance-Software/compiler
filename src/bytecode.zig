@@ -1436,6 +1436,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                         {
                             BinaryOp.Compare_LessThan =>
                             {
+                                panic("Not implemented\n", .{});
                                 //binary_op_instruction = builder.create_icmp(
                             },
                             else =>
@@ -1459,7 +1460,80 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
         },
         Node.ID.branch_expr =>
         {
-            panic("Not implemented\n", .{});
+            const saved_emitted_return = builder.emitted_return;
+            const ast_condition = node.value.branch_expr.condition;
+            const ast_if_block = node.value.branch_expr.if_block;
+
+            var exit_block = builder.create_block(allocator);
+            var if_block = builder.create_block(allocator);
+            var else_block: *BasicBlock = undefined;
+
+            var do_else_block = false;
+            // @TODO: this can cause bugs
+            var ast_else_block: *Node = undefined;
+            if (node.value.branch_expr.else_block) |result|
+            {
+                ast_else_block = result;
+                else_block = builder.create_block(allocator);
+            }
+            else
+            {
+                else_block = exit_block;
+            }
+
+            node.value.branch_expr.exit_block_ref = @ptrToInt(exit_block);
+
+
+            var exit_block_in_use = true;
+            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
+            {
+                if (if_block != else_block)
+                {
+                    _ = builder.create_conditional_br(allocator, if_block, else_block, condition);
+                }
+                else
+                {
+                    exit_block_in_use = exit_block.use_count > 0;
+                    if (exit_block_in_use)
+                    {
+                        _ = builder.create_br(allocator, exit_block);
+                    }
+                }
+            }
+            else
+            {
+                panic("Couldn't get condition bytecode\n", .{});
+            }
+
+            builder.emitted_return = false;
+
+            builder.append_to_current_function(if_block);
+            builder.set_block(if_block);
+            _ = do_node(allocator, builder, ast_types, ast_if_block, null);
+            const if_block_returned = builder.emitted_return;
+
+            _ = builder.create_br(allocator, exit_block);
+
+            builder.emitted_return = false;
+
+            if (else_block != exit_block)
+            {
+                builder.append_to_current_function(else_block);
+                builder.set_block(else_block);
+                _ = do_node(allocator, builder, ast_types, ast_else_block, null);
+
+                _ = builder.create_br(allocator, exit_block);
+            }
+
+            const else_block_returned = builder.emitted_return;
+
+            builder.emitted_return = if_block_returned and else_block_returned;
+
+            if (exit_block_in_use and !builder.emitted_return)
+            {
+                builder.append_to_current_function(exit_block);
+                builder.set_block(exit_block);
+            }
         },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         Node.ID.array_lit => panic("Not implemented\n", .{}),
