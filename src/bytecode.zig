@@ -10,6 +10,8 @@ const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 const Internal = @import("compiler.zig");
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
+const BinaryOp = Parser.BinaryExpression.ID;
+const UnaryOp = Parser.UnaryExpression.ID;
 
 
 const Type = struct
@@ -66,33 +68,39 @@ const Type = struct
     }
 };
 
-const FloatType = struct {
+const FloatType = struct
+{
     base: Type,
     bits: u16,
 };
 
-const IntegerType = struct {
+const IntegerType = struct
+{
     base: Type,
     bits: u16,
 };
 
-const PointerType = struct {
+const PointerType = struct
+{
     base: Type,
     type: *Type,
 };
 
-const StructType = struct {
+const StructType = struct
+{
     base: Type,
     field_types: []*Type,
 };
 
-const ArrayType = struct {
+const ArrayType = struct
+{
     base: Type,
     type: *Type,
     count: usize,
 };
 
-const FunctionType = struct {
+const FunctionType = struct
+{
     base: Type,
     arg_types: []*Type,
     ret_type: *Type,
@@ -173,6 +181,43 @@ const Value = struct
             }
         }
     }
+};
+
+const CompareType = enum
+{
+// Opcode            U L G E    Intuitive operation
+        FCMP_FALSE = 0, ///< 0 0 0 0    Always false (always folded)
+        FCMP_OEQ = 1,   ///< 0 0 0 1    True if ordered and equal
+        FCMP_OGT = 2,   ///< 0 0 1 0    True if ordered and greater than
+        FCMP_OGE = 3,   ///< 0 0 1 1    True if ordered and greater than or equal
+        FCMP_OLT = 4,   ///< 0 1 0 0    True if ordered and less than
+        FCMP_OLE = 5,   ///< 0 1 0 1    True if ordered and less than or equal
+        FCMP_ONE = 6,   ///< 0 1 1 0    True if ordered and operands are unequal
+        FCMP_ORD = 7,   ///< 0 1 1 1    True if ordered (no nans)
+        FCMP_UNO = 8,   ///< 1 0 0 0    True if unordered: isnan(X) | isnan(Y)
+        FCMP_UEQ = 9,   ///< 1 0 0 1    True if unordered or equal
+        FCMP_UGT = 10,  ///< 1 0 1 0    True if unordered or greater than
+        FCMP_UGE = 11,  ///< 1 0 1 1    True if unordered, greater than, or equal
+        FCMP_ULT = 12,  ///< 1 1 0 0    True if unordered or less than
+        FCMP_ULE = 13,  ///< 1 1 0 1    True if unordered, less than, or equal
+        FCMP_UNE = 14,  ///< 1 1 1 0    True if unordered or not equal
+        FCMP_TRUE = 15, ///< 1 1 1 1    Always true (always folded)
+        FIRST_FCMP_PREDICATE = FCMP_FALSE,
+        LAST_FCMP_PREDICATE = FCMP_TRUE,
+        BAD_FCMP_PREDICATE = FCMP_TRUE + 1,
+        ICMP_EQ = 32,  ///< equal
+        ICMP_NE = 33,  ///< not equal
+        ICMP_UGT = 34, ///< unsigned greater than
+        ICMP_UGE = 35, ///< unsigned greater or equal
+        ICMP_ULT = 36, ///< unsigned less than
+        ICMP_ULE = 37, ///< unsigned less or equal
+        ICMP_SGT = 38, ///< signed greater than
+        ICMP_SGE = 39, ///< signed greater or equal
+        ICMP_SLT = 40, ///< signed less than
+        ICMP_SLE = 41, ///< signed less or equal
+        FIRST_ICMP_PREDICATE = ICMP_EQ,
+        LAST_ICMP_PREDICATE = ICMP_SLE,
+        BAD_ICMP_PREDICATE = ICMP_SLE + 1
 };
 
 const ConstantArray = struct
@@ -875,9 +920,12 @@ const Builder = struct
                 .parent = undefined,
                 .value = undefined,
             };
+
             i.operands.append(@ptrCast(*Value, dst_basic_block)) catch |err| {
                 panic("Failed to allocate memory for br operand\n", .{});
             };
+
+            dst_basic_block.use_count += 1;
 
             return self.insert_at_the_end(i);
         }
@@ -885,6 +933,50 @@ const Builder = struct
         {
             panic("Trying to terminate basic block with a br instruction but block is already terminated\n", .{});
         }
+    }
+
+    fn create_conditional_br(self: *Builder, allocator: *Allocator, if_block: *BasicBlock, else_block: *BasicBlock, condition: *Value) *Instruction
+    {
+        if (!self.is_terminated())
+        {
+            var i = Instruction
+            {
+                .base = Value {
+                    .type = if_block.base.type,
+                    .id = Value.ID.Instruction,
+                },
+                .id = Instruction.ID.Br,
+                .operands = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
+                    panic("Failed to allocate memory for br operand\n", .{});
+                },
+                .parent = undefined,
+                .value = undefined,
+            };
+
+            i.operands.append(@ptrCast(*Value, if_block)) catch |err| {
+                panic("Failed to allocate memory for br operand\n", .{});
+            };
+            i.operands.append(@ptrCast(*Value, else_block)) catch |err| {
+                panic("Failed to allocate memory for br operand\n", .{});
+            };
+            i.operands.append(condition) catch |err| {
+                panic("Failed to allocate memory for br operand\n", .{});
+            };
+
+            if_block.use_count += 1;
+            else_block.use_count += 1;
+
+            return self.insert_at_the_end(i);
+        }
+        else
+        {
+            panic("Trying to terminate basic block with a br instruction but block is already terminated\n", .{});
+        }
+    }
+
+    fn create_icmp(allocator: *Allocator, comparation: CompareType, left: *Value, right: *Value) *Instruction
+    {
+        panic("", .{});
     }
 
     fn is_terminated(self: *Builder) bool
@@ -1028,6 +1120,12 @@ const Context = struct
                 panic("Integer type with {} bits not implemented\n", .{bits});
             }
         }
+    }
+
+    fn get_boolean_type(self: *Context) *Type
+    {
+        const result = self.get_integer_type(1);
+        return result;
     }
     
     fn get_pointer_type(self: *Context, p_type: *Type) *Type
@@ -1228,13 +1326,145 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const var_load = builder.create_load(allocator, var_type, alloca_ptr);
             return @ptrCast(*Value, var_load);
         },
+        Node.ID.loop_expr =>
+        {
+            const ast_loop_prefix = node.value.loop_expr.prefix;
+            const ast_loop_body = node.value.loop_expr.body;
+            const ast_loop_postfix = node.value.loop_expr.postfix;
+
+            var loop_prefix_block = builder.create_block(allocator);
+            var loop_body_block = builder.create_block(allocator);
+            var loop_postfix_block = builder.create_block(allocator);
+            var loop_end_block = builder.create_block(allocator);
+
+            const loop_continue_block = loop_postfix_block;
+            node.value.loop_expr.continue_block_ref = @ptrToInt(loop_continue_block);
+            node.value.loop_expr.exit_block_ref = @ptrToInt(loop_end_block);
+
+            _ = builder.create_br(allocator, loop_prefix_block);
+            builder.append_to_current_function(loop_prefix_block);
+            builder.set_block(loop_prefix_block);
+
+            assert(ast_loop_prefix.value.block_expr.statements.items.len == 1);
+            const ast_condition = ast_loop_prefix.value.block_expr.statements.items[0];
+            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
+            {
+                _ = builder.create_conditional_br(allocator, loop_body_block, loop_end_block, condition);
+                builder.append_to_current_function(loop_body_block);
+                builder.set_block(loop_body_block);
+                _ = do_node(allocator, builder, ast_types, ast_loop_body, null);
+
+                _ = builder.create_br(allocator, loop_postfix_block);
+                builder.append_to_current_function(loop_postfix_block);
+                builder.set_block(loop_postfix_block);
+                _ = do_node(allocator, builder, ast_types, ast_loop_postfix, null);
+
+                if (!builder.emitted_return)
+                {
+                    _ = builder.create_br(allocator, loop_prefix_block);
+                    builder.append_to_current_function(loop_end_block);
+                    builder.set_block(loop_end_block);
+                }
+            }
+            else
+            {
+                panic("Couldn't find condition for loop expression\n", .{});
+            }
+
+
+        },
+        Node.ID.binary_expr =>
+        {
+            const ast_left = node.value.binary_expr.left;
+            const ast_right = node.value.binary_expr.right;
+            const binary_op = node.value.binary_expr.id;
+
+            if (binary_op == BinaryOp.Assignment)
+            {
+                switch (ast_left.value)
+                {
+                    Node.ID.var_expr =>
+                    {
+                        const var_decl = ast_left.value.var_expr.declaration;
+                        const alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
+                        const ast_type = var_decl.value.var_decl.var_type;
+                        const var_type = get_type(allocator, builder.context, ast_type, ast_types);
+                        if (do_node(allocator, builder, ast_types, ast_right, var_type)) |right_value|
+                        {
+                            _ = builder.create_store(allocator, right_value, alloca_value);
+                        }
+                        else
+                        { 
+                            panic("Couldn't get right-side of binary expression\n", .{});
+                        }
+                    },
+                    Node.ID.var_decl =>
+                    {
+                        assert(ast_left.value.unary_expr.id == UnaryOp.PointerDereference);
+
+                        if (do_node(allocator, builder, ast_types, ast_right, null)) |right_value|
+                        {
+                            if (do_node(allocator, builder, ast_types, ast_left, null)) |pointer_load|
+                            {
+                                _ = builder.create_store(allocator, right_value, pointer_load);
+                            }
+                            else
+                            {
+                                panic("Couldn't get load of binary expression\n", .{});
+                            }
+                        }
+                        else
+                        {
+                            panic("Couldn't get right-side of binary expression\n", .{});
+                        }
+                    },
+                    else =>
+                    {
+                        panic("Not implemented: {}\n", .{ast_left.value});
+                    }
+                }
+            }
+            else
+            {
+                if (do_node(allocator, builder, ast_types, ast_left, null)) |left_expr|
+                {
+                    if (do_node(allocator, builder, ast_types, ast_right, null)) |right_expr|
+                    {
+                        var binary_op_instruction: *Instruction = undefined;
+
+                        switch (binary_op)
+                        {
+                            BinaryOp.Compare_LessThan =>
+                            {
+                                //binary_op_instruction = builder.create_icmp(
+                            },
+                            else =>
+                            {
+                                panic("Not implemented: {}\n", .{binary_op});
+                            }
+                        }
+
+                        return @ptrCast(*Value, binary_op_instruction);
+                    }
+                    else
+                    {
+                        panic("Couldn't get right side of the expression\n", .{});
+                    }
+                }
+                else
+                {
+                    panic("Couldn't get left side of the expression\n", .{});
+                }
+            }
+        },
+        Node.ID.branch_expr =>
+        {
+            panic("Not implemented\n", .{});
+        },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         Node.ID.array_lit => panic("Not implemented\n", .{}),
         Node.ID.unary_expr => panic("Not implemented\n", .{}),
-        Node.ID.binary_expr => panic("Not implemented\n", .{}),
         Node.ID.invoke_expr => panic("Not implemented\n", .{}),
-        Node.ID.branch_expr => panic("Not implemented\n", .{}),
-        Node.ID.loop_expr => panic("Not implemented\n", .{}),
         Node.ID.break_expr => panic("Not implemented\n", .{}),
         Node.ID.subscript_expr => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),

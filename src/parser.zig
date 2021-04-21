@@ -27,13 +27,13 @@ const IntegerLiteral = struct
     // padding
 };
 
-const UnaryExpression = struct
+pub const UnaryExpression = struct
 {
     node_ref: *Node,
     id: ID,
     location: Location,
 
-    const ID = enum
+    pub const ID = enum
     {
         AddressOf,
         PointerDereference,
@@ -45,14 +45,14 @@ const UnaryExpression = struct
     };
 };
 
-const BinaryExpression = struct
+pub const BinaryExpression = struct
 {
     left: *Node,
     right: *Node,
     id: ID,
     parenthesis: bool,
 
-    const ID = enum
+    pub const ID = enum
     {
         Plus,
         Minus,
