@@ -183,41 +183,62 @@ const Value = struct
     }
 };
 
-const CompareType = enum
+const CompareType = extern enum(u32)
 {
-// Opcode            U L G E    Intuitive operation
-        FCMP_FALSE = 0, ///< 0 0 0 0    Always false (always folded)
-        FCMP_OEQ = 1,   ///< 0 0 0 1    True if ordered and equal
-        FCMP_OGT = 2,   ///< 0 0 1 0    True if ordered and greater than
-        FCMP_OGE = 3,   ///< 0 0 1 1    True if ordered and greater than or equal
-        FCMP_OLT = 4,   ///< 0 1 0 0    True if ordered and less than
-        FCMP_OLE = 5,   ///< 0 1 0 1    True if ordered and less than or equal
-        FCMP_ONE = 6,   ///< 0 1 1 0    True if ordered and operands are unequal
-        FCMP_ORD = 7,   ///< 0 1 1 1    True if ordered (no nans)
-        FCMP_UNO = 8,   ///< 1 0 0 0    True if unordered: isnan(X) | isnan(Y)
-        FCMP_UEQ = 9,   ///< 1 0 0 1    True if unordered or equal
-        FCMP_UGT = 10,  ///< 1 0 1 0    True if unordered or greater than
-        FCMP_UGE = 11,  ///< 1 0 1 1    True if unordered, greater than, or equal
-        FCMP_ULT = 12,  ///< 1 1 0 0    True if unordered or less than
-        FCMP_ULE = 13,  ///< 1 1 0 1    True if unordered, less than, or equal
-        FCMP_UNE = 14,  ///< 1 1 1 0    True if unordered or not equal
-        FCMP_TRUE = 15, ///< 1 1 1 1    Always true (always folded)
-        FIRST_FCMP_PREDICATE = FCMP_FALSE,
-        LAST_FCMP_PREDICATE = FCMP_TRUE,
-        BAD_FCMP_PREDICATE = FCMP_TRUE + 1,
-        ICMP_EQ = 32,  ///< equal
-        ICMP_NE = 33,  ///< not equal
-        ICMP_UGT = 34, ///< unsigned greater than
-        ICMP_UGE = 35, ///< unsigned greater or equal
-        ICMP_ULT = 36, ///< unsigned less than
-        ICMP_ULE = 37, ///< unsigned less or equal
-        ICMP_SGT = 38, ///< signed greater than
-        ICMP_SGE = 39, ///< signed greater or equal
-        ICMP_SLT = 40, ///< signed less than
-        ICMP_SLE = 41, ///< signed less or equal
-        FIRST_ICMP_PREDICATE = ICMP_EQ,
-        LAST_ICMP_PREDICATE = ICMP_SLE,
-        BAD_ICMP_PREDICATE = ICMP_SLE + 1
+    // Opcode            U L G E    Intuitive operation
+    FCMP_FALSE = 0, //< 0 0 0 0    Always false (always folded)
+    FCMP_OEQ = 1,   //< 0 0 0 1    True if ordered and equal
+    FCMP_OGT = 2,   //< 0 0 1 0    True if ordered and greater than
+    FCMP_OGE = 3,   //< 0 0 1 1    True if ordered and greater than or equal
+    FCMP_OLT = 4,   //< 0 1 0 0    True if ordered and less than
+    FCMP_OLE = 5,   //< 0 1 0 1    True if ordered and less than or equal
+    FCMP_ONE = 6,   //< 0 1 1 0    True if ordered and operands are unequal
+    FCMP_ORD = 7,   //< 0 1 1 1    True if ordered (no nans)
+    FCMP_UNO = 8,   //< 1 0 0 0    True if unordered: isnan(X) | isnan(Y)
+    FCMP_UEQ = 9,   //< 1 0 0 1    True if unordered or equal
+    FCMP_UGT = 10,  //< 1 0 1 0    True if unordered or greater than
+    FCMP_UGE = 11,  //< 1 0 1 1    True if unordered, greater than, or equal
+    FCMP_ULT = 12,  //< 1 1 0 0    True if unordered or less than
+    FCMP_ULE = 13,  //< 1 1 0 1    True if unordered, less than, or equal
+    FCMP_UNE = 14,  //< 1 1 1 0    True if unordered or not equal
+    FCMP_TRUE = 15, //< 1 1 1 1    Always true (always folded)
+    FIRST_FCMP_PREDICATE = 15,
+    LAST_FCMP_PREDICATE = 15,
+    BAD_FCMP_PREDICATE = 15 + 1,
+    ICMP_EQ = 32,  //< equal
+    ICMP_NE = 33,  //< not equal
+    ICMP_UGT = 34, //< unsigned greater than
+    ICMP_UGE = 35, //< unsigned greater or equal
+    ICMP_ULT = 36, //< unsigned less than
+    ICMP_ULE = 37, //< unsigned less or equal
+    ICMP_SGT = 38, //< signed greater than
+    ICMP_SGE = 39, //< signed greater or equal
+    ICMP_SLT = 40, //< signed less than
+    ICMP_SLE = 41, //< signed less or equal
+    FIRST_ICMP_PREDICATE = 32,
+    LAST_ICMP_PREDICATE = 41,
+    BAD_ICMP_PREDICATE = 41 + 1,
+
+    const Self = @This();
+
+    pub fn format(self: Self, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self)
+        {
+            CompareType.ICMP_EQ =>
+            {
+                try writer.writeAll("eq");
+            },
+            CompareType.ICMP_SLE =>
+            {
+                try writer.writeAll("sle");
+            },
+            else =>
+            {
+                panic("Not implemented: {}\n", .{self});
+            }
+        }
+    }
 };
 
 const ConstantArray = struct
@@ -540,6 +561,7 @@ const ConstantInt = struct
 
     pub fn format(self: *const ConstantInt, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        // @TODO: is this supposed to display the type as well? Should this have bit count?
         if (self.is_signed)
         {
             try std.fmt.format(writer, "i{} -{}", .{self.bit_count, self.int_value});
@@ -615,6 +637,7 @@ const Instruction = struct
 
     const InstructionValue = extern union {
         alloca: Alloca,
+        compare_type: CompareType,
     };
 
     const Alloca = struct 
@@ -876,11 +899,13 @@ const Builder = struct
             {
                 assert(function_ret_type == value.type);
                 i.base.type = value.type;
-                i.operands.resize(1) catch |err| {
+                // @Info: always use ensureCapacity as it doesn't add length to the array
+                i.operands.ensureCapacity(1) catch |err| {
                     panic("Failed to allocate memory for ret operand\n", .{});
                 };
+
                 i.operands.append(value) catch |err| {
-                    panic("Failed to allocate memory for ret operand\n", .{});
+                    panic("Failed to append ret operand\n", .{});
                 };
             }
             else
@@ -931,7 +956,8 @@ const Builder = struct
         }
         else
         {
-            panic("Trying to terminate basic block with a br instruction but block is already terminated\n", .{});
+            //panic("Trying to terminate basic block with a br instruction but block is already terminated. Block instructions: {}\n", .{self.current.?.instructions.items.len});
+            return undefined;
         }
     }
 
@@ -953,13 +979,13 @@ const Builder = struct
                 .value = undefined,
             };
 
+            i.operands.append(condition) catch |err| {
+                panic("Failed to allocate memory for br operand\n", .{});
+            };
             i.operands.append(@ptrCast(*Value, if_block)) catch |err| {
                 panic("Failed to allocate memory for br operand\n", .{});
             };
             i.operands.append(@ptrCast(*Value, else_block)) catch |err| {
-                panic("Failed to allocate memory for br operand\n", .{});
-            };
-            i.operands.append(condition) catch |err| {
                 panic("Failed to allocate memory for br operand\n", .{});
             };
 
@@ -974,9 +1000,58 @@ const Builder = struct
         }
     }
 
-    fn create_icmp(allocator: *Allocator, comparation: CompareType, left: *Value, right: *Value) *Instruction
+    fn create_icmp(self: *Builder, allocator: *Allocator, comparation: CompareType, left: *Value, right: *Value) *Instruction
     {
-        panic("", .{});
+        var i = Instruction
+        {
+            .base = Value {
+                .type = self.context.get_boolean_type(),
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.ICmp,
+            .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
+                panic("Can't allocate memory for ret operands\n", .{});
+            },
+            .parent = undefined,
+            .value = Instruction.InstructionValue {
+                .compare_type = comparation,
+            },
+        };
+
+        i.operands.append(left) catch |err| {
+            panic("Failed to allocate memory for icmp value operand\n", .{});
+        };
+        i.operands.append(right) catch |err| {
+            panic("Failed to allocate memory for icmp value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
+    }
+
+    fn create_add(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
+    {
+        var i = Instruction
+        {
+            .base = Value {
+                .type = left.type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.Add,
+            .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
+                panic("Can't allocate memory for add operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+
+        i.operands.append(left) catch |err| {
+            panic("Failed to allocate memory for add value operand\n", .{});
+        };
+        i.operands.append(right) catch |err| {
+            panic("Failed to allocate memory for add value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
     }
 
     fn is_terminated(self: *Builder) bool
@@ -1426,9 +1501,9 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             }
             else
             {
-                if (do_node(allocator, builder, ast_types, ast_left, null)) |left_expr|
+                if (do_node(allocator, builder, ast_types, ast_left, null)) |left|
                 {
-                    if (do_node(allocator, builder, ast_types, ast_right, null)) |right_expr|
+                    if (do_node(allocator, builder, ast_types, ast_right, null)) |right|
                     {
                         var binary_op_instruction: *Instruction = undefined;
 
@@ -1436,8 +1511,15 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                         {
                             BinaryOp.Compare_LessThan =>
                             {
-                                panic("Not implemented\n", .{});
-                                //binary_op_instruction = builder.create_icmp(
+                                binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_SLE, left, right);
+                            },
+                            BinaryOp.Compare_Equal =>
+                            {
+                                binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_EQ, left, right);
+                            },
+                            BinaryOp.Plus =>
+                            {
+                                binary_op_instruction = builder.create_add(allocator, left, right);
                             },
                             else =>
                             {
@@ -1539,7 +1621,14 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
         Node.ID.array_lit => panic("Not implemented\n", .{}),
         Node.ID.unary_expr => panic("Not implemented\n", .{}),
         Node.ID.invoke_expr => panic("Not implemented\n", .{}),
-        Node.ID.break_expr => panic("Not implemented\n", .{}),
+        Node.ID.break_expr =>
+        {
+            const ast_jump_target = node.value.break_expr.target;
+            assert(ast_jump_target.value == Node.ID.loop_expr);
+            const jump_target = @intToPtr(*BasicBlock, ast_jump_target.value.loop_expr.exit_block_ref);
+            // @TODO: this may be buggy
+            _ = builder.create_br(allocator, jump_target);
+        },
         Node.ID.subscript_expr => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
@@ -1605,7 +1694,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             if (arg_count > 0)
             {
                 var arg_types = ArrayList(*Type).init(allocator);
-                arg_types.resize(arg_count) catch |err| {
+                arg_types.ensureCapacity(arg_count) catch |err| {
                     panic("Resize to {} elements failed for array slice for function argument types\n", .{arg_count});
                 };
 
@@ -1760,7 +1849,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
         var argument_list = ArrayList(Function.Argument).init(allocator);
         if (arg_count > 0)
         {
-            argument_list.resize(arg_count) catch |err| {
+            argument_list.ensureCapacity(arg_count) catch |err| {
                 panic("Error resizing argument buffer\n", .{});
             };
             var arg_index: u64 = 0;
@@ -1907,12 +1996,13 @@ const BlockPrinter = struct
     instruction_printers: ArrayList(InstructionPrinter),
     id: u64,
     block: *BasicBlock,
+    block_printer_list: *ArrayList(BlockPrinter),
 
     pub fn format(self: *const BlockPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         if (self.block.parent.basic_blocks.items[0] != self.block)
         {
-            try std.fmt.format(writer, "{}:", .{self.id});
+            try std.fmt.format(writer, "{}:\n", .{self.id});
         }
 
         for (self.instruction_printers.items) |i_printer|
@@ -1927,7 +2017,7 @@ const InstructionPrinter = struct
     ref: *Instruction,
     result: u64,
     // @TODO: does this need pointer stability
-    list_ref: *ArrayList(InstructionPrinter),
+    block_ref: *BlockPrinter,
 
     // @TODO: add align
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
@@ -1965,6 +2055,42 @@ const InstructionPrinter = struct
                 try std.fmt.format(writer, "%{} = load {}, ", .{self.result, self.ref.base.type});
                 try self.value_format(self.ref.operands.items[0], fmt, options, writer);
             },
+            Instruction.ID.Br =>
+            {
+                const operand_count = self.ref.operands.items.len;
+                const conditional = operand_count == 3;
+                if (conditional)
+                {
+                    try writer.writeAll("br ");
+                    try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                    try writer.writeAll(", ");
+                    try self.value_format(self.ref.operands.items[1], fmt, options, writer);
+                    try writer.writeAll(", ");
+                    try self.value_format(self.ref.operands.items[2], fmt, options, writer);
+                }
+                else
+                {
+                    assert(operand_count == 1);
+                    try writer.writeAll("br ");
+                    try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                }
+            },
+            Instruction.ID.ICmp =>
+            {
+                assert(self.ref.operands.items.len == 2);
+                try std.fmt.format(writer, "%{} = icmp {} ", .{self.result, self.ref.value.compare_type});
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try writer.writeAll(", ");
+                try self.value_format(self.ref.operands.items[1], fmt, options, writer);
+            },
+            Instruction.ID.Add =>
+            {
+                assert(self.ref.operands.items.len == 2);
+                try std.fmt.format(writer, "%{} = add ", .{self.result}); 
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try writer.writeAll(", ");
+                try self.value_format(self.ref.operands.items[1], fmt, options, writer);
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.ref.id});
@@ -1977,15 +2103,32 @@ const InstructionPrinter = struct
         if (value.id == Value.ID.Instruction)
         {
             const instruction = @ptrCast(*Instruction, value);
-            for (self.list_ref.items) |instruction_printer|
+            const block_list = self.block_ref.block_printer_list;
+            for (block_list.items) |block_printer|
             {
-                if (instruction == instruction_printer.ref)
+                for (block_printer.instruction_printers.items) |instruction_printer|
                 {
-                    try std.fmt.format(writer, "{} %{}", .{instruction.base.type, instruction_printer.result});
-                    return;
+                    if (instruction == instruction_printer.ref)
+                    {
+                        try std.fmt.format(writer, "{} %{}", .{instruction.base.type, instruction_printer.result});
+                        return;
+                    }
                 }
             }
-            panic("Instruction was not found\n", .{});
+
+            panic("FIX THIS BUG!!! Instruction was not found\n", .{});
+        }
+        else if (value.id == Value.ID.BasicBlock)
+        {
+            const block_list = self.block_ref.block_printer_list;
+            const block = @ptrCast(*BasicBlock, value);
+            for (block_list.items) |block_printer|
+            {
+                if (block_printer.block == block)
+                {
+                    try std.fmt.format(writer, "label %{}", .{block_printer.id});
+                }
+            }
         }
         else
         {
@@ -2020,7 +2163,8 @@ fn print_function(allocator: *Allocator, function: *Function) void
     const entry_block_id = 0xffffffffffffffff;
     for (function.basic_blocks.items) |basic_block|
     {
-        var block_printer = BlockPrinter {
+        var block_printer = BlockPrinter
+        {
             .instruction_printers = ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
                 panic("Failed to allocate memory for instruction printer buffer\n", .{});
             },
@@ -2037,6 +2181,7 @@ fn print_function(allocator: *Allocator, function: *Function) void
                 break :block_id_label id;
             },
             .block = basic_block,
+            .block_printer_list = &block_printers,
         };
 
         for (basic_block.instructions.items) |instruction|
@@ -2044,18 +2189,21 @@ fn print_function(allocator: *Allocator, function: *Function) void
             var instruction_printer = InstructionPrinter {
                 .ref = instruction,
                 .result = undefined,
-                .list_ref = &block_printer.instruction_printers,
+                .block_ref = &block_printer,
             };
             switch (instruction.id)
             {
                 Instruction.ID.Ret,
                 Instruction.ID.Alloca,
                 Instruction.ID.Load,
+                Instruction.ID.ICmp,
+                Instruction.ID.Add,
                 =>
                 {
                     instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
                 },
-                Instruction.ID.Store => { },
+                Instruction.ID.Br,
+                Instruction.ID.Store, => { },
                 else =>
                 {
                     panic("Not implemented: {}\n", .{instruction.id});
@@ -2073,26 +2221,26 @@ fn print_function(allocator: *Allocator, function: *Function) void
     }
 
     // @Info: iterate again to patch up branches
-    var block_index: u64 = 0;
-    for (function.basic_blocks.items) |basic_block|
-    {
-        var block_printer = &block_printers.items[block_index];
-        var instruction_index : u64 = 0;
-        for (basic_block.instructions.items) |instruction|
-        {
-            if (instruction.id == Instruction.ID.Br)
-            {
-                // @TODO: abstract this away to call it also in the previous loop
-                var instruction_printer = &block_printer.instruction_printers.items[instruction_index];
-                // @TODO: is this totally unnecessary???
-                panic("Revise comment\n", .{});
-            }
+    //var block_index: u64 = 0;
+    //for (function.basic_blocks.items) |basic_block|
+    //{
+        //var block_printer = &block_printers.items[block_index];
+        //var instruction_index : u64 = 0;
+        //for (basic_block.instructions.items) |instruction|
+        //{
+            //if (instruction.id == Instruction.ID.Br)
+            //{
+                //// @TODO: abstract this away to call it also in the previous loop
+                //var instruction_printer = &block_printer.instruction_printers.items[instruction_index];
+                //// @TODO: is this totally unnecessary???
+                //panic("Revise comment\n", .{});
+            //}
 
-            instruction_index += 1;
-        }
+            //instruction_index += 1;
+        //}
 
-        block_index += 1;
-    }
+        //block_index += 1;
+    //}
 
     const function_type = @ptrCast(*FunctionType, function.type);
     const ret_type = function_type.ret_type;
