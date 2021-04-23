@@ -304,26 +304,31 @@ const TokenConsumer = struct
         return token;
     }
 
-    fn get_type_consuming_tokens(self: *TokenConsumer, types: *TypeBuffer) *Type {
+    fn get_type_consuming_tokens(self: *TokenConsumer, types: *TypeBuffer) *Type
+    {
         const t = self.tokens[self.next_index];
         self.next_index += 1;
 
         switch (t.value)
         {
-            Token.ID.type => {
+            Token.ID.type =>
+            {
                 var result = t.value.type;
                 return result;
             },
-            Token.ID.sign => {
+            Token.ID.sign =>
+            {
                 const sign = t.value.sign;
                 switch (sign)
                 {
-                    '&' => {
+                    '&' =>
+                    {
                         const pointer_type = self.get_type_consuming_tokens(types);
                         const result = Type.get_pointer_type(pointer_type, types);
                         return result;
                     },
-                    '[' => {
+                    '[' =>
+                    {
                         const in_brackets_token = self.expect_and_consume(Token.ID.int_lit);
                         var array_length: u64 = 0;
                         if (in_brackets_token != null)
@@ -355,6 +360,17 @@ const TokenConsumer = struct
     }
 
 };
+
+fn get_type(node: *Node, expected_type: ?*Type) *Type
+{
+    switch (node.value)
+    {
+        else =>
+        {
+            panic("Not implemented: {}\n", .{node.value});
+        }
+    }
+}
 
 const Parser = struct
 {
@@ -465,7 +481,7 @@ const Parser = struct
                     const result = self.append_and_get(var_decl_node);
                     return result;
                 }
-                else if (consumer.expect_sign('(') != null)
+                else if (consumer.expect_and_consume_sign('(') != null)
                 {
                     const invoke_expr_node_value = Node
                     {
@@ -479,12 +495,6 @@ const Parser = struct
                         .value_type = Node.ValueType.RValue,
                     };
                     var invoke_expr_node = self.append_and_get(invoke_expr_node_value);
-
-                    if (consumer.expect_and_consume_sign('(') != null)
-                    {
-                        // @TODO: fix properly
-                        panic("fooo", .{});
-                    }
 
                     var args_left_to_parse = consumer.expect_and_consume_sign(')') != null;
 
@@ -521,7 +531,7 @@ const Parser = struct
                             .var_expr = VariableExpression {
                                 .declaration = self.find_existing_variable(symbol_name),
                             },
-                        },
+                            },
                         .parent = parent_node,
                         .value_type = Node.ValueType.RValue,
                     };
@@ -537,6 +547,141 @@ const Parser = struct
                     ';' =>
                     {
                         return null;
+                    },
+                    '-' =>
+                    {
+                        panic("Not implemented\n", .{});
+                    },
+                    '(' =>
+                    {
+                        consumer.next_index += 1;
+                        if (self.expression(allocator, consumer, types, parent_node)) |expr_in_parenthesis|
+                        {
+                            if (consumer.expect_and_consume_sign(')') == null)
+                            {
+                                panic("Expected closing parenthesis after opening parenthesis\n", .{});
+                            }
+
+                            assert(expr_in_parenthesis.value == Node.ID.binary_expr);
+                            expr_in_parenthesis.value.binary_expr.parenthesis = true;
+                            return expr_in_parenthesis;
+                        }
+                        else
+                        {
+                            panic("Unable to parse parenthesis expression\n", .{});
+                        }
+                    },
+                    '@' =>
+                    {
+                        consumer.next_index += 1;
+                        const unary_expr_value = Node {
+                            .value = Node.Value {
+                                .unary_expr = UnaryExpression {
+                                    .node_ref = undefined,
+                                    .id = UnaryExpression.ID.PointerDereference,
+                                    .location = UnaryExpression.Location.Prefix,
+                                }
+                            },
+                            .parent = parent_node,
+                            .value_type = Node.ValueType.RValue,
+                        };
+
+                        var pointer_deref = self.append_and_get(unary_expr_value);
+                        if (self.primary_expression(allocator, consumer, types, pointer_deref)) |pointer|
+                        {
+                            pointer_deref.value.unary_expr.node_ref = pointer;
+                            return pointer_deref;
+                        }
+                        else
+                        {
+                            panic("Unable to parse pointer dereference\n", .{});
+                        }
+                    },
+                    '&' =>
+                    {
+                        consumer.next_index += 1;
+                        const addressof_node_value = Node
+                        {
+                            .value = Node.Value {
+                                .unary_expr = UnaryExpression {
+                                    .node_ref = undefined,
+                                    .id = UnaryExpression.ID.AddressOf,
+                                    .location = UnaryExpression.Location.Prefix,
+                                }
+                            },
+                            .parent = parent_node,
+                            .value_type = Node.ValueType.RValue,
+                        };
+
+                        var addressof_node = self.append_and_get(addressof_node_value);
+                        if (self.expression(allocator, consumer, types, addressof_node)) |variable|
+                        {
+                            addressof_node.value.unary_expr.node_ref = variable;
+                            return addressof_node;
+                        }
+                        else
+                        {
+                            panic("Can't parse address-of expression\n", .{});
+                        }
+                    },
+                    '[' =>
+                    {
+                        consumer.next_index += 1;
+                        const array_lit_node_value = Node 
+                        {
+                            .value = Node.Value {
+                                .array_lit = ArrayLiteral {
+                                    .elements = NodeRefBuffer.init(allocator),
+                                    .type_expression = undefined,
+                                }
+                            },
+                            .parent = parent_node,
+                            .value_type = Node.ValueType.RValue,
+                        };
+
+                        var array_lit_node = self.append_and_get(array_lit_node_value);
+                        if (consumer.expect_and_consume_sign(']') == null)
+                        {
+                            while (true)
+                            {
+                                if (self.expression(allocator, consumer, types, array_lit_node)) |literal_node|
+                                {
+                                    array_lit_node.value.array_lit.elements.append(literal_node) catch |err| {
+                                        panic("Couldn't allocate memory for element of array literal\n", .{});
+                                    };
+
+                                    const elements_to_parse = consumer.expect_and_consume_sign(']') == null;
+                                    if (elements_to_parse)
+                                    {
+                                        if (consumer.expect_and_consume_sign(',') == null)
+                                        {
+                                            panic("Expected comma after array literal element\n", .{});
+                                        }
+                                    }
+                                    else
+                                    {
+                                        break;
+                                    }
+                                }
+                                else
+                                {
+                                    panic("Couldn't parse array literal expression\n", .{});
+                                }
+                            }
+
+                            const first_element = array_lit_node.value.array_lit.elements.items[0];
+                            assert(parent_node != null);
+                            const expected_type = get_type(parent_node.?, null);
+                            const element_type = get_type(first_element, expected_type);
+                            const array_length = array_lit_node.value.array_lit.elements.items.len;
+                            array_lit_node.value.array_lit.type_expression = Type.get_array_type(element_type, array_length, types);
+
+                            return array_lit_node;
+                        }
+                        else
+                        {
+                            panic("Not implemented: [], empty array literal\n", .{});
+                        }
                     },
                     else =>
                     {

@@ -1191,7 +1191,8 @@ const Context = struct
             16 => return @ptrCast(*Type, &self.i16_type),
             32 => return @ptrCast(*Type, &self.i32_type),
             64 => return @ptrCast(*Type, &self.i64_type),
-            else => {
+            else =>
+            {
                 panic("Integer type with {} bits not implemented\n", .{bits});
             }
         }
@@ -1617,10 +1618,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 builder.set_block(exit_block);
             }
         },
-        Node.ID.function_decl => panic("Not implemented\n", .{}),
-        Node.ID.array_lit => panic("Not implemented\n", .{}),
-        Node.ID.unary_expr => panic("Not implemented\n", .{}),
-        Node.ID.invoke_expr => panic("Not implemented\n", .{}),
         Node.ID.break_expr =>
         {
             const ast_jump_target = node.value.break_expr.target;
@@ -1629,6 +1626,10 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             // @TODO: this may be buggy
             _ = builder.create_br(allocator, jump_target);
         },
+        Node.ID.function_decl => panic("Not implemented\n", .{}),
+        Node.ID.array_lit => panic("Not implemented\n", .{}),
+        Node.ID.unary_expr => panic("Not implemented\n", .{}),
+        Node.ID.invoke_expr => panic("Not implemented\n", .{}),
         Node.ID.subscript_expr => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
@@ -1992,7 +1993,7 @@ const SlotTracker = struct
 
 const BlockPrinter = struct
 {
-    // @TODO: does this need pointer stability
+    // @TODO: does this need pointer stability?
     instruction_printers: ArrayList(InstructionPrinter),
     id: u64,
     block: *BasicBlock,
@@ -2219,28 +2220,6 @@ fn print_function(allocator: *Allocator, function: *Function) void
             panic("Error allocating a new block printer\n", .{});
         };
     }
-
-    // @Info: iterate again to patch up branches
-    //var block_index: u64 = 0;
-    //for (function.basic_blocks.items) |basic_block|
-    //{
-        //var block_printer = &block_printers.items[block_index];
-        //var instruction_index : u64 = 0;
-        //for (basic_block.instructions.items) |instruction|
-        //{
-            //if (instruction.id == Instruction.ID.Br)
-            //{
-                //// @TODO: abstract this away to call it also in the previous loop
-                //var instruction_printer = &block_printer.instruction_printers.items[instruction_index];
-                //// @TODO: is this totally unnecessary???
-                //panic("Revise comment\n", .{});
-            //}
-
-            //instruction_index += 1;
-        //}
-
-        //block_index += 1;
-    //}
 
     const function_type = @ptrCast(*FunctionType, function.type);
     const ret_type = function_type.ret_type;
