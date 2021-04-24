@@ -77,6 +77,6 @@ pub fn main() anyerror!void
     }
     else
     {
-        try compiler_file_workflow(page_allocator, cwd, test_files[9], 0);
+        try compiler_file_workflow(page_allocator, cwd, test_files[11], 0);
     }
 }

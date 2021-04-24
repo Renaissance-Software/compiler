@@ -518,7 +518,7 @@ const Parser = struct
                             invoke_expr_node.value.invoke_expr.arguments.append(new_arg) catch |err| {
                                 panic("Failed to append argument for invoke expression\n", .{});
                             };
-                            args_left_to_parse = consumer.expect_and_consume_sign(')') != null;
+                            args_left_to_parse = consumer.expect_and_consume_sign(')') == null;
                             if (args_left_to_parse)
                             {
                                 if (consumer.expect_and_consume_sign(',') == null)
@@ -1401,6 +1401,7 @@ const Parser = struct
 
         if (statement_node != null and statement_node.?.value != Node.Value.branch_expr and statement_node.?.value != Node.Value.loop_expr)
         {
+            //print("node type: {}\n", .{statement_node.?.value});
             if (consumer.expect_and_consume_sign(';') == null)
             {
                 self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});

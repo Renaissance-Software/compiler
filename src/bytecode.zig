@@ -180,6 +180,11 @@ const Value = struct
                 const function = @ptrCast(*const Function, self);
                 try std.fmt.format(writer, "{} @{s}", .{function.base.type, function.name});
             },
+            Value.ID.Argument =>
+            {
+                const argument = @ptrCast(*const Function.Argument, self);
+                try std.fmt.format(writer, "{}", .{argument.*});
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.id});
@@ -632,7 +637,7 @@ const Function = struct
 
         pub fn format(self: Argument, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
         {
-            try std.fmt.format(writer, "{} {}", .{self.base.type, self.arg_index});
+            try std.fmt.format(writer, "{} %{}", .{self.base.type, self.arg_index});
         }
     };
 
@@ -1039,7 +1044,7 @@ const Builder = struct
             var i = Instruction
             {
                 .base = Value {
-                    .type = self.context.get_boolean_type(),
+                    .type = callee.type,
                     .id = Value.ID.Instruction,
                 },
                 .id = Instruction.ID.Call,
@@ -1068,7 +1073,7 @@ const Builder = struct
             var i = Instruction
             {
                 .base = Value {
-                    .type = self.context.get_boolean_type(),
+                    .type = callee.type,
                     .id = Value.ID.Instruction,
                 },
                 .id = Instruction.ID.Call,
@@ -2368,39 +2373,42 @@ const InstructionPrinter = struct
 
     fn value_format(self: *const InstructionPrinter, value: *Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        if (value.id == Value.ID.Instruction)
+        switch (value.id)
         {
-            const instruction = @ptrCast(*Instruction, value);
-            const block_list = self.block_ref.block_printer_list;
-            for (block_list.items) |block_printer|
+            Value.ID.Instruction =>
             {
-                for (block_printer.instruction_printers.items) |instruction_printer|
+                const instruction = @ptrCast(*Instruction, value);
+                const block_list = self.block_ref.block_printer_list;
+                for (block_list.items) |block_printer|
                 {
-                    if (instruction == instruction_printer.ref)
+                    for (block_printer.instruction_printers.items) |instruction_printer|
                     {
-                        try std.fmt.format(writer, "{} %{}", .{instruction.base.type, instruction_printer.result});
-                        return;
+                        if (instruction == instruction_printer.ref)
+                        {
+                            try std.fmt.format(writer, "{} %{}", .{instruction.base.type, instruction_printer.result});
+                            return;
+                        }
                     }
                 }
-            }
 
-            panic("FIX THIS BUG!!! Instruction was not found\n", .{});
-        }
-        else if (value.id == Value.ID.BasicBlock)
-        {
-            const block_list = self.block_ref.block_printer_list;
-            const block = @ptrCast(*BasicBlock, value);
-            for (block_list.items) |block_printer|
+                panic("FIX THIS BUG!!! Instruction was not found\n", .{});
+            },
+            Value.ID.BasicBlock =>
             {
-                if (block_printer.block == block)
+                const block_list = self.block_ref.block_printer_list;
+                const block = @ptrCast(*BasicBlock, value);
+                for (block_list.items) |block_printer|
                 {
-                    try std.fmt.format(writer, "label %{}", .{block_printer.id});
+                    if (block_printer.block == block)
+                    {
+                        try std.fmt.format(writer, "label %{}", .{block_printer.id});
+                    }
                 }
+            },
+            else =>
+            {
+                try std.fmt.format(writer, "{}", .{value});
             }
-        }
-        else
-        {
-            try std.fmt.format(writer, "{}", .{value});
         }
     }
 };
@@ -2498,7 +2506,7 @@ fn print_function(allocator: *Allocator, function: *Function) void
     if (arg_count > 0)
     {
         var arg_i : u64 = 0;
-        while (arg_i < arg_count - 1)
+        while (arg_i < arg_count - 1) : (arg_i += 1)
         {
             print("{}, ", .{function.arguments[arg_i]});
         }
