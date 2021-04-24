@@ -1,0 +1,46 @@
+// https://godbolt.org/z/c46PvWdzE
+main :: () -> s32
+{
+    a: s32 = 5;
+    if a > 5
+    {
+        if a > 10
+        {
+            if a > 16
+            {
+                return 50;
+            }
+            else if a > 14
+            {
+                if a == 15
+                {
+                    return 15;
+                }
+                else
+                {
+                    return 16;
+                }
+            }
+            else
+            {
+                if a == 11
+                {
+                    return 11;
+                }
+            }
+        }
+    }
+    else if a > 0
+    {
+        if a == 3
+        {
+            return 3;
+        }
+    }
+    else
+    {
+        return 0;
+    }
+
+    return 6;
+}

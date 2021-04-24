@@ -175,6 +175,11 @@ const Value = struct
                     }
                 }
             },
+            Value.ID.GlobalFunction =>
+            {
+                const function = @ptrCast(*const Function, self);
+                try std.fmt.format(writer, "{} @{s}", .{function.base.type, function.name});
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.id});
@@ -232,6 +237,14 @@ const CompareType = extern enum(u32)
             CompareType.ICMP_SLE =>
             {
                 try writer.writeAll("sle");
+            },
+            CompareType.ICMP_SGE =>
+            {
+                try writer.writeAll("sge");
+            },
+            CompareType.ICMP_SGT =>
+            {
+                try writer.writeAll("sgt");
             },
             else =>
             {
@@ -579,10 +592,28 @@ const OperatorBitCast = struct
     cast_value: *Value,
 };
 
-const FunctionBuffer = BucketArrayList(Function, 64);
+const function_bucket_count = 64;
+const FunctionBuffer = BucketArrayList(Function, function_bucket_count);
 pub const Module = struct
 {
     functions: FunctionBuffer,
+
+    fn find_function(self: *Module, name: []const u8) *Function
+    {
+        assert(name.len > 0);
+        for (self.functions.list.items) |function_bucket|
+        {
+            for (function_bucket.items) |*function|
+            {
+                if (std.mem.eql(u8, name, function.name))
+                {
+                    return function;
+                }
+            }
+        }
+
+        panic("Function not found\n", .{});
+    }
 };
 
 const Function = struct
@@ -918,7 +949,8 @@ const Builder = struct
         }
         else
         {
-            panic("Trying to create a ret in a terminated basic block\n", .{});
+            // panic("Trying to create a ret in a terminated basic block\n", .{});
+            return undefined;
         }
     }
 
@@ -1000,6 +1032,61 @@ const Builder = struct
         }
     }
 
+    fn create_call(self: *Builder, allocator: *Allocator, callee: *Value, maybe_arguments: ?[]*Value) *Instruction
+    {
+        if (maybe_arguments) |arguments|
+        {
+            var i = Instruction
+            {
+                .base = Value {
+                    .type = self.context.get_boolean_type(),
+                    .id = Value.ID.Instruction,
+                },
+                .id = Instruction.ID.Call,
+                .operands = ArrayList(*Value).initCapacity(allocator, arguments.len + 1) catch |err| {
+                    panic("Can't allocate memory for ret operands\n", .{});
+                },
+                .parent = undefined,
+                .value = undefined,
+            };
+
+            i.operands.append(callee) catch |err| {
+                panic("Failed to allocate memory for function call callee operand\n", .{});
+            };
+
+            for (arguments) |arg|
+            {
+                i.operands.append(arg) catch |err| {
+                    panic("Failed to allocate memory for function call arg operand\n", .{});
+                };
+            }
+
+            return self.insert_at_the_end(i);
+        }
+        else
+        {
+            var i = Instruction
+            {
+                .base = Value {
+                    .type = self.context.get_boolean_type(),
+                    .id = Value.ID.Instruction,
+                },
+                .id = Instruction.ID.Call,
+                .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                    panic("Can't allocate memory for ret operands\n", .{});
+                },
+                .parent = undefined,
+                .value = undefined,
+            };
+
+            i.operands.append(callee) catch |err| {
+                panic("Failed to allocate memory for function call callee operand\n", .{});
+            };
+
+            return self.insert_at_the_end(i);
+        }
+    }
+
     fn create_icmp(self: *Builder, allocator: *Allocator, comparation: CompareType, left: *Value, right: *Value) *Instruction
     {
         var i = Instruction
@@ -1049,6 +1136,58 @@ const Builder = struct
         };
         i.operands.append(right) catch |err| {
             panic("Failed to allocate memory for add value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
+    }
+
+    fn create_sub(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
+    {
+        var i = Instruction
+        {
+            .base = Value {
+                .type = left.type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.Sub,
+            .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
+                panic("Can't allocate memory for sub operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+
+        i.operands.append(left) catch |err| {
+            panic("Failed to allocate memory for sub value operand\n", .{});
+        };
+        i.operands.append(right) catch |err| {
+            panic("Failed to allocate memory for sub value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
+    }
+
+    fn create_mul(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
+    {
+        var i = Instruction
+        {
+            .base = Value {
+                .type = left.type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.Mul,
+            .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
+                panic("Can't allocate memory for mul operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+
+        i.operands.append(left) catch |err| {
+            panic("Failed to allocate memory for mul value operand\n", .{});
+        };
+        i.operands.append(right) catch |err| {
+            panic("Failed to allocate memory for mul value operand\n", .{});
         };
 
         return self.insert_at_the_end(i);
@@ -1474,7 +1613,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                             panic("Couldn't get right-side of binary expression\n", .{});
                         }
                     },
-                    Node.ID.var_decl =>
+                    Node.ID.unary_expr =>
                     {
                         assert(ast_left.value.unary_expr.id == UnaryOp.PointerDereference);
 
@@ -1518,9 +1657,21 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                             {
                                 binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_EQ, left, right);
                             },
+                            BinaryOp.Compare_GreaterThan =>
+                            {
+                                binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_SGT, left, right);
+                            },
                             BinaryOp.Plus =>
                             {
                                 binary_op_instruction = builder.create_add(allocator, left, right);
+                            },
+                            BinaryOp.Minus =>
+                            {
+                                binary_op_instruction = builder.create_sub(allocator, left, right);
+                            },
+                            BinaryOp.Multiplication =>
+                            {
+                                binary_op_instruction = builder.create_mul(allocator, left, right);
                             },
                             else =>
                             {
@@ -1626,10 +1777,85 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             // @TODO: this may be buggy
             _ = builder.create_br(allocator, jump_target);
         },
+        Node.ID.invoke_expr =>
+        {
+            const ast_invoke_expr = node.value.invoke_expr.expression;
+            assert(ast_invoke_expr.value == Node.ID.function_decl);
+            const function_name = ast_invoke_expr.value.function_decl.name;
+            const function = builder.module.find_function(function_name);
+            const arg_count = node.value.invoke_expr.arguments.items.len;
+
+            if (arg_count == 0)
+            {
+                const call = builder.create_call(allocator, @ptrCast(*Value, function), null);
+                return @ptrCast(*Value, call);
+            }
+            else
+            {
+                // @TODO: think this in a better way.
+                // One option is to make a std.arraylist which then can be appended
+                // directly to the instruction, substituting their owned operands
+                // arraylist and including as first operand the callee function
+                var argument_buffer : [256]*Value = undefined;
+                assert(arg_count <= 15);
+                const node_arg_buffer = node.value.invoke_expr.arguments;
+                const function_type = @ptrCast(*FunctionType, function.type);
+
+                for (node_arg_buffer.items) |ast_arg, i|
+                {
+                    if (do_node(allocator, builder, ast_types, ast_arg, null)) |arg|
+                    {
+                        arg.type = function_type.arg_types[i];
+                        argument_buffer[i] = arg;
+                    }
+                    else
+                    {
+                        panic("Couldn't generate bytecode for function argument\n", .{});
+                    }
+                }
+
+                const call = builder.create_call(allocator, @ptrCast(*Value, function), argument_buffer[0..arg_count]);
+                return @ptrCast(*Value, call);
+            }
+        },
+        Node.ID.unary_expr =>
+        {
+            const ast_unary_op_type = node.value.unary_expr.id;
+            const ast_unary_op_expr = node.value.unary_expr.node_ref;
+            assert(node.value.unary_expr.location == Parser.UnaryExpression.Location.Prefix);
+            assert(ast_unary_op_expr.value == Node.ID.var_expr);
+            const ast_var_decl = ast_unary_op_expr.value.var_expr.declaration;
+            assert(ast_var_decl.value == Node.ID.var_decl);
+            const ast_var_type = ast_var_decl.value.var_decl.var_type;
+            const var_alloca = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
+
+            switch (ast_unary_op_type)
+            {
+                Parser.UnaryExpression.ID.AddressOf =>
+                {
+                    return var_alloca;
+                },
+                Parser.UnaryExpression.ID.PointerDereference =>
+                {
+                    assert(ast_var_type.value == Internal.Type.ID.pointer);
+                    const pointer_type = get_type(allocator, builder.context, ast_var_type, ast_types);
+                    const pointer_load = builder.create_load(allocator, pointer_type, var_alloca);
+                    if (node.value_type != Node.ValueType.LValue)
+                    {
+                        const pointer_type_unwrapped = @ptrCast(*PointerType, pointer_type);
+                        const deref_type = pointer_type_unwrapped.type;
+                        const deref_expr = builder.create_load(allocator, deref_type, @ptrCast(*Value, pointer_load));
+                        return @ptrCast(*Value, deref_expr);
+                    }
+                    else
+                    {
+                        return @ptrCast(*Value, pointer_load);
+                    }
+                },
+            }
+        },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         Node.ID.array_lit => panic("Not implemented\n", .{}),
-        Node.ID.unary_expr => panic("Not implemented\n", .{}),
-        Node.ID.invoke_expr => panic("Not implemented\n", .{}),
         Node.ID.subscript_expr => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
@@ -1726,6 +1952,13 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const result = context.get_void_type();
             return result;
         },
+        Internal.Type.ID.pointer =>
+        {
+            const ast_appointee = ast_type.value.pointer.p_type;
+            const appointee = get_type(allocator, context, ast_appointee, ast_types);
+            const result = context.get_pointer_type(appointee);
+            return result;
+        },
         else => 
         {
             panic("Can't get type: {}\n", .{ast_type});
@@ -1735,6 +1968,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
 
 pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
 {
+    //print("Bytecode\n", .{});
     var module = Module {
         .functions = FunctionBuffer.init(allocator) catch |err| {
             panic("Failed to allocate function bucket array\n", .{});
@@ -2076,6 +2310,23 @@ const InstructionPrinter = struct
                     try self.value_format(self.ref.operands.items[0], fmt, options, writer);
                 }
             },
+            Instruction.ID.Call =>
+            {
+                try std.fmt.format(writer, "%{} = call ", .{self.result});
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try writer.writeAll("(");
+                if (self.ref.operands.items.len > 1)
+                {
+                    var arg_index : u64 = 1;
+                    while (arg_index < self.ref.operands.items.len - 1) : (arg_index += 1)
+                    {
+                        try self.value_format(self.ref.operands.items[arg_index], fmt, options, writer);
+                        try writer.writeAll(", ");
+                    }
+                    try self.value_format(self.ref.operands.items[arg_index], fmt, options, writer);
+                }
+                try writer.writeAll(")");
+            },
             Instruction.ID.ICmp =>
             {
                 assert(self.ref.operands.items.len == 2);
@@ -2088,6 +2339,22 @@ const InstructionPrinter = struct
             {
                 assert(self.ref.operands.items.len == 2);
                 try std.fmt.format(writer, "%{} = add ", .{self.result}); 
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try writer.writeAll(", ");
+                try self.value_format(self.ref.operands.items[1], fmt, options, writer);
+            },
+            Instruction.ID.Sub =>
+            {
+                assert(self.ref.operands.items.len == 2);
+                try std.fmt.format(writer, "%{} = sub ", .{self.result}); 
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try writer.writeAll(", ");
+                try self.value_format(self.ref.operands.items[1], fmt, options, writer);
+            },
+            Instruction.ID.Mul =>
+            {
+                assert(self.ref.operands.items.len == 2);
+                try std.fmt.format(writer, "%{} = mul ", .{self.result}); 
                 try self.value_format(self.ref.operands.items[0], fmt, options, writer);
                 try writer.writeAll(", ");
                 try self.value_format(self.ref.operands.items[1], fmt, options, writer);
@@ -2140,7 +2407,6 @@ const InstructionPrinter = struct
 
 fn print_function(allocator: *Allocator, function: *Function) void
 {
-    print("\n\nFunction printing\n\n", .{});
     // @TODO: change hardcoding (starting_id, next_id)
     var slot_tracker = SlotTracker {
         .next_id = 0,
@@ -2197,8 +2463,11 @@ fn print_function(allocator: *Allocator, function: *Function) void
                 Instruction.ID.Ret,
                 Instruction.ID.Alloca,
                 Instruction.ID.Load,
+                Instruction.ID.Call,
                 Instruction.ID.ICmp,
                 Instruction.ID.Add,
+                Instruction.ID.Sub,
+                Instruction.ID.Mul,
                 =>
                 {
                     instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));

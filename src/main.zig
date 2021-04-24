@@ -11,9 +11,8 @@ const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
 const Type = Internal.Type;
 
-fn compiler_workflow(allocator: *Allocator, file_content: []const u8) bool
+fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8) bool
 {
-
     var compiler = Compiler{
         .errors_reported = false,
     };
@@ -29,54 +28,55 @@ fn compiler_workflow(allocator: *Allocator, file_content: []const u8) bool
     return true;
 }
 
+fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) !void
+{
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const allocator = &arena.allocator;
+    const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
+    print("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+    defer allocator.free(file_content);
 
-const test_files = [_][]const u8{"hi", "ho"};
+    if (!compiler_work_on_file_content(allocator, file_content))
+    {
+        print("Compiler workflow failed\n", .{});
+    }
+}
+
+const test_dir = "tests/";
+const test_files = [_][]const u8
+{
+    test_dir ++ "empty_void.rns",
+    test_dir ++ "void_return.rns",
+    test_dir ++ "lit_return.rns",
+    test_dir ++ "var_return.rns",
+    test_dir ++ "loop_if.rns",
+    test_dir ++ "loop_and_nested_if.rns",
+    test_dir ++ "more_complicated_loop_and_nested_if_and_else.rns",
+    test_dir ++ "even_more_complicated_loop_and_nested_if_and_else.rns",
+    test_dir ++ "compiler_crasher.rns",
+    test_dir ++ "function_calls.rns",
+    test_dir ++ "pointers.rns",
+    test_dir ++ "function_args.rns",
+    test_dir ++ "pointer_args.rns",
+    test_dir ++ "pointer_and_branching.rns",
+};
 
 pub fn main() anyerror!void
 {
-    const tests = false;
+    const all_tests = true;
     var page_allocator = std.heap.page_allocator;
+    const cwd = std.fs.cwd();
 
-    if (tests)
+    if (all_tests)
     {
-        for (test_files) |test_file|
+        for (test_files) |test_file, i|
         {
-            var arena = std.heap.ArenaAllocator.init(page_allocator);
-            defer arena.deinit();
-            const allocator = &arena.allocator;
-            const file_content = try cwd.readFileAlloc(allocator, test_file, 0xffffffff);
-            defer allocator.free(file_content);
-            if (!compiler_workflow(page_allocator, file_content))
-            {
-                print("Compiler workflow failed\n", .{});
-            }
+            try compiler_file_workflow(page_allocator, cwd, test_file, i);
         }
     }
     else
     {
-        const src_file = 
-            \\ main :: () -> s32
-            \\ {
-            \\      sum : s32 = 0;
-            \\      for i : 4
-            \\      {
-            \\          if i == 2
-            \\          {
-            \\              break;
-            \\          }
-            \\
-            \\          sum = sum + i;
-            \\      }
-            \\      return sum;
-            \\ }
-            ;
-            
-        var arena = std.heap.ArenaAllocator.init(page_allocator);
-        defer arena.deinit();
-        const allocator = &arena.allocator;
-        if (!compiler_workflow(allocator, src_file))
-        {
-            print("Compiler workflow failed\n", .{});
-        }
+        try compiler_file_workflow(page_allocator, cwd, test_files[9], 0);
     }
 }

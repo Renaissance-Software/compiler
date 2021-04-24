@@ -75,6 +75,10 @@ pub const Token = struct
                 },
                 Token.Value.sign =>
                 {
+                    if (self.sign == ' ')
+                    {
+                        panic("Space is not allowed\n", .{});
+                    }
                     try std.fmt.format(writer, "Value {c} .sign = {c} {c}", .{'{', self.sign, '}'});
                 },
             }
@@ -97,7 +101,7 @@ const Tokenizer = struct
             .line = line,
             .column = column,
         };
-        print("Added new token: {}\n", .{token});
+        // print("Added new token: {}\n", .{token});
         self.tokens.append(token) catch |err| {
             panic("Failed to allocate a new token\n", .{});
         };
@@ -134,6 +138,7 @@ pub const LexerResult = struct
 
 pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *TypeBuffer) LexerResult
 {
+    // print("Lexer\n", .{});
     var tokenizer = Tokenizer{ .tokens = ArrayList(Token).init(allocator) };
 
     var current_line_start: u64 = 0;
@@ -145,6 +150,18 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *Typ
         const c = src_file[i];
         var start: u64 = i;
         var end: u64 = i;
+
+        if (c == '/' and src_file[i + 1] == '/')
+        {
+            var ch = c;
+            while (ch != '\n')
+            {
+                i += 1;
+                ch = src_file[i];
+            }
+            i -= 1;
+            continue;
+        }
 
         switch (c) {
             'a'...'z', 'A'...'Z', '_' =>

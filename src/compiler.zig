@@ -98,7 +98,36 @@ pub const Type = struct
 
     pub fn get_pointer_type(p_type: *Type, types: *TypeBuffer) *Type
     {
-        panic("Not implemented\n", .{});
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.pointer and type_decl.value.pointer.p_type == p_type)
+                {
+                    return type_decl;
+                }
+            }
+        }
+
+        const new_type = Type
+        {
+            .value = Type.Value
+            {
+                .pointer = Type.Pointer
+                {
+                    .p_type = p_type,
+                },
+            },
+            .name = undefined,
+        };
+
+        const result = types.append(new_type) catch |err| {
+            panic("Failing to allocate a new type\n", .{});
+        };
+
+        return result;
     }
 
     pub fn get_array_type(arr_type: *Type, count: usize, types: *TypeBuffer) *Type
@@ -171,7 +200,7 @@ pub const Type = struct
             panic("Failed to allocate function type", .{});
         };
 
-        print("Function type: {}", .{result.value.function.ret_type});
+        //print("Function type: {}", .{result.value.function.ret_type});
         return result;
     }
 
