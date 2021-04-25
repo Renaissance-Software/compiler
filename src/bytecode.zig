@@ -185,6 +185,16 @@ const Value = struct
                 const argument = @ptrCast(*const Function.Argument, self);
                 try std.fmt.format(writer, "{}", .{argument.*});
             },
+            Value.ID.Intrinsic =>
+            {
+                const intrinsic = @ptrCast(*const Intrinsic, self);
+                try std.fmt.format(writer, "{}", .{intrinsic.*});
+            },
+            Value.ID.OperatorBitCast =>
+            {
+                const bitcast_operator = @ptrCast(*const OperatorBitCast, self);
+                try std.fmt.format(writer, "{}", .{bitcast_operator.*});
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.id});
@@ -568,6 +578,11 @@ const Intrinsic = struct
         xray_typedevent, // llvm.xray.typedevent
         num_intrinsics = 8052
     };
+
+    pub fn format(self: *const Intrinsic, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        try std.fmt.format(writer, "@{s}", .{@tagName(self.id)});
+    }
 };
 
 const ConstantInt = struct
@@ -595,6 +610,10 @@ const OperatorBitCast = struct
 {
     base: Value,
     cast_value: *Value,
+    pub fn format(self: *const OperatorBitCast, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        try writer.writeAll("@TODO: substitute this: _placeholder_");
+    }
 };
 
 const function_bucket_count = 64;
@@ -912,6 +931,27 @@ const Builder = struct
         return self.insert_at_the_end(i);
     }
 
+    fn create_inbounds_GEP(self: *Builder, allocator: *Allocator, gep_type: *Type, pointer: *Value, indices: []const *Value) *Instruction
+    {
+        var i = Instruction {
+            .base = Value {
+                .type = gep_type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.GetElementPtr,
+            .operands = ArrayList(*Value).initCapacity(allocator, indices.len) catch |err| {
+                panic("Error allocating memory for GEP operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+        i.operands.appendSlice(indices) catch |err| {
+            panic("Error allocating memory for GEP operands\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
+    }
+
     fn create_ret(self: *Builder, allocator: *Allocator, maybe_value: ?*Value) *Instruction
     {
         const function_type = @ptrCast(*FunctionType, self.function.type);
@@ -1198,6 +1238,86 @@ const Builder = struct
         return self.insert_at_the_end(i);
     }
 
+    fn create_bitcast(self: *Builder, allocator: *Allocator, value: *Value, cast_type: *Type) *Instruction
+    {
+        var i = Instruction
+        {
+            .base = Value {
+                .type = cast_type,
+                .id = Value.ID.Instruction,
+            },
+            .id = Instruction.ID.BitCast,
+            .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
+                panic("Can't allocate memory for mul operands\n", .{});
+            },
+            .parent = undefined,
+            .value = undefined,
+        };
+        i.operands.append(value) catch |err| {
+            panic("Failed to allocate memory for mul value operand\n", .{});
+        };
+
+        return self.insert_at_the_end(i);
+    }
+
+    fn create_bitcast_operator(self: *Builder, allocator: *Allocator, value: *Value, cast_type: *Type) *OperatorBitCast
+    {
+        const bitcast_operator = OperatorBitCast
+        {
+            .base = Value {
+                .type = cast_type,
+                .id = Value.ID.OperatorBitCast,
+            },
+            .cast_value = value,
+        };
+
+        // @TODO: batch these
+        const result = allocator.alloc(OperatorBitCast, 1) catch |err| {
+            panic("Failed to allocate memory for bitcast_operator\n", .{});
+        };
+        result.ptr.* = bitcast_operator;
+        return &result[0];
+    }
+
+    fn create_memcpy_intrinsic(self: *Builder, allocator: *Allocator, arguments: []*Value) *Instruction
+    {
+        var intrinsic : ?*Intrinsic = null;
+        for (self.context.intrinsics.list.items) |intrinsic_bucket|
+        {
+            var i : u64 = 0;
+            while (i < intrinsic_bucket.len) : (i += 1)
+            {
+                const elem = &intrinsic_bucket.items[i];
+                if (elem.id == Intrinsic.ID.memcpy)
+                {
+                    intrinsic = elem;
+                    break;
+                }
+            }
+            if (intrinsic != null) break;
+        }
+
+        if (intrinsic == null)
+        {
+            const intrinsic_value = Intrinsic 
+            {
+                .base = Value {
+                    .type = self.context.get_void_type(),
+                    .id = Value.ID.Intrinsic,
+                },
+                .id = Intrinsic.ID.memcpy,
+            };
+
+            const result = self.context.intrinsics.append(intrinsic_value) catch |err| {
+                panic("Couldn't allocate intrinsic\n", .{});
+            };
+            intrinsic = result;
+        }
+        const intrinsic_ptr = @ptrCast(*Value, intrinsic.?);
+        const intrinsic_call = self.create_call(allocator, intrinsic_ptr, arguments);
+        return intrinsic_call;
+    }
+
     fn is_terminated(self: *Builder) bool
     {
         if (self.current) |current|
@@ -1347,6 +1467,39 @@ const Context = struct
         const result = self.get_integer_type(1);
         return result;
     }
+
+    fn get_array_type(self: *Context, array_type: *Type, array_length: u64) *Type
+    {
+        for (self.array_types.list.items) |array_type_bucket|
+        {
+            var type_index : u64 = 0;
+
+            while (type_index < array_type_bucket.len) : (type_index += 1)
+            {
+                const existent_array_type = &array_type_bucket.items[type_index];
+                if (existent_array_type.type == array_type and existent_array_type.count == array_length)
+                {
+                    return @ptrCast(*Type, existent_array_type);
+                }
+            }
+        }
+
+        const array_type_value = ArrayType
+        {
+            .base = Type {
+                .name = undefined,
+                .id = Type.ID.@"array",
+            },
+            .type = array_type,
+            .count = array_length,
+        };
+
+        const result = self.array_types.append(array_type_value) catch |err| {
+            panic("Failed to allocate memory for array type\n", .{});
+        };
+
+        return @ptrCast(*Type, result);
+    }
     
     fn get_pointer_type(self: *Context, p_type: *Type) *Type
     {
@@ -1398,8 +1551,27 @@ const Context = struct
         };
 
         const result = self.constant_ints.append(new_int) catch |err| {
-            panic("Fail to allocate memory for constant int\n", .{});
+            panic("Failed to allocate memory for constant int\n", .{});
         };
+        return result;
+    }
+
+    fn get_constant_array(self: *Context, array_values: []*Value, array_type: *Type) *ConstantArray
+    {
+        const new_array = ConstantArray 
+        {
+            .base = Value {
+                .type = array_type,
+                .id = Value.ID.ConstantArray,
+            },
+            .array_type = array_type,
+            .array_values = array_values,
+        };
+
+        const result = self.constant_arrays.append(new_array) catch |err| {
+            panic("Failed to allocate memory for constant array\n", .{});
+        };
+
         return result;
     }
 };
@@ -1514,26 +1686,46 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const value_node = node.value.var_decl.var_value;
             // @TODO: assert that the value is not null: maybe turn into optional pointer?
             // assert(value_node != 0);
+            const value_result = do_node(allocator, builder, ast_types, value_node, rns_type);
 
-            switch (rns_type.id)
+            if (value_result) |expr_value|
             {
-                Type.ID.array =>
+                switch (rns_type.id)
                 {
-                    // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
-                    panic("Variable declarations of type array are not implemented yet\n", .{});
-                },
-                else =>
-                {
-                    const value_result = do_node(allocator, builder, ast_types, value_node, rns_type);
-                    if (value_result) |value|
+                    Type.ID.array =>
                     {
-                        _ = builder.create_store(allocator, value, @ptrCast(*Value, var_alloca));
-                    }
-                    else
+                        // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
+                        assert(expr_value.id == Value.ID.ConstantArray);
+                        const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
+                        const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, var_alloca), pointer_to_i8_type);
+                        const memcpy_size = get_size(rns_type);
+                        const memcpy_size_value = builder.context.get_constant_int(builder.context.get_integer_type(64), memcpy_size, false);
+                        // @Info: We need to bitcast **as operator** the constant array
+                        assert(expr_value.id == Value.ID.ConstantArray);
+                        const bitcast_constant_array = builder.create_bitcast_operator(allocator, expr_value, pointer_to_i8_type);
+                        var memcpy_args = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
+                            panic("Error allocating memory for memcpy args\n", .{});
+                        }; 
+                        memcpy_args.append(@ptrCast(*Value, array_cast_to_i8)) catch |err| {
+                            panic("Error appending new memcpy arg\n", .{});
+                        };
+                        memcpy_args.append(@ptrCast(*Value, bitcast_constant_array)) catch |err| {
+                            panic("Error appending new memcpy arg\n", .{});
+                        };
+                        memcpy_args.append(@ptrCast(*Value, memcpy_size_value)) catch |err| {
+                            panic("Error appending new memcpy arg\n", .{});
+                        };
+                        _ = builder.create_memcpy_intrinsic(allocator, memcpy_args.items);
+                    },
+                    else =>
                     {
-                        panic("Couldn't find value for variable declaration\n", .{});
-                    }
-                },
+                        _ = builder.create_store(allocator, expr_value, @ptrCast(*Value, var_alloca));
+                    },
+                }
+            }
+            else
+            {
+                panic("Couldn't find value for variable declaration\n", .{});
             }
         },
         Node.ID.var_expr =>
@@ -1859,9 +2051,67 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 },
             }
         },
+        Node.ID.array_lit =>
+        {
+            const count = node.value.array_lit.elements.items.len;
+            assert(count > 0);
+            const ast_type = node.value.array_lit.type_expression;
+            const type_expr = get_type(allocator, builder.context, ast_type, ast_types);
+            assert(type_expr.id == Type.ID.array);
+            const array_type = @ptrCast(*ArrayType, type_expr);
+
+            var array_values = ArrayList(*Value).initCapacity(allocator, count) catch |err| {
+                panic("Error allocating memory for array literal\n", .{});
+            };
+
+            for (node.value.array_lit.elements.items) |ast_array_lit_elem|
+            {
+                if (do_node(allocator, builder, ast_types, ast_array_lit_elem, array_type.type)) |array_lit|
+                {
+                    array_values.append(array_lit) catch |err| {
+                        panic("Error appending array literal element\n", .{});
+                    };
+                }
+                else
+                {
+                    panic("Couldn't generate bytecode for array element\n", .{});
+                }
+            }
+
+            const constant_array = builder.context.get_constant_array(array_values.items, type_expr);
+            return @ptrCast(*Value, constant_array);
+        },
+        Node.ID.subscript_expr =>
+        {
+            const ast_subscript_expr = node.value.subscript_expr.expression;
+            const ast_index_expr = node.value.subscript_expr.index;
+
+            const index_value = do_node(allocator, builder, ast_types, ast_index_expr, null);
+            if (index_value) |index_const|
+            {
+                assert(ast_subscript_expr.value == Node.ID.var_expr);
+                const ast_var_decl = ast_subscript_expr.value.var_expr.declaration;
+                const alloca_value = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
+                assert(alloca_value.id == Value.ID.Instruction);
+                const alloca = @ptrCast(*Instruction, alloca_value);
+                const alloca_type = alloca.value.alloca.type;
+                assert(alloca_type.id == Type.ID.array);
+                const array_type = @ptrCast(*ArrayType, alloca_type);
+                const array_element_type = array_type.type;
+                const zero_value = builder.context.get_constant_int(builder.context.get_integer_type(32), 0, false);
+                var indices = [_]*Value {
+                    @ptrCast(*Value, zero_value),
+                    index_const,
+                };
+                const gep = builder.create_inbounds_GEP(allocator, array_element_type, alloca_value, indices[0..]);
+                return @ptrCast(*Value, gep);
+            }
+            else
+            {
+                panic("Couldn't get bytecode for index in array subscript_expr\n", .{});
+            }
+        },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
-        Node.ID.array_lit => panic("Not implemented\n", .{}),
-        Node.ID.subscript_expr => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
 
@@ -1964,9 +2214,36 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const result = context.get_pointer_type(appointee);
             return result;
         },
-        else => 
+        Internal.Type.ID.array =>
         {
-            panic("Can't get type: {}\n", .{ast_type});
+            const ast_array_type = ast_type.value.array.type;
+            const ast_array_length = ast_type.value.array.count;
+            const array_type = get_type(allocator, context, ast_array_type, ast_types);
+            const result = context.get_array_type(array_type, ast_array_length);
+            return result;
+        },
+    }
+}
+
+fn get_size(type_: *Type) usize
+{
+    switch (type_.id)
+    {
+        Type.ID.array =>
+        {
+            const array_type = @ptrCast(*ArrayType, type_);
+            const array_size = array_type.count * get_size(array_type.type);
+            return array_size;
+        },
+        Type.ID.integer =>
+        {
+            const integer_type = @ptrCast(*IntegerType, type_);
+            assert(integer_type.bits % 8 == 0);
+            return integer_type.bits / 8;
+        },
+        else =>
+        {
+            panic("Not implemented: {}\n", .{type_.id});
         }
     }
 }
@@ -2195,7 +2472,10 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
             // @TODO: figure out how to return here without causing a panic
             _ = builder.create_ret_void(allocator);
         }
-        print_function(allocator, function);
+        if (Internal.should_log)
+        {
+            print_function(allocator, function);
+        }
     }
 }
 
@@ -2364,6 +2644,16 @@ const InstructionPrinter = struct
                 try writer.writeAll(", ");
                 try self.value_format(self.ref.operands.items[1], fmt, options, writer);
             },
+            Instruction.ID.BitCast =>
+            {
+                try std.fmt.format(writer, "%{} = bitcast ", .{self.result}); 
+                try self.value_format(self.ref.operands.items[0], fmt, options, writer);
+                try std.fmt.format(writer, " to {}", .{self.ref.base.type});
+            },
+            Instruction.ID.GetElementPtr =>
+            {
+                try std.fmt.format(writer, "%{} = @TODO: GEP placeholder", .{self.result}); 
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.ref.id});
@@ -2476,6 +2766,8 @@ fn print_function(allocator: *Allocator, function: *Function) void
                 Instruction.ID.Add,
                 Instruction.ID.Sub,
                 Instruction.ID.Mul,
+                Instruction.ID.BitCast,
+                Instruction.ID.GetElementPtr,
                 =>
                 {
                     instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));

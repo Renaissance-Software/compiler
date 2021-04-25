@@ -18,7 +18,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     };
     var types : Internal.TypeBuffer = Type.init(allocator);
 
-    const lexer_result = Lexer.lexical_analyze(allocator, file_content, &types);
+    const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content, &types);
     // @Info: lexer_result.line_count is ignored
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
@@ -60,11 +60,12 @@ const test_files = [_][]const u8
     test_dir ++ "function_args.rns",
     test_dir ++ "pointer_args.rns",
     test_dir ++ "pointer_and_branching.rns",
+    test_dir ++ "array_basic.rns",
 };
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
@@ -77,6 +78,7 @@ pub fn main() anyerror!void
     }
     else
     {
-        try compiler_file_workflow(page_allocator, cwd, test_files[11], 0);
+        const index = test_files.len - 1;
+        try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
     }
 }

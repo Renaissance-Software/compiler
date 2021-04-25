@@ -7,6 +7,7 @@ const Internal = @import("compiler.zig");
 const TypeBuffer = Internal.TypeBuffer;
 const KeywordID = Internal.KeywordID;
 const Type = Internal.Type;
+const Compiler = Internal.Compiler;
 
 pub const Token = struct
 {
@@ -84,13 +85,12 @@ pub const Token = struct
             }
         }
     };
-
-
 };
 
 const Tokenizer = struct
 {
     tokens: ArrayList(Token),
+    compiler: *Compiler,
 
     fn new_token(self: *Tokenizer, value: Token.Value, start: u64, end: u64, line: u32, column: u32) void
     {
@@ -101,7 +101,7 @@ const Tokenizer = struct
             .line = line,
             .column = column,
         };
-        // print("Added new token: {}\n", .{token});
+        self.compiler.log("Added new token: {}\n", .{token});
         self.tokens.append(token) catch |err| {
             panic("Failed to allocate a new token\n", .{});
         };
@@ -136,10 +136,14 @@ pub const LexerResult = struct
     line_count: u32,
 };
 
-pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8, types: *TypeBuffer) LexerResult
+pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8, types: *TypeBuffer) LexerResult
 {
     // print("Lexer\n", .{});
-    var tokenizer = Tokenizer{ .tokens = ArrayList(Token).init(allocator) };
+    var tokenizer = Tokenizer
+    {
+        .tokens = ArrayList(Token).init(allocator),
+        .compiler = compiler,
+    };
 
     var current_line_start: u64 = 0;
     var line_count: u32 = 0;

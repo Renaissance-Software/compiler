@@ -2,3 +2,4 @@
 zig-cache
 .gdb_history
 .cachegrind*
+perf.data*

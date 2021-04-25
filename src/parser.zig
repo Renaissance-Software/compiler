@@ -246,6 +246,7 @@ const TokenConsumer = struct
 {
     tokens: []const Token,
     next_index: usize,
+    compiler: *Compiler,
 
     fn peek(self: *TokenConsumer) Token
     {
@@ -256,7 +257,7 @@ const TokenConsumer = struct
     fn consume(self: *TokenConsumer) void 
     {
         const consumed_token = self.tokens[self.next_index];
-        print("Consuming {}\n", .{consumed_token});
+        self.compiler.log("Consuming {}\n", .{consumed_token});
         self.next_index += 1;
     }
 
@@ -376,10 +377,50 @@ fn get_type(node: *Node, expected_type: ?*Type) *Type
 {
     switch (node.value)
     {
-        else =>
+        Node.ID.var_decl =>
         {
-            panic("Not implemented: {}\n", .{node.value});
-        }
+            const var_type = node.value.var_decl.var_type;
+            return var_type;
+        },
+        Node.ID.int_lit =>
+        {
+            if (expected_type) |type_expected|
+            {
+                switch (type_expected.value)
+                {
+                    Type.ID.integer =>
+                    {
+                        return type_expected;
+                    },
+                    Type.ID.array =>
+                    {
+                        const arr_type = type_expected.value.array.type;
+                        assert(arr_type.value == Type.ID.integer);
+                        return arr_type;
+                    },
+                    else =>
+                    {
+                        panic("Not implemented: {}\n", .{type_expected});
+                    }
+                }
+            }
+            else
+            {
+                panic("Not implemented\n", .{});
+            }
+        },
+        Node.ID.function_decl => panic("not implemented\n", .{}),
+        Node.ID.array_lit => panic("not implemented\n", .{}),
+        Node.ID.unary_expr => panic("not implemented\n", .{}),
+        Node.ID.binary_expr => panic("not implemented\n", .{}),
+        Node.ID.return_expr => panic("not implemented\n", .{}),
+        Node.ID.var_expr => panic("not implemented\n", .{}),
+        Node.ID.invoke_expr => panic("not implemented\n", .{}),
+        Node.ID.block_expr => panic("not implemented\n", .{}),
+        Node.ID.branch_expr => panic("not implemented\n", .{}),
+        Node.ID.loop_expr => panic("not implemented\n", .{}),
+        Node.ID.break_expr => panic("not implemented\n", .{}),
+        Node.ID.subscript_expr => panic("not implemented\n", .{}),
     }
 }
 
@@ -1636,6 +1677,7 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     var token_consumer = TokenConsumer{
         .tokens = lexer_result.tokens,
         .next_index = 0,
+        .compiler = compiler,
     };
 
     var parser = Parser

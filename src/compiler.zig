@@ -7,6 +7,8 @@ const print = std.debug.print;
 const _BucketArrayModule = @import("bucket_array.zig");
 const BucketArrayList = _BucketArrayModule.BucketArrayList;
 
+pub const should_log = true;
+
 pub const KeywordID = enum
 {
     @"if",
@@ -274,5 +276,13 @@ pub const Compiler = struct
     pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) void {
         self.errors_reported = true;
         print(fmt, args);
+    }
+
+    pub fn log(self: *Compiler, comptime format: []const u8, args: anytype) void
+    {
+        if (should_log)
+        {
+            print(format, args);
+        }
     }
 };
