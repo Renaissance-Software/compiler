@@ -581,7 +581,7 @@ const Intrinsic = struct
 
     pub fn format(self: *const Intrinsic, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        try std.fmt.format(writer, "@{s}", .{@tagName(self.id)});
+        try std.fmt.format(writer, "{} @intrinsic.{s}", .{self.base.type, @tagName(self.id)});
     }
 };
 
@@ -612,7 +612,7 @@ const OperatorBitCast = struct
     cast_value: *Value,
     pub fn format(self: *const OperatorBitCast, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        try writer.writeAll("@TODO: substitute this: _placeholder_");
+        try std.fmt.format(writer, "{} bitcast ({}* {s} to {})", .{self.base.type, self.cast_value.type, "constant_placeholder", self.base.type});
     }
 };
 
@@ -935,7 +935,7 @@ const Builder = struct
     {
         var i = Instruction {
             .base = Value {
-                .type = gep_type,
+                .type = self.context.get_pointer_type(gep_type),
                 .id = Value.ID.Instruction,
             },
             .id = Instruction.ID.GetElementPtr,
@@ -944,6 +944,9 @@ const Builder = struct
             },
             .parent = undefined,
             .value = undefined,
+        };
+        i.operands.append(pointer) catch |err| {
+            panic("Error allocating memory for GEP operands\n", .{});
         };
         i.operands.appendSlice(indices) catch |err| {
             panic("Error allocating memory for GEP operands\n", .{});
@@ -2104,7 +2107,8 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                     index_const,
                 };
                 const gep = builder.create_inbounds_GEP(allocator, array_element_type, alloca_value, indices[0..]);
-                return @ptrCast(*Value, gep);
+                const load = builder.create_load(allocator, array_element_type, @ptrCast(*Value, gep));
+                return @ptrCast(*Value, load);
             }
             else
             {
@@ -2474,7 +2478,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
         }
         if (Internal.should_log)
         {
-            print_function(allocator, function);
+            print_function(allocator, builder.context, function);
         }
     }
 }
@@ -2538,6 +2542,7 @@ const InstructionPrinter = struct
     result: u64,
     // @TODO: does this need pointer stability
     block_ref: *BlockPrinter,
+    context: *Context,
 
     // @TODO: add align
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
@@ -2597,7 +2602,14 @@ const InstructionPrinter = struct
             },
             Instruction.ID.Call =>
             {
-                try std.fmt.format(writer, "%{} = call ", .{self.result});
+                if (self.ref.base.type != self.context.get_void_type())
+                {
+                    try std.fmt.format(writer, "%{} = call ", .{self.result});
+                }
+                else
+                {
+                    try std.fmt.format(writer, "call ", .{});
+                }
                 try self.value_format(self.ref.operands.items[0], fmt, options, writer);
                 try writer.writeAll("(");
                 if (self.ref.operands.items.len > 1)
@@ -2652,7 +2664,21 @@ const InstructionPrinter = struct
             },
             Instruction.ID.GetElementPtr =>
             {
-                try std.fmt.format(writer, "%{} = @TODO: GEP placeholder", .{self.result}); 
+                const first_operand = self.ref.operands.items[0];
+                assert(first_operand.id == Value.ID.Instruction);
+                const alloca_instruction = @ptrCast(*Instruction, first_operand);
+                assert(alloca_instruction.id == Instruction.ID.Alloca);
+                const gep_type = alloca_instruction.value.alloca.type;
+
+                try std.fmt.format(writer, "%{} = getelementptr inbounds {}, ", .{self.result, gep_type}); 
+                for (self.ref.operands.items) |operand, i|
+                {
+                    try self.value_format(operand, fmt, options, writer);
+                    if (i != self.ref.operands.items.len - 1)
+                    {
+                        try writer.writeAll(", ");
+                    }
+                }
             },
             else =>
             {
@@ -2703,7 +2729,7 @@ const InstructionPrinter = struct
     }
 };
 
-fn print_function(allocator: *Allocator, function: *Function) void
+fn print_function(allocator: *Allocator, context: *Context, function: *Function) void
 {
     // @TODO: change hardcoding (starting_id, next_id)
     var slot_tracker = SlotTracker {
@@ -2755,13 +2781,14 @@ fn print_function(allocator: *Allocator, function: *Function) void
                 .ref = instruction,
                 .result = undefined,
                 .block_ref = &block_printer,
+                .context = context,
             };
+
             switch (instruction.id)
             {
                 Instruction.ID.Ret,
                 Instruction.ID.Alloca,
                 Instruction.ID.Load,
-                Instruction.ID.Call,
                 Instruction.ID.ICmp,
                 Instruction.ID.Add,
                 Instruction.ID.Sub,
@@ -2771,6 +2798,13 @@ fn print_function(allocator: *Allocator, function: *Function) void
                 =>
                 {
                     instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
+                },
+                Instruction.ID.Call =>
+                {
+                    if (instruction.base.type != context.get_void_type())
+                    {
+                        instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
+                    }
                 },
                 Instruction.ID.Br,
                 Instruction.ID.Store, => { },

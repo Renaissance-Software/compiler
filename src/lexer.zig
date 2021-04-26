@@ -243,7 +243,8 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 tokenizer.new_token(char_lit_type, start, end, line_count, column);
             },
 
-            ' ' => {},
+            // Ignore spaces, tabs and return characters
+            '\t', ' ', '\r' => {},
 
             '\n' =>
             {
