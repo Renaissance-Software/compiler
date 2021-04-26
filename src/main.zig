@@ -61,11 +61,12 @@ const test_files = [_][]const u8
     test_dir ++ "pointer_args.rns",
     test_dir ++ "pointer_and_branching.rns",
     test_dir ++ "array_basic.rns",
+    test_dir ++ "array_assign.rns",
 };
 
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 

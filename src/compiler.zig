@@ -268,6 +268,33 @@ pub const Type = struct
 
         return types;
     }
+
+    pub fn format(self: *const Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self.value)
+        {
+            Type.ID.integer =>
+            {
+                if (self.value.integer.signed)
+                {
+                    try std.fmt.format(writer, "s{}", .{self.value.integer.bits});
+                }
+                else
+                {
+                    try std.fmt.format(writer, "u{}", .{self.value.integer.bits});
+                }
+            },
+            Type.ID.array =>
+            {
+                try std.fmt.format(writer, "{c}{}{c}{}", .{'[', self.value.array.count, ']', self.value.array.type});
+            },
+            Type.ID.pointer =>
+            {
+                try std.fmt.format(writer, "*{}", .{self.value.pointer.p_type});
+            },
+            else => panic("Not implemented: {}\n", .{self.value}),
+        }
+    }
 };
 
 pub const Compiler = struct

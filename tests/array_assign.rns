@@ -1,0 +1,8 @@
+main :: () -> s32
+{
+    arr: [2]s32 = [3, 2];
+    arr[0] = arr[0] + 5123;
+    arr[1] = arr[1] - 123;
+    a : s32 = arr[0] + arr[1];
+    return a;
+}

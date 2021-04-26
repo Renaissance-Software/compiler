@@ -240,6 +240,181 @@ pub const Node = struct
         RValue,
         LValue,
     };
+
+    pub fn format(self: *const Node, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        switch (self.value)
+        {
+            Node.ID.function_decl =>
+            {
+                try std.fmt.format(writer, "{s} :: (", .{self.value.function_decl.name});
+                for (self.value.function_decl.arguments.items) |arg|
+                {
+                    try std.fmt.format(writer, "{}, ", .{arg});
+                }
+                try writer.writeAll(")");
+                const ret_type = self.value.function_decl.type.value.function.ret_type;
+                if (ret_type.value != Type.ID.void_type)
+                {
+                    try std.fmt.format(writer, " -> {}", .{ret_type});
+                }
+                try writer.writeAll("\n{\n");
+                for (self.value.function_decl.blocks.items) |block|
+                {
+                    try std.fmt.format(writer, "{}\n", .{block});
+                }
+            },
+            Node.ID.block_expr =>
+            {
+                for (self.value.block_expr.statements.items) |statement|
+                {
+                    try std.fmt.format(writer, "{}\n", .{statement});
+                }
+            },
+            Node.ID.var_decl =>
+            {
+                try std.fmt.format(writer, "{s}: {} = {}", .{self.value.var_decl.name, self.value.var_decl.var_type, self.value.var_decl.var_value});
+            },
+            Node.ID.array_lit =>
+            {
+                try std.fmt.format(writer, "[", .{});
+                for (self.value.array_lit.elements.items) |array_lit_elem|
+                {
+                    try std.fmt.format(writer, "{}, ", .{array_lit_elem});
+                }
+                try writer.writeAll("]");
+            },
+            Node.ID.int_lit =>
+            {
+                if (self.value.int_lit.signed)
+                {
+                    try writer.writeAll("-");
+                }
+                try std.fmt.format(writer, "{}", .{self.value.int_lit.value});
+            },
+            Node.ID.binary_expr =>
+            {
+                if (self.value.binary_expr.parenthesis)
+                {
+                    try writer.writeAll("(");
+                }
+                switch (self.value.binary_expr.id)
+                {
+                    BinaryExpression.ID.Plus =>
+                    {
+                        try std.fmt.format(writer, "{} + {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Minus =>
+                    {
+                        try std.fmt.format(writer, "{} - {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Multiplication =>
+                    {
+                        try std.fmt.format(writer, "{} * {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Assignment =>
+                    {
+                        try std.fmt.format(writer, "{} = {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Compare_Equal =>
+                    {
+                        try std.fmt.format(writer, "{} == {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Compare_LessThan =>
+                    {
+                        try std.fmt.format(writer, "{} < {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    BinaryExpression.ID.Compare_GreaterThan =>
+                    {
+                        try std.fmt.format(writer, "{} > {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    },
+                    else => panic("Not implemented: {}\n", .{self.value.binary_expr.id}),
+                }
+                if (self.value.binary_expr.parenthesis)
+                {
+                    try writer.writeAll(")");
+                }
+            },
+            Node.ID.subscript_expr =>
+            {
+                try std.fmt.format(writer, "{}[{}]", .{self.value.subscript_expr.expression, self.value.subscript_expr.index});
+            },
+            Node.ID.var_expr =>
+            {
+                try std.fmt.format(writer, "{s}", .{self.value.var_expr.declaration.value.var_decl.name});
+            },
+            Node.ID.return_expr =>
+            {
+                try std.fmt.format(writer, "return {}", .{self.value.return_expr.expression});
+            },
+            Node.ID.loop_expr =>
+            {
+                try writer.writeAll("while (");
+                for (self.value.loop_expr.prefix.value.block_expr.statements.items) |prefix_st|
+                {
+                    try std.fmt.format(writer, "{}", .{prefix_st});
+                }
+                try writer.writeAll(")\n{\n");
+                for (self.value.loop_expr.body.value.block_expr.statements.items) |loop_st|
+                {
+                    try std.fmt.format(writer, "{}", .{loop_st});
+                }
+                for (self.value.loop_expr.postfix.value.block_expr.statements.items) |postfix_st|
+                {
+                    try std.fmt.format(writer, "{}", .{postfix_st});
+                }
+                try writer.writeAll("}");
+            },
+            Node.ID.branch_expr =>
+            {
+                try writer.writeAll("if (");
+                try std.fmt.format(writer, "{}", .{self.value.branch_expr.condition});
+                try writer.writeAll(")\n{\n");
+                for (self.value.branch_expr.if_block.value.block_expr.statements.items) |if_st|
+                {
+                    try std.fmt.format(writer, "{}\n", .{if_st});
+                }
+                try writer.writeAll("}\n");
+                if (self.value.branch_expr.else_block) |else_block|
+                {
+                    try writer.writeAll("else\n{\n");
+                    for (else_block.value.block_expr.statements.items) |else_st|
+                    {
+                        try std.fmt.format(writer, "{}\n", .{else_st});
+                    }
+                    try writer.writeAll("}");
+                }
+            },
+            Node.ID.break_expr =>
+            {
+                try writer.writeAll("break;");
+            },
+            Node.ID.invoke_expr =>
+            {
+                try std.fmt.format(writer, "{s}(", .{self.value.invoke_expr.expression.value.function_decl.name});
+                for (self.value.invoke_expr.arguments.items) |arg|
+                {
+                    try std.fmt.format(writer, "{}, ", .{arg});
+                }
+                try writer.writeAll(")");
+            },
+            Node.ID.unary_expr =>
+            {
+                switch (self.value.unary_expr.id)
+                {
+                    UnaryExpression.ID.AddressOf =>
+                    {
+                        try std.fmt.format(writer, "&{}", .{self.value.unary_expr.node_ref});
+                    },
+                    UnaryExpression.ID.PointerDereference =>
+                    {
+                        try std.fmt.format(writer, "@{}", .{self.value.unary_expr.node_ref});
+                    },
+                }
+            },
+            //else => panic("Not implemented: {}\n", .{self.value}),
+        }
+    }
 };
 
 const TokenConsumer = struct
@@ -946,7 +1121,7 @@ const Parser = struct
                         left_expr.value_type = Node.ValueType.LValue;
                     }
 
-                    if (self.primary_expression(allocator, consumer, types, parent_node)) |right_expr|
+                    if (self.expression(allocator, consumer, types, parent_node)) |right_expr|
                     {
                         //print("{}", .{left_expr.value});
                         var right_precedes_left = false;
@@ -1625,10 +1800,9 @@ const Parser = struct
         }
         else
         {
-            const void_type = Type.get_void_type(types);
-            if (void_type != null)
+            if (Type.get_void_type(types)) |void_type|
             {
-                function_type.ret_type = void_type.?;
+                function_type.ret_type = void_type;
             }
             else
             {
@@ -1666,6 +1840,15 @@ const Parser = struct
 pub const ParserResult = struct
 {
     function_declarations: []*Node,
+
+    fn print_tree(self: *const ParserResult, compiler: *Compiler) void
+    {
+        print("\n\nPrinting AST:\n\n", .{});
+        for (self.function_declarations) |function|
+        {
+            compiler.log("{}", .{function});
+        }
+    }
 };
 
 pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult, types: *TypeBuffer) ParserResult
@@ -1715,6 +1898,8 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     const result = ParserResult {
         .function_declarations = parser.function_declarations.items,
     };
+
+    result.print_tree(compiler);
 
     return result;
 }

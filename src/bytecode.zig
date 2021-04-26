@@ -1363,6 +1363,17 @@ const Builder = struct
                 panic("Failed to allocate memory for instruction\n", .{});
             };
             result.parent = current;
+            //print("Instructions in the block: {}:\n", .{current.instructions.items.len});
+            //if (false)
+            //{
+                //for (current.instructions.items) |i|
+                //{
+                    //if (i.id != Instruction.ID.Alloca)
+                    //{
+                        //print("{}", .{i});
+                    //}
+                //}
+            //}
 
             return result;
         }
@@ -2092,6 +2103,16 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const index_value = do_node(allocator, builder, ast_types, ast_index_expr, null);
             if (index_value) |index_const|
             {
+                switch (ast_subscript_expr.value)
+                {
+                    Node.ID.var_expr => {},
+                    Node.ID.binary_expr =>
+                    {
+                        print("\nLeft:\n\n{}\n\n", .{ast_subscript_expr.value.binary_expr.left});
+                        print("\nRight:\n\n{}\n\n", .{ast_subscript_expr.value.binary_expr.right});
+                    },
+                    else => panic("Not implemented: {}\n", .{ast_subscript_expr.value}),
+                }
                 assert(ast_subscript_expr.value == Node.ID.var_expr);
                 const ast_var_decl = ast_subscript_expr.value.var_expr.declaration;
                 const alloca_value = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
