@@ -77,8 +77,14 @@ pub const Type = struct
 
         pub const Field = struct 
         {
-            type: *Type,
             name: []const u8,
+            type: *Type,
+            parent: *Type,
+
+            pub fn format(self: Field, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+            {
+                try std.fmt.format(writer, "{s}", .{self.name});
+            }
         };
     };
 
@@ -330,8 +336,9 @@ pub const Type = struct
             },
             Type.ID.pointer =>
             {
-                try std.fmt.format(writer, "*{}", .{self.value.pointer.p_type});
+                try std.fmt.format(writer, "&{}", .{self.value.pointer.p_type});
             },
+            Type.ID.structure => try std.fmt.format(writer, "{s}", .{self.value.structure.name}),
             else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
@@ -340,7 +347,9 @@ pub const Type = struct
 pub const Compiler = struct
 {
     errors_reported: bool,
-    pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) void {
+
+    pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) void
+    {
         self.errors_reported = true;
         print(fmt, args);
     }

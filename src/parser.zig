@@ -197,7 +197,7 @@ const ArrayLiteral = struct
 const StructSubscriptExpression = struct
 {
     expression: *Node,
-    field_expr: *Node,
+    field_expr: *Type.Struct.Field,
 };
 
 pub const Node = struct
@@ -429,7 +429,10 @@ pub const Node = struct
                     },
                 }
             },
-            Node.ID.struct_subscript_expr => panic("not implemented\n", .{}),
+            Node.ID.struct_subscript_expr =>
+            {
+                try std.fmt.format(writer, "{}.{}", .{self.value.struct_subscript_expr.expression, self.value.struct_subscript_expr.field_expr});
+            }
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
@@ -570,6 +573,18 @@ const TokenConsumer = struct
                             panic("Struct expects to open a brace next\n", .{});
                         }
 
+                        const struct_type_value = Type {
+                            .value = Type.Value {
+                                .structure = Type.Struct {
+                                    .fields = undefined,
+                                    .name = "",
+                                },
+                            },
+                        };
+
+                        var struct_type = types.append(struct_type_value) catch |err| {
+                            panic("Error allocating memory for struct type\n", .{});
+                        };
 
                         var fields_to_parse = self.expect_and_consume_sign('}') == null;
                         var field_list = ArrayList(Type.Struct.Field).init(allocator);
@@ -588,6 +603,7 @@ const TokenConsumer = struct
                             {
                                 .type = field_type,
                                 .name = field_name,
+                                .parent = struct_type,
                             };
 
                             field_list.append(field) catch |err| {
@@ -611,18 +627,8 @@ const TokenConsumer = struct
                             }
                         }
 
-                        const struct_type_value = Type {
-                            .value = Type.Value {
-                                .structure = Type.Struct {
-                                    .fields = field_list.items,
-                                    .name = "",
-                                },
-                            },
-                        };
+                        struct_type.value.structure.fields = field_list.items;
 
-                        const struct_type = types.append(struct_type_value) catch |err| {
-                            panic("Error allocating memory for struct type\n", .{});
-                        };
                         print("New struct\n", .{});
                         return struct_type;
                     },
@@ -1181,6 +1187,11 @@ const Parser = struct
                             consumer.consume();
                             panic("/ to binary expression sign not implemented\n", .{});
                         },
+                        '.' =>
+                        {
+                            consumer.consume();
+                            maybe_binop = BinaryExpression.ID.StructSubscript;
+                        },
                         else =>
                         {
                             maybe_binop = null;
@@ -1227,6 +1238,57 @@ const Parser = struct
                     else
                     {
                         panic("Couldn't parse index node\n", .{});
+                    }
+                }
+                else if (binop == BinaryExpression.ID.StructSubscript)
+                {
+                    const subscript_node_value = Node
+                    {
+                        .value = Node.Value {
+                            .struct_subscript_expr = StructSubscriptExpression {
+                                .expression = left_expr,
+                                .field_expr = undefined,
+                            },
+                         },
+                        .parent = parent_node,
+                        .value_type = Node.ValueType.RValue,
+                    };
+
+                    var subscript_node = self.append_and_get(subscript_node_value);
+                    assert(left_expr.value == Node.ID.var_expr);
+                    const var_decl = left_expr.value.var_expr.declaration;
+                    const var_type = var_decl.value.var_decl.var_type;
+                    const struct_type = switch (var_type.value)
+                    {
+                        Type.ID.structure => var_type,
+                        Type.ID.pointer => var_type.value.pointer.p_type,
+                        else => panic("not implemented: {}\n", .{var_type.value}),
+                    };
+
+                    assert(struct_type.value == Type.ID.structure);
+                    if (consumer.expect_and_consume(Token.ID.symbol)) |field_name_token|
+                    {
+                        const field_name = field_name_token.value.symbol;
+                        var found = false;
+
+                        for (struct_type.value.structure.fields) |field, i|
+                        {
+                            if (std.mem.eql(u8, field.name, field_name))
+                            {
+                                found = true;
+                                subscript_node.value.struct_subscript_expr.field_expr = &struct_type.value.structure.fields[i];
+                                left_ptr.* = subscript_node;
+                            }
+                        }
+
+                        if (!found)
+                        {
+                            panic("struct field not found\n", .{});
+                        }
+                    }
+                    else
+                    {
+                        panic("Unable to parse struct field name\n", .{});
                     }
                 }
                 else

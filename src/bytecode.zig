@@ -90,6 +90,7 @@ const StructType = struct
 {
     base: Type,
     field_types: []*Type,
+    name: []const u8,
 };
 
 const ArrayType = struct
@@ -1387,6 +1388,7 @@ const Builder = struct
 const FunctionTypeBuffer   = BucketArrayList(FunctionType, 64);
 const ArrayTypeBuffer      = BucketArrayList(ArrayType, 64);
 const PointerTypeBuffer    = BucketArrayList(PointerType, 64);
+const StructTypeBuffer     = BucketArrayList(StructType, 64);
 const ConstantArrayBuffer  = BucketArrayList(ConstantArray, 64);
 const ConstantIntBuffer    = BucketArrayList(ConstantInt, 64);
 const IntrinsicBuffer      = BucketArrayList(Intrinsic, 64);
@@ -1406,6 +1408,7 @@ const Context = struct
     function_types: FunctionTypeBuffer,
     array_types: ArrayTypeBuffer,
     pointer_types: PointerTypeBuffer,
+    structure_types: StructTypeBuffer,
     constant_arrays: ConstantArrayBuffer,
     constant_ints: ConstantIntBuffer,
     intrinsics: IntrinsicBuffer,
@@ -1436,6 +1439,9 @@ const Context = struct
         context.pointer_types   = PointerTypeBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
         }; 
+        context.structure_types   = StructTypeBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
         context.constant_arrays = ConstantArrayBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
         }; 
@@ -1445,7 +1451,6 @@ const Context = struct
         context.intrinsics      = IntrinsicBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
         }; 
-
 
         return context;
     }
@@ -1542,6 +1547,53 @@ const Context = struct
 
         const result = self.pointer_types.append(pointer_type_value) catch |err| {
             panic("Failed to allocate memory for pointer type\n", .{});
+        };
+
+        return @ptrCast(*Type, result);
+    }
+
+    fn get_struct_type(self: *Context, field_types: []*Type, name: []const u8) *Type
+    {
+        for (self.structure_types.list.items) |struct_type_bucket|
+        {
+            var type_index : u64 = 0;
+
+            while (type_index < struct_type_bucket.len) : (type_index += 1)
+            {
+                const struct_type = &struct_type_bucket.items[type_index];
+                if (std.mem.eql(u8, struct_type.name, name) and struct_type.field_types.len == field_types.len)
+                {
+                    var found = true;
+                    for (struct_type.field_types) |field_type, i|
+                    {
+                        if (field_type != field_types[i])
+                        {
+                            found = false;
+                            break;
+                        }
+
+                        continue;
+                    }
+
+                    if (found)
+                    {
+                        return @ptrCast(*Type, struct_type);
+                    }
+                }
+            }
+        }
+
+        const new_struct = StructType {
+            .base = Type {
+                .name = undefined,
+                .id = Type.ID.@"struct",
+            },
+            .field_types = field_types,
+            .name = name,
+        };
+
+        const result = self.structure_types.append(new_struct) catch |err| {
+            panic("Can't allocate new struct type\n", .{});
         };
 
         return @ptrCast(*Type, result);
@@ -2156,7 +2208,10 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 panic("Couldn't get bytecode for index in array subscript_expr\n", .{});
             }
         },
-        Node.ID.struct_subscript_expr => panic("Not implemented\n", .{}),
+        Node.ID.struct_subscript_expr =>
+        {
+            panic("Not implemented\n", .{});
+        },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
@@ -2270,7 +2325,21 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
         },
         Internal.Type.ID.structure =>
         {
-            panic("Not implemented\n", .{});
+            const ast_struct_name = ast_type.value.structure.name;
+            var field_types = ArrayList(*Type).initCapacity(allocator, ast_type.value.structure.fields.len) catch |err| {
+                panic("Error allocating memory for field types\n", .{});
+            };
+
+            for (ast_type.value.structure.fields) |ast_struct_field|
+            {
+                const field_type = get_type(allocator, context, ast_struct_field.type, ast_types);
+                field_types.append(field_type) catch |err| {
+                    panic("Error allocating memory for field type\n", .{});
+                };
+            }
+
+            const result = context.get_struct_type(field_types.items, ast_struct_name);
+            return result;
         }
     }
 }
