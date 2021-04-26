@@ -1,0 +1,10 @@
+foo :: struct 
+{
+    a: s32,
+    b: s32,
+}
+
+main :: (a: &foo, b: &foo) -> s32
+{
+    return a.a * b.a + a.b * b.b;
+}

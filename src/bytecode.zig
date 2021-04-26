@@ -1844,6 +1844,26 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                             panic("Couldn't get right-side of binary expression\n", .{});
                         }
                     },
+                    Node.ID.array_subscript_expr =>
+                    {
+                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.var_expr);
+                        assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
+                        if (do_node(allocator, builder, ast_types, ast_right, null)) |right_value|
+                        {
+                            if (do_node(allocator, builder, ast_types, ast_left, null)) |array_elem_load|
+                            {
+                                _ = builder.create_store(allocator, right_value, array_elem_load);
+                            }
+                            else
+                            {
+                                panic("Couldn't get load of binary expression\n", .{});
+                            }
+                        }
+                        else
+                        {
+                            panic("Failed to decipher array expression\n", .{});
+                        }
+                    },
                     else =>
                     {
                         panic("Not implemented: {}\n", .{ast_left.value});
@@ -2095,26 +2115,26 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const constant_array = builder.context.get_constant_array(array_values.items, type_expr);
             return @ptrCast(*Value, constant_array);
         },
-        Node.ID.subscript_expr =>
+        Node.ID.array_subscript_expr =>
         {
-            const ast_subscript_expr = node.value.subscript_expr.expression;
-            const ast_index_expr = node.value.subscript_expr.index;
+            const ast_array_subscript_expr = node.value.array_subscript_expr.expression;
+            const ast_array_index_expr = node.value.array_subscript_expr.index;
 
-            const index_value = do_node(allocator, builder, ast_types, ast_index_expr, null);
+            const index_value = do_node(allocator, builder, ast_types, ast_array_index_expr, null);
             if (index_value) |index_const|
             {
-                switch (ast_subscript_expr.value)
+                switch (ast_array_subscript_expr.value)
                 {
                     Node.ID.var_expr => {},
                     Node.ID.binary_expr =>
                     {
-                        print("\nLeft:\n\n{}\n\n", .{ast_subscript_expr.value.binary_expr.left});
-                        print("\nRight:\n\n{}\n\n", .{ast_subscript_expr.value.binary_expr.right});
+                        print("\nLeft:\n\n{}\n\n", .{ast_array_subscript_expr.value.binary_expr.left});
+                        print("\nRight:\n\n{}\n\n", .{ast_array_subscript_expr.value.binary_expr.right});
                     },
-                    else => panic("Not implemented: {}\n", .{ast_subscript_expr.value}),
+                    else => panic("Not implemented: {}\n", .{ast_array_subscript_expr.value}),
                 }
-                assert(ast_subscript_expr.value == Node.ID.var_expr);
-                const ast_var_decl = ast_subscript_expr.value.var_expr.declaration;
+                assert(ast_array_subscript_expr.value == Node.ID.var_expr);
+                const ast_var_decl = ast_array_subscript_expr.value.var_expr.declaration;
                 const alloca_value = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
                 assert(alloca_value.id == Value.ID.Instruction);
                 const alloca = @ptrCast(*Instruction, alloca_value);
@@ -2136,6 +2156,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 panic("Couldn't get bytecode for index in array subscript_expr\n", .{});
             }
         },
+        Node.ID.struct_subscript_expr => panic("Not implemented\n", .{}),
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
@@ -2247,6 +2268,10 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const result = context.get_array_type(array_type, ast_array_length);
             return result;
         },
+        Internal.Type.ID.structure =>
+        {
+            panic("Not implemented\n", .{});
+        }
     }
 }
 

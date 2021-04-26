@@ -18,6 +18,7 @@ pub const KeywordID = enum
     @"break",
     @"continue",
     @"return",
+    @"struct",
 };
 
 pub const TypeBuffer = BucketArrayList(Type, 64);
@@ -25,41 +26,60 @@ pub const TypeRefBuffer = ArrayList(*Type);
 pub const Type = struct
 {
     value: Value,
-    name: []const u8,
 
-    pub const Value = union(ID) {
+    pub const Value = union(ID)
+    {
         void_type,
         integer: Integer,
         function: Function,
         pointer: Pointer,
         array: Array,
+        structure: Struct,
     };
 
-    pub const ID = enum {
+    pub const ID = enum
+    {
         void_type,
         integer,
         function,
         pointer,
         array,
+        structure,
     };
 
-    pub const Integer = struct {
+    pub const Integer = struct
+    {
         bits: u16,
         signed: bool,
     };
 
-    pub const Function = struct {
+    pub const Function = struct
+    {
         arg_types: TypeRefBuffer,
         ret_type: *Type,
     };
 
-    pub const Pointer = struct {
+    pub const Pointer = struct
+    {
         p_type: *Type,
     };
 
-    pub const Array = struct {
+    pub const Array = struct
+    {
         type: *Type,
         count: u64,
+    };
+
+    pub const Struct = struct
+    {
+        fields: []Field,
+        name: []const u8,
+
+        pub const Field = struct 
+        {
+            type: *Type,
+            name: []const u8,
+        };
     };
 
     pub fn get_void_type(types: *TypeBuffer) ?*Type
@@ -122,7 +142,6 @@ pub const Type = struct
                     .p_type = p_type,
                 },
             },
-            .name = undefined,
         };
 
         const result = types.append(new_type) catch |err| {
@@ -157,7 +176,6 @@ pub const Type = struct
                     .count = count,
                 },
             },
-            .name = undefined,
         };
 
         const result = types.append(new_type) catch |err| {
@@ -195,7 +213,6 @@ pub const Type = struct
             .value = Type.Value {
                 .function = function_type,
             },
-            .name = undefined,
         };
 
         const result = types.append(fn_type) catch |err| {
@@ -206,19 +223,45 @@ pub const Type = struct
         return result;
     }
 
+    // @Info: Loopkup by name
+    // @TODO: improve speed
     pub fn get_type_by_name(types: *TypeBuffer, name: []const u8) ?*Type
     {
-        for (types.list.items) |type_bucket|
+        if (std.mem.eql(u8, name, "void"))
         {
-            var index : u64 = 0;
-            while (index < type_bucket.len) : (index += 1)
-            {
-                const type_decl = &type_bucket.items[index];
-                if (std.mem.eql(u8, type_decl.name, name))
-                {
-                    return type_decl;
-                }
-            }
+            return Type.get_void_type(types);
+        }
+        else if (std.mem.eql(u8, name, "s8"))
+        {
+            return Type.get_integer_type(8, true, types);
+        }
+        else if (std.mem.eql(u8, name, "s16"))
+        {
+            return Type.get_integer_type(16, true, types);
+        }
+        else if (std.mem.eql(u8, name, "s32"))
+        {
+            return Type.get_integer_type(32, true, types);
+        }
+        else if (std.mem.eql(u8, name, "s64"))
+        {
+            return Type.get_integer_type(64, true, types);
+        }
+        else if (std.mem.eql(u8, name, "u8"))
+        {
+            return Type.get_integer_type(8, false, types);
+        }
+        else if (std.mem.eql(u8, name, "u16"))
+        {
+            return Type.get_integer_type(16, false, types);
+        }
+        else if (std.mem.eql(u8, name, "u32"))
+        {
+            return Type.get_integer_type(32, false, types);
+        }
+        else if (std.mem.eql(u8, name, "u64"))
+        {
+            return Type.get_integer_type(64, false, types);
         }
 
         return null;
@@ -244,14 +287,12 @@ pub const Type = struct
             };
             var integer_type = Type{
                 .value = t_type,
-                .name = names[bit_index * 2],
             };
             _ = types.append(integer_type) catch |err| {
                 panic("Error allocating memory for primitive type\n", .{});
             };
 
             integer_type.value.integer.signed = true;
-            integer_type.name = names[bit_index * 2 + 1];
             _ = types.append(integer_type) catch |err| {
                 panic("Error allocating memory for primitive type\n", .{});
             };
@@ -260,7 +301,6 @@ pub const Type = struct
         const void_type = Type
         {
             .value = Type.ID.void_type,
-            .name = "void",
         };
         _ = types.append(void_type) catch |err| {
             panic("Error allocating memory for void type\n", .{});

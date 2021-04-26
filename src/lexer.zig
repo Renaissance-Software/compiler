@@ -101,7 +101,7 @@ const Tokenizer = struct
             .line = line,
             .column = column,
         };
-        self.compiler.log("Added new token: {}\n", .{token});
+        //self.compiler.log("Added new token: {}\n", .{token});
         self.tokens.append(token) catch |err| {
             panic("Failed to allocate a new token\n", .{});
         };
@@ -167,7 +167,8 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             continue;
         }
 
-        switch (c) {
+        switch (c)
+        {
             'a'...'z', 'A'...'Z', '_' =>
             {
                 var ch = c;

@@ -59,7 +59,8 @@ pub const BinaryExpression = struct
         Multiplication,
         VariableDeclaration,
         Assignment,
-        Subscript,
+        ArraySubscript, // @Info: only for detection
+        StructSubscript, // @Info: only for detection
         Compare_Equal,
         Compare_NotEqual,
         Compare_LessThan,
@@ -75,7 +76,8 @@ pub const BinaryExpression = struct
                 BinaryExpression.ID.Minus => return OperatorPrecedenceImportance.Binary_Addition_Substraction,
                 BinaryExpression.ID.Multiplication => return OperatorPrecedenceImportance.Binary_Multiplication_Division_Remainder,
                 BinaryExpression.ID.Assignment => return OperatorPrecedenceImportance.Binary_AssignmentOperators,
-                BinaryExpression.ID.Subscript => return OperatorPrecedenceImportance.Unary_ArraySubscript_FunctionCall_MemberAccess_CompoundLiteral,
+                BinaryExpression.ID.ArraySubscript => return OperatorPrecedenceImportance.Unary_ArraySubscript_FunctionCall_MemberAccess_CompoundLiteral,
+                BinaryExpression.ID.StructSubscript => return OperatorPrecedenceImportance.Unary_ArraySubscript_FunctionCall_MemberAccess_CompoundLiteral,
                 BinaryExpression.ID.Compare_Equal => return OperatorPrecedenceImportance.Binary_RelationalOperators_EqualNotEqual,
                 BinaryExpression.ID.Compare_NotEqual => return OperatorPrecedenceImportance.Binary_RelationalOperators_EqualNotEqual,
                 BinaryExpression.ID.Compare_LessThan => return OperatorPrecedenceImportance.Binary_RelationalOperators,
@@ -102,7 +104,6 @@ pub const BinaryExpression = struct
         Binary_LogicalAND,
         Binary_LogicalOR,
         Binary_AssignmentOperators,
-
     };
 };
 
@@ -181,7 +182,7 @@ const InvokeExpression = struct
     expression: *Node,
 };
 
-const SubscriptExpression = struct
+const ArraySubscriptExpression = struct
 {
     expression: *Node,
     index: *Node,
@@ -191,6 +192,12 @@ const ArrayLiteral = struct
 {
     elements: NodeRefBuffer,
     type_expression: *Type,
+};
+
+const StructSubscriptExpression = struct
+{
+    expression: *Node,
+    field_expr: *Node,
 };
 
 pub const Node = struct
@@ -214,7 +221,8 @@ pub const Node = struct
         branch_expr: BranchExpression,
         loop_expr: LoopExpression,
         break_expr: BreakExpression,
-        subscript_expr: SubscriptExpression,
+        array_subscript_expr: ArraySubscriptExpression,
+        struct_subscript_expr: StructSubscriptExpression,
     };
 
     pub const ID = enum
@@ -232,7 +240,8 @@ pub const Node = struct
         branch_expr,
         loop_expr,
         break_expr,
-        subscript_expr,
+        array_subscript_expr,
+        struct_subscript_expr,
     };
 
     pub const ValueType = enum
@@ -261,19 +270,27 @@ pub const Node = struct
                 try writer.writeAll("\n{\n");
                 for (self.value.function_decl.blocks.items) |block|
                 {
-                    try std.fmt.format(writer, "{}\n", .{block});
+                    try std.fmt.format(writer, "{}", .{block});
                 }
+                try writer.writeAll("}\n");
             },
             Node.ID.block_expr =>
             {
                 for (self.value.block_expr.statements.items) |statement|
                 {
-                    try std.fmt.format(writer, "{}\n", .{statement});
+                    try std.fmt.format(writer, "    {}\n", .{statement});
                 }
             },
             Node.ID.var_decl =>
             {
-                try std.fmt.format(writer, "{s}: {} = {}", .{self.value.var_decl.name, self.value.var_decl.var_type, self.value.var_decl.var_value});
+                if (self.value.var_decl.is_function_arg)
+                {
+                    try std.fmt.format(writer, "{s}: {}", .{self.value.var_decl.name, self.value.var_decl.var_type});
+                }
+                else
+                {
+                    try std.fmt.format(writer, "{s}: {} = {}", .{self.value.var_decl.name, self.value.var_decl.var_type, self.value.var_decl.var_value});
+                }
             },
             Node.ID.array_lit =>
             {
@@ -335,9 +352,9 @@ pub const Node = struct
                     try writer.writeAll(")");
                 }
             },
-            Node.ID.subscript_expr =>
+            Node.ID.array_subscript_expr =>
             {
-                try std.fmt.format(writer, "{}[{}]", .{self.value.subscript_expr.expression, self.value.subscript_expr.index});
+                try std.fmt.format(writer, "{}[{}]", .{self.value.array_subscript_expr.expression, self.value.array_subscript_expr.index});
             },
             Node.ID.var_expr =>
             {
@@ -412,6 +429,7 @@ pub const Node = struct
                     },
                 }
             },
+            Node.ID.struct_subscript_expr => panic("not implemented\n", .{}),
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
@@ -432,7 +450,7 @@ const TokenConsumer = struct
     fn consume(self: *TokenConsumer) void 
     {
         const consumed_token = self.tokens[self.next_index];
-        self.compiler.log("Consuming {}\n", .{consumed_token});
+        //self.compiler.log("Consuming {}\n", .{consumed_token});
         self.next_index += 1;
     }
 
@@ -491,7 +509,7 @@ const TokenConsumer = struct
         return token;
     }
 
-    fn get_type_consuming_tokens(self: *TokenConsumer, types: *TypeBuffer) *Type
+    fn get_type_consuming_tokens(self: *TokenConsumer, allocator: *Allocator, types: *TypeBuffer) *Type
     {
         const t = self.tokens[self.next_index];
         self.consume();
@@ -510,7 +528,7 @@ const TokenConsumer = struct
                 {
                     '&' =>
                     {
-                        const pointer_type = self.get_type_consuming_tokens(types);
+                        const pointer_type = self.get_type_consuming_tokens(allocator, types);
                         const result = Type.get_pointer_type(pointer_type, types);
                         return result;
                     },
@@ -532,7 +550,7 @@ const TokenConsumer = struct
                             panic("Expected ] after array index\n", .{});
                         }
 
-                        const array_elem_type = self.get_type_consuming_tokens(types);
+                        const array_elem_type = self.get_type_consuming_tokens(allocator, types);
 
                         const array_type = Type.get_array_type(array_elem_type, array_length, types);
                         return array_type;
@@ -540,7 +558,103 @@ const TokenConsumer = struct
                     else => {}
                 }
             },
-            else => {}
+            Token.ID.keyword =>
+            {
+                switch (t.value.keyword)
+                {
+                    KeywordID.@"struct" =>
+                    {
+                        print("Parsing anonymous struct...\n", .{});
+                        if (self.expect_and_consume_sign('{') == null)
+                        {
+                            panic("Struct expects to open a brace next\n", .{});
+                        }
+
+
+                        var fields_to_parse = self.expect_and_consume_sign('}') == null;
+                        var field_list = ArrayList(Type.Struct.Field).init(allocator);
+                        while (fields_to_parse)
+                        {
+                            const field_name_token = self.expect_and_consume(Token.ID.symbol);
+                            assert(field_name_token != null);
+                            const field_name = field_name_token.?.value.symbol;
+                            const colon = self.expect_and_consume_sign(':');
+                            assert(colon != null);
+                            const field_type = self.get_type_consuming_tokens(allocator, types);
+                            print("Field name: {s}\n", .{field_name});
+                            print("Field type: {}\n", .{field_type});
+
+                            const field = Type.Struct.Field
+                            {
+                                .type = field_type,
+                                .name = field_name,
+                            };
+
+                            field_list.append(field) catch |err| {
+                                panic("Error allocating memory for struct field type\n", .{});
+                            };
+                            
+                            const next_token = self.expect_and_consume(Token.ID.sign).?;
+                            const sign = next_token.value.sign;
+
+                            if (sign == ',')
+                            {
+                                fields_to_parse = self.expect_and_consume_sign('}') == null;
+                            }
+                            else if (sign == '}')
+                            {
+                                fields_to_parse = false;
+                            }
+                            else
+                            {
+                                panic("Error parsing struct. Unexpected token\n", .{});
+                            }
+                        }
+
+                        const struct_type_value = Type {
+                            .value = Type.Value {
+                                .structure = Type.Struct {
+                                    .fields = field_list.items,
+                                    .name = "",
+                                },
+                            },
+                        };
+
+                        const struct_type = types.append(struct_type_value) catch |err| {
+                            panic("Error allocating memory for struct type\n", .{});
+                        };
+                        print("New struct\n", .{});
+                        return struct_type;
+                    },
+                    else => panic("not implemented: {}\n", .{t.value.keyword}),
+                }
+            },
+            Token.ID.symbol =>
+            {
+                const symbol_name = t.value.symbol;
+
+                for (types.list.items) |type_bucket|
+                {
+                    var i : u64 = 0;
+
+                    while (i < type_bucket.len) : (i += 1)
+                    {
+                        const type_expr = &type_bucket.items[i];
+                        if (type_expr.value == Type.ID.structure)
+                        {
+                            const struct_name = type_expr.value.structure.name;
+                            print("Struct: {s}. Len: {}\n", .{struct_name, struct_name.len});
+                            if (std.mem.eql(u8, struct_name, symbol_name))
+                            {
+                                return type_expr;
+                            }
+                        }
+                    }
+                }
+
+                panic("Can't get struct type: {s}\n", .{symbol_name});
+            },
+            else => { panic("not implemented: {}\n", .{t.value}); }
         }
 
         panic("Couldn't find type for token {}", .{t});
@@ -595,7 +709,8 @@ fn get_type(node: *Node, expected_type: ?*Type) *Type
         Node.ID.branch_expr => panic("not implemented\n", .{}),
         Node.ID.loop_expr => panic("not implemented\n", .{}),
         Node.ID.break_expr => panic("not implemented\n", .{}),
-        Node.ID.subscript_expr => panic("not implemented\n", .{}),
+        Node.ID.array_subscript_expr => panic("not implemented\n", .{}),
+        Node.ID.struct_subscript_expr => panic("not implemented\n", .{}),
     }
 }
 
@@ -933,7 +1048,7 @@ const Parser = struct
             if (left.value == Node.Value.var_decl)
             {
                 var var_decl_node = left;
-                var_decl_node.value.var_decl.var_type = consumer.get_type_consuming_tokens(types);
+                var_decl_node.value.var_decl.var_type = consumer.get_type_consuming_tokens(allocator, types);
 
                 if (consumer.expect_and_consume_sign('=') != null)
                 {
@@ -1059,7 +1174,7 @@ const Parser = struct
                         '[' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.Subscript;
+                            maybe_binop = BinaryExpression.ID.ArraySubscript;
                         },
                         '/' =>
                         {
@@ -1083,12 +1198,12 @@ const Parser = struct
                 assert(binop != BinaryExpression.ID.VariableDeclaration);
                 var left_expr = left_ptr.*;
 
-                if (binop == BinaryExpression.ID.Subscript)
+                if (binop == BinaryExpression.ID.ArraySubscript)
                 {
                     const subscript_node_value = Node
                     {
                         .value = Node.Value {
-                            .subscript_expr = SubscriptExpression {
+                            .array_subscript_expr = ArraySubscriptExpression {
                                 .expression = left_expr,
                                 .index = undefined,
                             },
@@ -1100,7 +1215,7 @@ const Parser = struct
                     var subscript_node = self.append_and_get(subscript_node_value);
                     if (self.expression(allocator, consumer, types, parent_node)) |index_node|
                     {
-                        subscript_node.value.subscript_expr.index = index_node;
+                        subscript_node.value.array_subscript_expr.index = index_node;
 
                         if (consumer.expect_and_consume_sign(']') == null)
                         {
@@ -1686,48 +1801,21 @@ const Parser = struct
         }
     }
 
-    fn function(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer) !?*Node
+    fn function(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, name: []const u8) !?*Node
     {
-        const function_name = consumer.expect_and_consume(Token.ID.symbol);
-        if (function_name == null)
+        var function_node_value = Node
         {
-            return null;
-        }
-
-        //print("Name found: {s}\n", .{function_name.?.value.symbol});
-
-        if (consumer.next_index + 2 >= consumer.tokens.len)
-        {
-            return null;
-        }
-
-        const first_token = consumer.tokens[consumer.next_index];
-        const second_token = consumer.tokens[consumer.next_index + 1];
-
-        if (!(first_token.value == Token.ID.sign and first_token.value.sign == ':' and second_token.value == Token.ID.sign and second_token.value.sign == ':'))
-        {
-            return null;
-        }
-
-        // @Info: Now this is a constant
-        consumer.consume();
-        consumer.consume();
-
-        if (consumer.expect_and_consume_sign('(') == null) {
-            self.compiler.report_error("Couldn't parse function. Missing (\n", .{});
-            std.os.exit(1);
-        }
-
-        var function_node_value = Node{
-            .value = Node.Value{
-                .function_decl = FunctionDeclaration{
-                    .name = function_name.?.value.symbol,
+            .value = Node.Value
+            {
+                .function_decl = FunctionDeclaration
+                {
+                    .name = name,
                     .arguments = ArrayList(*Node).init(allocator),
                     .blocks = ArrayList(*Node).init(allocator),
                     .variables = ArrayList(*Node).init(allocator),
                     .type = undefined,
                 },
-                },
+            },
             .parent = null,
             .value_type = Node.ValueType.LValue,
         };
@@ -1795,7 +1883,7 @@ const Parser = struct
                 return null;
             }
 
-            const ret_type = consumer.get_type_consuming_tokens(types);
+            const ret_type = consumer.get_type_consuming_tokens(allocator, types);
             function_type.ret_type = ret_type;
         }
         else
@@ -1835,6 +1923,66 @@ const Parser = struct
 
         return function_node;
     }
+
+    fn tld(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer) !void
+    {
+        const name_token = consumer.expect_and_consume(Token.ID.symbol);
+        if (name_token == null)
+        {
+            // @TODO: handle this properly
+            panic("not implemented\n", .{});
+        }
+        const name = name_token.?.value.symbol;
+
+        //print("Name found: {s}\n", .{function_name.?.value.symbol});
+
+        if (consumer.next_index + 2 >= consumer.tokens.len)
+        {
+            // @TODO: handle this properly
+            panic("not implemented\n", .{});
+        }
+
+        const first_token = consumer.tokens[consumer.next_index];
+        const second_token = consumer.tokens[consumer.next_index + 1];
+
+        if (!(first_token.value == Token.ID.sign and first_token.value.sign == ':' and second_token.value == Token.ID.sign and second_token.value.sign == ':'))
+        {
+            // @TODO: handle this properly
+            panic("not implemented\n", .{});
+        }
+
+        // @Info: Now this is a constant
+        consumer.consume();
+        consumer.consume();
+
+        if (consumer.expect_and_consume_sign('(') != null)
+        {
+            const function_result = self.function(allocator, consumer, types, name) catch |err| {
+                self.compiler.report_error("Couldn't parse the function\n", .{});
+                std.os.exit(1);
+            };
+            if (function_result) |function_node|
+            {
+                self.function_declarations.append(function_node) catch |err| {
+                    panic("Failed to allocate node reference for top-level declaration\n", .{});
+                };
+            }
+            else
+            {
+                self.compiler.report_error("Couldn't parse the function\n", .{});
+                std.os.exit(1);
+            }
+        }
+        else if (consumer.expect_keyword(KeywordID.@"struct") != null)
+        {
+            var struct_type = consumer.get_type_consuming_tokens(allocator, types);
+            struct_type.value.structure.name = name;
+        }
+        else
+        {
+            panic("Couldn't parse top level declaration\n", .{});
+        }
+    }
 };
 
 pub const ParserResult = struct
@@ -1843,7 +1991,7 @@ pub const ParserResult = struct
 
     fn print_tree(self: *const ParserResult, compiler: *Compiler) void
     {
-        print("\n\nPrinting AST:\n\n", .{});
+        print("Printing AST:\n\n", .{});
         for (self.function_declarations) |function|
         {
             compiler.log("{}", .{function});
@@ -1877,22 +2025,9 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
 
     while (token_consumer.next_index < token_count)
     {
-        var function_node = parser.function(allocator, &token_consumer, types) catch |err| {
-            parser.compiler.report_error("Couldn't parse the function\n", .{});
-            std.os.exit(1);
+        parser.tld(allocator, &token_consumer, types) catch |err| {
+            panic("Couldn't parse TLD\n", .{});
         };
-
-        if (function_node != null)
-        {
-            parser.function_declarations.append(function_node.?) catch |err| {
-                panic("Failed to allocate node reference for top-level declaration\n", .{});
-            };
-        }
-        else
-        {
-            parser.compiler.report_error("Couldn't parse the function\n", .{});
-            std.os.exit(1);
-        }
     }
 
     const result = ParserResult {
