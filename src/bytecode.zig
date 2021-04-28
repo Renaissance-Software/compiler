@@ -8,6 +8,7 @@ const ArrayList = std.ArrayList;
 const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 
 const Internal = @import("compiler.zig");
+const Compiler = Internal.Compiler;
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
 const BinaryOp = Parser.BinaryExpression.ID;
@@ -59,6 +60,11 @@ const Type = struct
                 const length = array_type.count;
                 const arr_type = array_type.type;
                 try std.fmt.format(writer, "[{} x {}]", .{length, arr_type});
+            },
+            Type.ID.@"struct" =>
+            {
+                const struct_type = @ptrCast(*const StructType, self);
+                try std.fmt.format(writer, "%struct.{s}", .{struct_type.name});
             },
             else =>
             {
@@ -1364,6 +1370,10 @@ const Builder = struct
                 panic("Failed to allocate memory for instruction\n", .{});
             };
             result.parent = current;
+            if (Internal.should_log)
+            {
+                print("New instruction: {}\n", .{instruction.id});
+            }
             //print("Instructions in the block: {}:\n", .{current.instructions.items.len});
             //if (false)
             //{
@@ -1676,8 +1686,27 @@ fn introspect_for_allocas(builder: *Builder, ast_block: *Node) bool
     return false;
 }
 
-fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type) ?*Value
+fn count_instructions(builder: *Builder) u64
 {
+    var count: u64 = 0;
+    const current_fn = builder.function;
+    for (current_fn.basic_blocks.items) |basic_block|
+    {
+        count += basic_block.instructions.items.len;
+    }
+
+    return count;
+}
+
+fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type) ?*Value
+{
+    var result: ?*Value = null;
+    var instruction_count_before : u64 = 0; 
+    if (Internal.should_log)
+    {
+        instruction_count_before = count_instructions(builder);
+    }
+
     switch (node.value)
     {
         Node.ID.block_expr =>
@@ -1686,7 +1715,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             {
                 if (!builder.emitted_return)
                 {
-                    _ = do_node(allocator, builder, ast_types, ast_statement, null);
+                    _ = do_node(allocator, compiler, builder, ast_types, ast_statement, null);
                 }
             }
         },
@@ -1701,7 +1730,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 builder.explicit_return = true;
 
                 // @TODO: typecheck return expression with return type
-                if (do_node(allocator, builder, ast_types, ast_return_expression, null)) |ret_value|
+                if (do_node(allocator, compiler, builder, ast_types, ast_return_expression, null)) |ret_value|
                 {
                     if (builder.conditional_alloca)
                     {
@@ -1737,8 +1766,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
         },
         Node.ID.int_lit =>
         {
-            const result = builder.context.get_constant_int(builder.context.get_integer_type(32), node.value.int_lit.value, node.value.int_lit.signed);
-            return @ptrCast(*Value, result);
+            result = @ptrCast(*Value, builder.context.get_constant_int(builder.context.get_integer_type(32), node.value.int_lit.value, node.value.int_lit.signed));
         },
         Node.ID.var_decl => 
         {
@@ -1752,7 +1780,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const value_node = node.value.var_decl.var_value;
             // @TODO: assert that the value is not null: maybe turn into optional pointer?
             // assert(value_node != 0);
-            const value_result = do_node(allocator, builder, ast_types, value_node, rns_type);
+            const value_result = do_node(allocator, compiler, builder, ast_types, value_node, rns_type);
 
             if (value_result) |expr_value|
             {
@@ -1802,7 +1830,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             const var_type = get_type(allocator, builder.context, ast_type, ast_types);
 
             const var_load = builder.create_load(allocator, var_type, alloca_ptr);
-            return @ptrCast(*Value, var_load);
+            result = @ptrCast(*Value, var_load);
         },
         Node.ID.loop_expr =>
         {
@@ -1825,17 +1853,17 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
 
             assert(ast_loop_prefix.value.block_expr.statements.items.len == 1);
             const ast_condition = ast_loop_prefix.value.block_expr.statements.items[0];
-            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
+            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
             {
                 _ = builder.create_conditional_br(allocator, loop_body_block, loop_end_block, condition);
                 builder.append_to_current_function(loop_body_block);
                 builder.set_block(loop_body_block);
-                _ = do_node(allocator, builder, ast_types, ast_loop_body, null);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_body, null);
 
                 _ = builder.create_br(allocator, loop_postfix_block);
                 builder.append_to_current_function(loop_postfix_block);
                 builder.set_block(loop_postfix_block);
-                _ = do_node(allocator, builder, ast_types, ast_loop_postfix, null);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_postfix, null);
 
                 if (!builder.emitted_return)
                 {
@@ -1867,7 +1895,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                         const alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
                         const ast_type = var_decl.value.var_decl.var_type;
                         const var_type = get_type(allocator, builder.context, ast_type, ast_types);
-                        if (do_node(allocator, builder, ast_types, ast_right, var_type)) |right_value|
+                        if (do_node(allocator, compiler, builder, ast_types, ast_right, var_type)) |right_value|
                         {
                             _ = builder.create_store(allocator, right_value, alloca_value);
                         }
@@ -1880,9 +1908,9 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                     {
                         assert(ast_left.value.unary_expr.id == UnaryOp.PointerDereference);
 
-                        if (do_node(allocator, builder, ast_types, ast_right, null)) |right_value|
+                        if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
                         {
-                            if (do_node(allocator, builder, ast_types, ast_left, null)) |pointer_load|
+                            if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |pointer_load|
                             {
                                 _ = builder.create_store(allocator, right_value, pointer_load);
                             }
@@ -1900,9 +1928,9 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                     {
                         assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.var_expr);
                         assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
-                        if (do_node(allocator, builder, ast_types, ast_right, null)) |right_value|
+                        if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
                         {
-                            if (do_node(allocator, builder, ast_types, ast_left, null)) |array_elem_load|
+                            if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |array_elem_load|
                             {
                                 _ = builder.create_store(allocator, right_value, array_elem_load);
                             }
@@ -1924,9 +1952,9 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             }
             else
             {
-                if (do_node(allocator, builder, ast_types, ast_left, null)) |left|
+                if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |left|
                 {
-                    if (do_node(allocator, builder, ast_types, ast_right, null)) |right|
+                    if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right|
                     {
                         var binary_op_instruction: *Instruction = undefined;
 
@@ -1962,7 +1990,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                             }
                         }
 
-                        return @ptrCast(*Value, binary_op_instruction);
+                        result = @ptrCast(*Value, binary_op_instruction);
                     }
                     else
                     {
@@ -1988,9 +2016,9 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             var do_else_block = false;
             // @TODO: this can cause bugs
             var ast_else_block: *Node = undefined;
-            if (node.value.branch_expr.else_block) |result|
+            if (node.value.branch_expr.else_block) |ast_else_block_result|
             {
-                ast_else_block = result;
+                ast_else_block = ast_else_block_result;
                 else_block = builder.create_block(allocator);
             }
             else
@@ -2002,7 +2030,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
 
 
             var exit_block_in_use = true;
-            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
+            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
             {
                 if (if_block != else_block)
                 {
@@ -2026,7 +2054,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
 
             builder.append_to_current_function(if_block);
             builder.set_block(if_block);
-            _ = do_node(allocator, builder, ast_types, ast_if_block, null);
+            _ = do_node(allocator, compiler, builder, ast_types, ast_if_block, null);
             const if_block_returned = builder.emitted_return;
 
             _ = builder.create_br(allocator, exit_block);
@@ -2037,7 +2065,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             {
                 builder.append_to_current_function(else_block);
                 builder.set_block(else_block);
-                _ = do_node(allocator, builder, ast_types, ast_else_block, null);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_else_block, null);
 
                 _ = builder.create_br(allocator, exit_block);
             }
@@ -2071,7 +2099,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             if (arg_count == 0)
             {
                 const call = builder.create_call(allocator, @ptrCast(*Value, function), null);
-                return @ptrCast(*Value, call);
+                result = @ptrCast(*Value, call);
             }
             else
             {
@@ -2086,7 +2114,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
 
                 for (node_arg_buffer.items) |ast_arg, i|
                 {
-                    if (do_node(allocator, builder, ast_types, ast_arg, null)) |arg|
+                    if (do_node(allocator, compiler, builder, ast_types, ast_arg, null)) |arg|
                     {
                         arg.type = function_type.arg_types[i];
                         argument_buffer[i] = arg;
@@ -2098,7 +2126,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 }
 
                 const call = builder.create_call(allocator, @ptrCast(*Value, function), argument_buffer[0..arg_count]);
-                return @ptrCast(*Value, call);
+                result = @ptrCast(*Value, call);
             }
         },
         Node.ID.unary_expr =>
@@ -2128,11 +2156,11 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                         const pointer_type_unwrapped = @ptrCast(*PointerType, pointer_type);
                         const deref_type = pointer_type_unwrapped.type;
                         const deref_expr = builder.create_load(allocator, deref_type, @ptrCast(*Value, pointer_load));
-                        return @ptrCast(*Value, deref_expr);
+                        result = @ptrCast(*Value, deref_expr);
                     }
                     else
                     {
-                        return @ptrCast(*Value, pointer_load);
+                        result = @ptrCast(*Value, pointer_load);
                     }
                 },
             }
@@ -2152,7 +2180,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
 
             for (node.value.array_lit.elements.items) |ast_array_lit_elem|
             {
-                if (do_node(allocator, builder, ast_types, ast_array_lit_elem, array_type.type)) |array_lit|
+                if (do_node(allocator, compiler, builder, ast_types, ast_array_lit_elem, array_type.type)) |array_lit|
                 {
                     array_values.append(array_lit) catch |err| {
                         panic("Error appending array literal element\n", .{});
@@ -2165,14 +2193,14 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
             }
 
             const constant_array = builder.context.get_constant_array(array_values.items, type_expr);
-            return @ptrCast(*Value, constant_array);
+            result = @ptrCast(*Value, constant_array);
         },
         Node.ID.array_subscript_expr =>
         {
             const ast_array_subscript_expr = node.value.array_subscript_expr.expression;
             const ast_array_index_expr = node.value.array_subscript_expr.index;
 
-            const index_value = do_node(allocator, builder, ast_types, ast_array_index_expr, null);
+            const index_value = do_node(allocator, compiler, builder, ast_types, ast_array_index_expr, null);
             if (index_value) |index_const|
             {
                 switch (ast_array_subscript_expr.value)
@@ -2201,7 +2229,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
                 };
                 const gep = builder.create_inbounds_GEP(allocator, array_element_type, alloca_value, indices[0..]);
                 const load = builder.create_load(allocator, array_element_type, @ptrCast(*Value, gep));
-                return @ptrCast(*Value, load);
+                result = @ptrCast(*Value, load);
             }
             else
             {
@@ -2210,13 +2238,47 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *Internal.TypeBu
         },
         Node.ID.struct_subscript_expr =>
         {
-            panic("Not implemented\n", .{});
+            const ast_struct_expr = node.value.struct_subscript_expr.expression;
+            // @Info: this should emit a struct load
+            if (do_node(allocator, compiler, builder, ast_types, ast_struct_expr, null)) |struct_expr|
+            {
+                const ast_field_expr = node.value.struct_subscript_expr.field_expr;
+                const ast_field_type = ast_field_expr.type;
+                const field_type = get_type(allocator, builder.context, ast_field_type, ast_types);
+                const index = ast_field_expr.index;
+                const zero_value = builder.context.get_constant_int(builder.context.get_integer_type(32), 0, false);
+                const index_value = builder.context.get_constant_int(builder.context.get_integer_type(32), index, false);
+
+                const indices = [_]*Value {
+                    @ptrCast(*Value, zero_value),
+                    @ptrCast(*Value, index_value),
+                };
+                const gep = builder.create_inbounds_GEP(allocator, field_type, struct_expr, indices[0..]);
+                const gep_load = builder.create_load(allocator, field_type, @ptrCast(*Value, gep));
+                result = @ptrCast(*Value, gep_load);
+            }
+            else
+            {
+                panic("Can't codegen struct expression\n", .{});
+            }
         },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
         //else => panic("Not implemented\n", .{}),
     }
 
-    return null;
+    if (Internal.should_log)
+    {
+        const instruction_count_after: u64 = count_instructions(builder);
+        const instruction_count = instruction_count_after - instruction_count_before;
+        compiler.log("Call to do_node for {s} generated {} instructions\n===========================\n", .{@tagName(node.value), instruction_count});
+        const expand = false;
+        if (expand)
+        {
+            compiler.log("Expression: {}\n===========================\n", .{node.value});
+        }
+    }
+
+    return result;
 }
 
 /// This function gets the compiler (AST-Lexer) type and transform it into a "LLVM" type
@@ -2367,7 +2429,7 @@ fn get_size(type_: *Type) usize
     }
 }
 
-pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
+pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
 {
     //print("Bytecode\n", .{});
     var module = Module {
@@ -2519,7 +2581,7 @@ pub fn encode(allocator: *Allocator, ast_function_declarations: []*Node, ast_typ
 
         builder.function.arguments = argument_list.items;
 
-        _ = do_node(allocator, &builder, ast_types, ast_main_block, null);
+        _ = do_node(allocator, compiler, &builder, ast_types, ast_main_block, null);
 
         if (builder.conditional_alloca)
         {
@@ -2781,9 +2843,25 @@ const InstructionPrinter = struct
             {
                 const first_operand = self.ref.operands.items[0];
                 assert(first_operand.id == Value.ID.Instruction);
-                const alloca_instruction = @ptrCast(*Instruction, first_operand);
-                assert(alloca_instruction.id == Instruction.ID.Alloca);
-                const gep_type = alloca_instruction.value.alloca.type;
+                const instruction = @ptrCast(*Instruction, first_operand);
+                var gep_type : *Type = undefined;
+                switch (instruction.id)
+                {
+                    Instruction.ID.Alloca =>
+                    {
+                        gep_type = instruction.value.alloca.type;
+                    },
+                    Instruction.ID.Load =>
+                    {
+                        const pointer_type = @ptrCast(*PointerType, instruction.base.type);
+                        assert(pointer_type.base.id == Type.ID.pointer);
+
+                        const base_type = pointer_type.type;
+                        // @TODO: probably buggy?
+                        gep_type = base_type;
+                    },
+                    else => panic("not implemented: {}\n", .{instruction.id}),
+                }
 
                 try std.fmt.format(writer, "%{} = getelementptr inbounds {}, ", .{self.result, gep_type}); 
                 for (self.ref.operands.items) |operand, i|

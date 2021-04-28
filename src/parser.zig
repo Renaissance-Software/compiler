@@ -59,8 +59,6 @@ pub const BinaryExpression = struct
         Multiplication,
         VariableDeclaration,
         Assignment,
-        ArraySubscript, // @Info: only for detection
-        StructSubscript, // @Info: only for detection
         Compare_Equal,
         Compare_NotEqual,
         Compare_LessThan,
@@ -76,8 +74,6 @@ pub const BinaryExpression = struct
                 BinaryExpression.ID.Minus => return OperatorPrecedenceImportance.Binary_Addition_Substraction,
                 BinaryExpression.ID.Multiplication => return OperatorPrecedenceImportance.Binary_Multiplication_Division_Remainder,
                 BinaryExpression.ID.Assignment => return OperatorPrecedenceImportance.Binary_AssignmentOperators,
-                BinaryExpression.ID.ArraySubscript => return OperatorPrecedenceImportance.Unary_ArraySubscript_FunctionCall_MemberAccess_CompoundLiteral,
-                BinaryExpression.ID.StructSubscript => return OperatorPrecedenceImportance.Unary_ArraySubscript_FunctionCall_MemberAccess_CompoundLiteral,
                 BinaryExpression.ID.Compare_Equal => return OperatorPrecedenceImportance.Binary_RelationalOperators_EqualNotEqual,
                 BinaryExpression.ID.Compare_NotEqual => return OperatorPrecedenceImportance.Binary_RelationalOperators_EqualNotEqual,
                 BinaryExpression.ID.Compare_LessThan => return OperatorPrecedenceImportance.Binary_RelationalOperators,
@@ -604,6 +600,7 @@ const TokenConsumer = struct
                                 .type = field_type,
                                 .name = field_name,
                                 .parent = struct_type,
+                                .index = field_list.items.len,
                             };
 
                             field_list.append(field) catch |err| {
@@ -1046,6 +1043,22 @@ const Parser = struct
         }
     }
 
+    //const Precedence = enum
+    //{
+        //none,
+        //assignment,
+        //logical,
+        //compare,
+        //add_sub,
+        //bitwise,
+        //bitwiseshift
+            //// to be continued
+    //};
+
+    //fn expression_new(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    //{
+    //}
+
     fn expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
     {
         if (self.primary_expression(allocator, consumer, types, parent_node)) |left_expr|
@@ -1080,12 +1093,23 @@ const Parser = struct
                 {
                     panic("Variable declarations are not allowed to have no value for now\n", .{});
                 }
-
             }
             else
             {
                 const result = self.right_expression(allocator, consumer, types, parent_node, &left);
-                return result;
+                if (Internal.should_log)
+                {
+                    if (result) |result_expr|
+                    {
+                        if (result_expr.value == Node.ID.binary_expr)
+                        {
+                            print("\nGenerated binary expression:\nLEFT: {} ({s})\n{}\nRIGHT: {} ({s})\n\n", .{result_expr.value.binary_expr.left, @tagName(result_expr.value.binary_expr.left.value), result_expr.value.binary_expr.id, result_expr.value.binary_expr.right, @tagName(result_expr.value.binary_expr.right.value)});
+                        }
+                    }
+                }
+                panic("@TODO: we should try to rewrite the tree here taking into account operator precedence\n", .{});
+
+                //return result;
             }
         }
         else
@@ -1096,10 +1120,13 @@ const Parser = struct
 
     fn right_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node, left_ptr: **Node) ?*Node
     {
-        while (true)
+        binop_loop: while (true)
         {
             var token = consumer.peek();
-            var maybe_binop: ?BinaryExpression.ID = undefined;
+            var binop: BinaryExpression.ID = undefined;
+
+            var left_expr = left_ptr.*;
+
             switch (token.value)
             {
                 Token.ID.sign =>
@@ -1118,12 +1145,12 @@ const Parser = struct
                                 }
                                 else
                                 {
-                                    maybe_binop = null;
+                                    break :binop_loop;
                                 }
                             }
                             else
                             {
-                                maybe_binop = BinaryExpression.ID.VariableDeclaration;
+                                binop = BinaryExpression.ID.VariableDeclaration;
                             }
                         },
                         '=' =>
@@ -1131,33 +1158,33 @@ const Parser = struct
                             consumer.consume();
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
-                                maybe_binop = BinaryExpression.ID.Compare_Equal;
+                                binop = BinaryExpression.ID.Compare_Equal;
                             }
                             else
                             {
-                                maybe_binop = BinaryExpression.ID.Assignment;
+                                binop = BinaryExpression.ID.Assignment;
                             }
                         },
                         '+' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.Plus;
+                            binop = BinaryExpression.ID.Plus;
                         },
                         '-' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.Minus;
+                            binop = BinaryExpression.ID.Minus;
                         },
                         '<' =>
                         {
                             consumer.consume();
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
-                                maybe_binop = BinaryExpression.ID.Compare_LessThanOrEqual;
+                                binop = BinaryExpression.ID.Compare_LessThanOrEqual;
                             }
                             else
                             {
-                                maybe_binop = BinaryExpression.ID.Compare_LessThan;
+                                binop = BinaryExpression.ID.Compare_LessThan;
                             }
                         },
                         '>' =>
@@ -1165,22 +1192,51 @@ const Parser = struct
                             consumer.consume();
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
-                                maybe_binop = BinaryExpression.ID.Compare_GreaterThanOrEqual;
+                                binop = BinaryExpression.ID.Compare_GreaterThanOrEqual;
                             }
                             else
                             {
-                                maybe_binop = BinaryExpression.ID.Compare_GreaterThan;
+                                binop = BinaryExpression.ID.Compare_GreaterThan;
                             }
                         },
                         '*' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.Multiplication;
+                            binop = BinaryExpression.ID.Multiplication;
                         },
                         '[' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.ArraySubscript;
+                            // do array subscript stuff
+                            const subscript_node_value = Node
+                            {
+                                .value = Node.Value {
+                                    .array_subscript_expr = ArraySubscriptExpression {
+                                        .expression = left_expr,
+                                        .index = undefined,
+                                    },
+                                    },
+                                .parent = parent_node,
+                                .value_type = Node.ValueType.RValue,
+                            };
+
+                            var subscript_node = self.append_and_get(subscript_node_value);
+                            if (self.expression(allocator, consumer, types, parent_node)) |index_node|
+                            {
+                                subscript_node.value.array_subscript_expr.index = index_node;
+
+                                if (consumer.expect_and_consume_sign(']') == null)
+                                {
+                                    panic("Expected array subscript termination\n", .{});
+                                }
+
+                                left_ptr.* = subscript_node;
+                                continue;
+                            }
+                            else
+                            {
+                                panic("Couldn't parse index node\n", .{});
+                            }
                         },
                         '/' =>
                         {
@@ -1190,178 +1246,149 @@ const Parser = struct
                         '.' =>
                         {
                             consumer.consume();
-                            maybe_binop = BinaryExpression.ID.StructSubscript;
+                            // do struct subscript stuff
+                            const subscript_node_value = Node
+                            {
+                                .value = Node.Value {
+                                    .struct_subscript_expr = StructSubscriptExpression {
+                                        .expression = left_expr,
+                                        .field_expr = undefined,
+                                    },
+                                    },
+                                .parent = parent_node,
+                                .value_type = Node.ValueType.RValue,
+                            };
+
+                            var subscript_node = self.append_and_get(subscript_node_value);
+
+                            if (consumer.expect_and_consume(Token.ID.symbol)) |field_name_token|
+                            {
+                                const field_name = field_name_token.value.symbol;
+
+                                print("SUBSCRIPT WRONG:\nleft: {s} = {}\n", .{@tagName(left_expr.value), left_expr.value});
+                                assert(left_expr.value == Node.ID.var_expr);
+                                const var_decl = left_expr.value.var_expr.declaration;
+                                const var_type = var_decl.value.var_decl.var_type;
+                                const struct_type = switch (var_type.value)
+                                {
+                                    Type.ID.structure => var_type,
+                                    Type.ID.pointer => var_type.value.pointer.p_type,
+                                    else => panic("not implemented: {}\n", .{var_type.value}),
+                                };
+                                assert(struct_type.value == Type.ID.structure);
+
+                                for (struct_type.value.structure.fields) |field, i|
+                                {
+                                    if (std.mem.eql(u8, field.name, field_name))
+                                    {
+                                        subscript_node.value.struct_subscript_expr.field_expr = &struct_type.value.structure.fields[i];
+                                        left_ptr.* = subscript_node;
+                                        continue :binop_loop;
+                                    }
+                                }
+
+                                panic("Struct field name not found: {s}\n", .{field_name});
+                            }
+                            else
+                            {
+                                panic("Unable to parse struct field name\n", .{});
+                            }
                         },
                         else =>
                         {
-                            maybe_binop = null;
+                            break :binop_loop;
                         },
                     }
                 },
                 else =>
                 {
-                    maybe_binop = null;
+                    break :binop_loop;
                 },
             }
 
-            if (maybe_binop) |binop|
+            assert(binop != BinaryExpression.ID.VariableDeclaration);
+
+            self.compiler.log("Real binop: {}\n", .{binop});
+            if (binop == BinaryExpression.ID.Assignment)
             {
-                assert(binop != BinaryExpression.ID.VariableDeclaration);
-                var left_expr = left_ptr.*;
+                left_expr.value_type = Node.ValueType.LValue;
+            }
 
-                if (binop == BinaryExpression.ID.ArraySubscript)
+            if (self.primary_expression(allocator, consumer, types, parent_node)) |right_expr|
+            {
+                print("Right expression: {}\n", .{right_expr});
+                var right_precedes_left = false;
+                const is_left_binary_expr = left_expr.value == Node.ID.binary_expr;
+                const is_right_binary_expr = right_expr.value == Node.ID.binary_expr;
+                self.compiler.log("Left binary expr: {}\n", .{is_left_binary_expr});
+                self.compiler.log("Right binary expr: {}\n", .{is_right_binary_expr});
+
+                if (is_left_binary_expr)
+                    //if (is_right_binary_expr)
                 {
-                    const subscript_node_value = Node
-                    {
-                        .value = Node.Value {
-                            .array_subscript_expr = ArraySubscriptExpression {
-                                .expression = left_expr,
-                                .index = undefined,
-                            },
-                            },
-                        .parent = parent_node,
-                        .value_type = Node.ValueType.RValue,
-                    };
+                    print("Left is a binary expression\n", .{});
+                    const left_bin_op = left_expr.value.binary_expr.id;
+                    const right_bin_op = binop;
+                    self.compiler.log("Left binop = {}. Right binop = {}\n", .{left_bin_op, right_bin_op});
 
-                    var subscript_node = self.append_and_get(subscript_node_value);
-                    if (self.expression(allocator, consumer, types, parent_node)) |index_node|
-                    {
-                        subscript_node.value.array_subscript_expr.index = index_node;
+                    const left_importance = left_bin_op.get_importance();
+                    const right_importance = right_bin_op.get_importance();
+                    const left_expr_operator_precedence = @enumToInt(left_importance);
+                    const right_expr_operator_precedence = @enumToInt(right_importance);
 
-                        if (consumer.expect_and_consume_sign(']') == null)
-                        {
-                            panic("Expected array subscript termination\n", .{});
-                        }
+                    self.compiler.log("Left importance = {} ({}). Right binop = {} ({})\n", .{left_importance, left_expr_operator_precedence, right_importance, right_expr_operator_precedence});
+                    const right_over_left = right_expr_operator_precedence < left_expr_operator_precedence;
+                    const left_has_parenthesis = left_expr.value.binary_expr.parenthesis;
+                    const right_has_parenthesis = is_right_binary_expr and !right_expr.value.binary_expr.parenthesis;
 
-                        left_ptr.* = subscript_node;
-                    }
-                    else
-                    {
-                        panic("Couldn't parse index node\n", .{});
-                    }
+                    right_precedes_left = is_left_binary_expr and right_over_left and !left_has_parenthesis and (!is_right_binary_expr or right_has_parenthesis);
+                    self.compiler.log("Right over left: {}\nLeft has parenthesis: {}\nRight has parenthesis: {}\nFINAL: Right precedes left: {}\n", .{right_over_left, left_has_parenthesis, right_has_parenthesis, right_precedes_left});
                 }
-                else if (binop == BinaryExpression.ID.StructSubscript)
+
+                if (right_precedes_left)
                 {
-                    const subscript_node_value = Node
+                    const right_operand_of_left_binary_expression = left_expr.value.binary_expr.right;
+                    self.compiler.log("RIGHT OPERAND OF LEFT BINARY EXPRESSION: {}\n", .{right_operand_of_left_binary_expression.value});
+
+                    const new_prioritized_expression = Node
                     {
                         .value = Node.Value {
-                            .struct_subscript_expr = StructSubscriptExpression {
-                                .expression = left_expr,
-                                .field_expr = undefined,
-                            },
-                         },
+                            .binary_expr = BinaryExpression {
+                                .left = right_operand_of_left_binary_expression,
+                                .right = right_expr,
+                                .id = binop,
+                                .parenthesis = false,
+                            }
+                        },
                         .parent = parent_node,
                         .value_type = Node.ValueType.RValue,
                     };
 
-                    var subscript_node = self.append_and_get(subscript_node_value);
-                    assert(left_expr.value == Node.ID.var_expr);
-                    const var_decl = left_expr.value.var_expr.declaration;
-                    const var_type = var_decl.value.var_decl.var_type;
-                    const struct_type = switch (var_type.value)
-                    {
-                        Type.ID.structure => var_type,
-                        Type.ID.pointer => var_type.value.pointer.p_type,
-                        else => panic("not implemented: {}\n", .{var_type.value}),
-                    };
-
-                    assert(struct_type.value == Type.ID.structure);
-                    if (consumer.expect_and_consume(Token.ID.symbol)) |field_name_token|
-                    {
-                        const field_name = field_name_token.value.symbol;
-                        var found = false;
-
-                        for (struct_type.value.structure.fields) |field, i|
-                        {
-                            if (std.mem.eql(u8, field.name, field_name))
-                            {
-                                found = true;
-                                subscript_node.value.struct_subscript_expr.field_expr = &struct_type.value.structure.fields[i];
-                                left_ptr.* = subscript_node;
-                            }
-                        }
-
-                        if (!found)
-                        {
-                            panic("struct field not found\n", .{});
-                        }
-                    }
-                    else
-                    {
-                        panic("Unable to parse struct field name\n", .{});
-                    }
+                    left_expr.value.binary_expr.right = self.append_and_get(new_prioritized_expression);
+                    left_ptr.* = left_expr;
                 }
                 else
                 {
-                    if (binop == BinaryExpression.ID.Assignment)
+                    const new_node = Node
                     {
-                        left_expr.value_type = Node.ValueType.LValue;
-                    }
+                        .value = Node.Value {
+                            .binary_expr = BinaryExpression {
+                                .left = left_expr,
+                                .right = right_expr,
+                                .id = binop,
+                                .parenthesis = false,
+                            }
+                        },
+                        .parent = parent_node,
+                        .value_type = Node.ValueType.RValue,
+                    };
 
-                    if (self.expression(allocator, consumer, types, parent_node)) |right_expr|
-                    {
-                        //print("{}", .{left_expr.value});
-                        var right_precedes_left = false;
-                        if (left_expr.value == Node.ID.binary_expr)
-                        {
-                            const left_bin_op = left_expr.value.binary_expr.id;
-                            const right_bin_op = binop;
-
-                            const left_expr_operator_precedence = @enumToInt(left_bin_op.get_importance());
-                            const right_expr_operator_precedence = @enumToInt(right_bin_op.get_importance());
-
-                            right_precedes_left = left_expr.value == Node.ID.binary_expr and right_expr_operator_precedence < left_expr_operator_precedence and !left_expr.value.binary_expr.parenthesis and (right_expr.value != Node.ID.binary_expr or (right_expr.value == Node.ID.binary_expr and !right_expr.value.binary_expr.parenthesis));
-                        }
-
-                        if (right_precedes_left)
-                        {
-                            const right_operand_of_left_binary_expression = left_expr.value.binary_expr.right;
-
-                            const new_prioritized_expression = Node
-                            {
-                                .value = Node.Value {
-                                    .binary_expr = BinaryExpression {
-                                        .left = right_operand_of_left_binary_expression,
-                                        .right = right_expr,
-                                        .id = binop,
-                                        .parenthesis = false,
-                                    }
-                                },
-                                .parent = parent_node,
-                                .value_type = Node.ValueType.RValue,
-                            };
-
-                            left_expr.value.binary_expr.right = self.append_and_get(new_prioritized_expression);
-                            left_ptr.* = left_expr;
-                        }
-                        else
-                        {
-                            const new_node = Node
-                            {
-                                .value = Node.Value {
-                                    .binary_expr = BinaryExpression {
-                                        .left = left_expr,
-                                        .right = right_expr,
-                                        .id = binop,
-                                        .parenthesis = false,
-                                    }
-                                },
-                                .parent = parent_node,
-                                .value_type = Node.ValueType.RValue,
-                            };
-
-                            left_ptr.* = self.append_and_get(new_node);
-                        }
-                    }
-                    else
-                    {
-                        return null;
-                    }
+                    left_ptr.* = self.append_and_get(new_node);
                 }
             }
             else
             {
-                break;
+                return null;
             }
         }
 

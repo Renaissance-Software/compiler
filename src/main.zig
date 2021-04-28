@@ -23,7 +23,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
 
-    IR.encode(allocator, parser_result.function_declarations, &types);
+    IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
 
     return true;
 }

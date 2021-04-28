@@ -80,6 +80,7 @@ pub const Type = struct
             name: []const u8,
             type: *Type,
             parent: *Type,
+            index: u64,
 
             pub fn format(self: Field, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
             {
