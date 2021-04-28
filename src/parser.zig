@@ -1043,21 +1043,64 @@ const Parser = struct
         }
     }
 
-    //const Precedence = enum
-    //{
-        //none,
-        //assignment,
-        //logical,
-        //compare,
-        //add_sub,
-        //bitwise,
-        //bitwiseshift
-            //// to be continued
-    //};
+    const Precedence = enum
+    {
+        none,
+        assignment,
+        logical,
+        compare,
+        light_arithmetic, // add, sub
+        heavy_arithmetic, // mul, div
+        unary,
+        call,
+        primary,
+    };
 
-    //fn expression_new(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
-    //{
-    //}
+    // List of expressions
+    // -------------------
+    // - grouping
+    // - unary
+    //
+    //
+    //
+    //
+    //
+    
+    const precedence_rules = PrecedenceRule[_]
+    {
+        
+    };
+    
+    const ParseFn = fn () void;
+    fn parse_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    {
+        parse_precedence(Precedence.assignment);
+    }
+
+    fn parse_precedence(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    {
+        const next_token = consumer.peek();
+        consumer.consume();
+
+        // Switch instead of a table of function pointers
+        switch (next_token.value)
+        {
+            else => panic("Not implemented: {}\n", .{next_token.value}),
+        }
+    }
+
+    fn parse_binary() void
+    {
+        const next_token = consumer.peek();
+        switch (next_token.value)
+        {
+            else => panic("Not implemented: {}\n", .{next_token.value}),
+        }
+    }
+
+    fn expression_new(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
+    {
+    }
 
     fn expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, types: *TypeBuffer, parent_node: ?*Node) ?*Node
     {
