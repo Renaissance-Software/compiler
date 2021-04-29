@@ -1822,9 +1822,10 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 panic("Couldn't find value for variable declaration\n", .{});
             }
         },
-        Node.ID.var_expr =>
+        Node.ID.identifier_expr =>
         {
-            const ast_declaration = node.value.var_expr.declaration;
+            const ast_declaration = node.value.identifier_expr.reference;
+            assert(ast_declaration.value == Node.ID.var_decl);
             const alloca_ptr = @intToPtr(*Value, ast_declaration.value.var_decl.backend_ref);
             const ast_type = ast_declaration.value.var_decl.var_type;
             const var_type = get_type(allocator, builder.context, ast_type, ast_types);
@@ -1889,9 +1890,10 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 switch (ast_left.value)
                 {
-                    Node.ID.var_expr =>
+                    Node.ID.identifier_expr =>
                     {
-                        const var_decl = ast_left.value.var_expr.declaration;
+                        const var_decl = ast_left.value.identifier_expr.reference;
+                        assert(var_decl.value == Node.ID.var_decl);
                         const alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
                         const ast_type = var_decl.value.var_decl.var_type;
                         const var_type = get_type(allocator, builder.context, ast_type, ast_types);
@@ -1926,7 +1928,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     },
                     Node.ID.array_subscript_expr =>
                     {
-                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.var_expr);
+                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.identifier_expr);
                         assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
                         if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
                         {
@@ -2134,8 +2136,8 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const ast_unary_op_type = node.value.unary_expr.id;
             const ast_unary_op_expr = node.value.unary_expr.node_ref;
             assert(node.value.unary_expr.location == Parser.UnaryExpression.Location.Prefix);
-            assert(ast_unary_op_expr.value == Node.ID.var_expr);
-            const ast_var_decl = ast_unary_op_expr.value.var_expr.declaration;
+            assert(ast_unary_op_expr.value == Node.ID.identifier_expr);
+            const ast_var_decl = ast_unary_op_expr.value.identifier_expr.reference;
             assert(ast_var_decl.value == Node.ID.var_decl);
             const ast_var_type = ast_var_decl.value.var_decl.var_type;
             const var_alloca = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
@@ -2205,7 +2207,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 switch (ast_array_subscript_expr.value)
                 {
-                    Node.ID.var_expr => {},
+                    Node.ID.identifier_expr => {},
                     Node.ID.binary_expr =>
                     {
                         print("\nLeft:\n\n{}\n\n", .{ast_array_subscript_expr.value.binary_expr.left});
@@ -2213,8 +2215,9 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     },
                     else => panic("Not implemented: {}\n", .{ast_array_subscript_expr.value}),
                 }
-                assert(ast_array_subscript_expr.value == Node.ID.var_expr);
-                const ast_var_decl = ast_array_subscript_expr.value.var_expr.declaration;
+                assert(ast_array_subscript_expr.value == Node.ID.identifier_expr);
+                const ast_var_decl = ast_array_subscript_expr.value.identifier_expr.reference;
+                assert(ast_var_decl.value == Node.ID.var_decl);
                 const alloca_value = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
                 assert(alloca_value.id == Value.ID.Instruction);
                 const alloca = @ptrCast(*Instruction, alloca_value);

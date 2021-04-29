@@ -23,7 +23,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
 
-    IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
+    //IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
 
     return true;
 }
@@ -67,7 +67,7 @@ const test_files = [_][]const u8
 
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 

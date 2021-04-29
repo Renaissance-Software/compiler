@@ -23,7 +23,7 @@ pub const Token = struct
         float_lit,
         char_lit,
         str_lit,
-        symbol,
+        identifier,
         keyword,
         type,
         sign,
@@ -36,7 +36,7 @@ pub const Token = struct
         float_lit: f64,
         char_lit: u8,
         str_lit: []const u8,
-        symbol: []const u8,
+        identifier: []const u8,
         keyword: KeywordID,
         type: *Type, // @ TODO: change this
         sign: u8,
@@ -46,9 +46,9 @@ pub const Token = struct
         {
             switch (self)
             {
-                Token.Value.symbol =>
+                Token.Value.identifier =>
                 {
-                    try std.fmt.format(writer, "Value {c} .symbol = \"{s}\" {c}", .{'{', self.symbol, '}'});
+                    try std.fmt.format(writer, "Value {c} .identifier = \"{s}\" {c}", .{'{', self.identifier, '}'});
                 },
                 Token.Value.str_lit =>
                 {
@@ -126,7 +126,7 @@ const Tokenizer = struct
             return Token.Value{ .type = type_decl };
         }
 
-        return Token.Value{ .symbol = name };
+        return Token.Value{ .identifier = name };
     }
 };
 
@@ -180,11 +180,11 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 i -= 1;
 
                 const len = end - start;
-                const symbol_slice = src_file[start..end];
+                const identifier_slice = src_file[start..end];
                 //print("Symbol found: {}. Length: {}\n", .{ symbol_slice, len });
                 const column = @intCast(u32, start - current_line_start);
 
-                const token_type = tokenizer.match_name(symbol_slice, types);
+                const token_type = tokenizer.match_name(identifier_slice, types);
 
                 tokenizer.new_token(token_type, start, end, line_count, column);
             },
