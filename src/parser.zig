@@ -6,11 +6,9 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
 const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
-
+const TypeBuffer = BucketArrayList(TypeIdentifier, 64);
 const Internal = @import("compiler.zig");
-const Type = Internal.Type;
-const TypeBuffer = Internal.TypeBuffer;
-const TypeRefBuffer = Internal.TypeRefBuffer;
+
 const Compiler = Internal.Compiler;
 const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
@@ -38,6 +36,7 @@ pub const UnaryExpression = struct
         AddressOf,
         PointerDereference,
     };
+
     pub const Location = enum
     {
         Prefix,
@@ -118,14 +117,50 @@ const IdentifierExpression = struct
 
 const TypeIdentifier = struct
 {
+    value: union(ID)
+    {
+        simple: []const u8,
+        pointer: Pointer,
+        array: Array,
+        structure: Struct,
+        function: Function,
+    },
+
     pub const ID = enum
     {
         simple,
-        integer,
-        function,
         pointer,
         array,
         structure,
+        function,
+    };
+
+    const Function = struct
+    {
+        arg_types: NodeRefBuffer,
+        return_type: *Node,
+    };
+
+    const Pointer = struct
+    {
+        p_type: *Node,
+    };
+
+    const Array = struct
+    {
+        a_type: *Node,
+        count: u64,
+    };
+
+    const Field = struct
+    {
+        field_name: []const u8,
+        type_name: *Node,
+    };
+
+    const Struct = struct
+    {
+        fields: NodeRefBuffer,
     };
 };
 
@@ -2144,49 +2179,62 @@ const Parser = struct
         var function_node = self.append_and_get(function_node_value);
         self.current_function = function_node;
 
-        var function_type = Type.Function {
-            .arg_types = TypeRefBuffer.init(allocator),
-            .ret_type = undefined,
+        var function_type = TypeIdentifier
+        {
+            .value = {
+                .function = TypeIdentifier.Function {
+                    // @TODO: make this pointer-stable
+                    .arg_types = ArrayList(*TypeIdentifier).init(allocator) catch |err| {
+                        panic("can't allocate memory for argument types\n", .{});
+                    },
+                    .ret_type = undefined,
+                };
+            }
         };
 
         var next_token = consumer.tokens[consumer.next_index];
         var args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
 
-        self.parsing_function_args = true;
-        while (args_left_to_parse)
         {
-            if (self.parse_expression(allocator, consumer, types, function_node)) |arg_node|
+            self.parsing_function_args = true;
+
+            while (args_left_to_parse)
             {
-                if (arg_node.value != Node.ID.var_decl)
+                if (self.parse_expression(allocator, consumer, types, function_node)) |arg_node|
                 {
-                    // @TODO: improve error message
+                    if (arg_node.value != Node.ID.var_decl)
+                    {
+                        // @TODO: improve error message
+                        self.compiler.report_error("Error parsing argument\n", .{});
+                        return null;
+                    }
+
+                    arg_node.value.var_decl.is_function_arg = true;
+                    try function_node.value.function_decl.arguments.append(arg_node);
+
+                    next_token = consumer.tokens[consumer.next_index];
+                    args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
+
+                    if (args_left_to_parse)
+                    {
+                        const comma = consumer.expect_and_consume_sign(',');
+                        if (comma == null)
+                        {
+                            // print error
+                            self.compiler.report_error("Expected comma after function argument", .{});
+                            return null;
+                        }
+                    }
+                }
+                else
+                {
                     self.compiler.report_error("Error parsing argument\n", .{});
                     return null;
                 }
-
-                arg_node.value.var_decl.is_function_arg = true;
-                try function_node.value.function_decl.arguments.append(arg_node);
-
-                next_token = consumer.tokens[consumer.next_index];
-                args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
-                if (args_left_to_parse)
-                {
-                    const comma = consumer.expect_and_consume_sign(',');
-                    if (comma == null)
-                    {
-                        // print error
-                        self.compiler.report_error("Expected comma after function argument", .{});
-                        return null;
-                    }
-                }
             }
-            else
-            {
-                self.compiler.report_error("Error parsing argument\n", .{});
-                return null;
-            }
+
+            self.parsing_function_args = false;
         }
-        self.parsing_function_args = false;
 
         if (consumer.expect_and_consume_sign(')') == null)
         {

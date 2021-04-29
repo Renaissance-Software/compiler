@@ -21,7 +21,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content, &types);
     // @Info: lexer_result.line_count is ignored
 
-    const parser_result = Parser.parse(allocator, &compiler, lexer_result, &types);
+    const parser_result = Parser.parse(allocator, &compiler, lexer_result);
 
     //IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
 
