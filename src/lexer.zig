@@ -25,7 +25,6 @@ pub const Token = struct
         str_lit,
         identifier,
         keyword,
-        type,
         sign,
         //intrinsic,
     };
@@ -38,9 +37,7 @@ pub const Token = struct
         str_lit: []const u8,
         identifier: []const u8,
         keyword: KeywordID,
-        type: *Type, // @ TODO: change this
         sign: u8,
-        //intrinsic: u64, // @ TODO: change this
 
         pub fn format(self: Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
         {
@@ -69,10 +66,6 @@ pub const Token = struct
                 Token.Value.keyword =>
                 {
                     try std.fmt.format(writer, "Value {c} .keyword = {} {c}", .{'{', self.keyword, '}'});
-                },
-                Token.Value.type =>
-                {
-                    try std.fmt.format(writer, "Value {c} .type = {} {c}", .{'{', self.type, '}'});
                 },
                 Token.Value.sign =>
                 {
@@ -106,7 +99,7 @@ const Tokenizer = struct
             panic("Failed to allocate a new token\n", .{});
         };
     }
-    fn match_name(self: Tokenizer, name: []const u8, types: *TypeBuffer) Token.Value
+    fn match_name(self: Tokenizer, name: []const u8) Token.Value
     {
         if (std.meta.stringToEnum(KeywordID, name)) |keyword|
         {
@@ -115,15 +108,6 @@ const Tokenizer = struct
                 .keyword = keyword,
             };
             return result;
-        }
-        else
-        {
-            // print("Keyword not found\n", .{});
-        }
-
-        if (Type.get_type_by_name(types, name)) |type_decl|
-        {
-            return Token.Value{ .type = type_decl };
         }
 
         return Token.Value{ .identifier = name };
@@ -136,7 +120,7 @@ pub const LexerResult = struct
     line_count: u32,
 };
 
-pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8, types: *TypeBuffer) LexerResult
+pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8) LexerResult
 {
     // print("Lexer\n", .{});
     var tokenizer = Tokenizer
@@ -184,7 +168,7 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 //print("Symbol found: {}. Length: {}\n", .{ symbol_slice, len });
                 const column = @intCast(u32, start - current_line_start);
 
-                const token_type = tokenizer.match_name(identifier_slice, types);
+                const token_type = tokenizer.match_name(identifier_slice);
 
                 tokenizer.new_token(token_type, start, end, line_count, column);
             },

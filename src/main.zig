@@ -18,7 +18,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     };
     var types : Internal.TypeBuffer = Type.init(allocator);
 
-    const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content, &types);
+    const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content);
     // @Info: lexer_result.line_count is ignored
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result);
