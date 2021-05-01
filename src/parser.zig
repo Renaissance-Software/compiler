@@ -9,6 +9,7 @@ const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 const TypeBuffer = BucketArrayList(TypeIdentifier, 64);
 const Internal = @import("compiler.zig");
 
+const Operator = Internal.Operator;
 const Compiler = Internal.Compiler;
 const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
@@ -200,7 +201,7 @@ const VariableDeclaration = struct
 {
     name: []const u8,
     var_type: *Node,
-    var_value: *Node,
+    var_value: ?*Node,
     var_scope: *Node,
     backend_ref: usize,
     is_function_arg: bool,
@@ -333,9 +334,11 @@ pub const Node = struct
                     try std.fmt.format(writer, " -> {s}", .{return_type.value.type_identifier.to_string()});
                 }
                 try writer.writeAll("\n{\n");
-                for (self.value.function_decl.blocks.items) |block|
+                const block_count = self.value.function_decl.blocks.items.len;
+                if (block_count > 0)
                 {
-                    try std.fmt.format(writer, "{}", .{block});
+                    // @Info: we only need to print the first one since the others are dependent
+                    try std.fmt.format(writer, "{}", .{self.value.function_decl.blocks.items[0]});
                 }
                 try writer.writeAll("}\n");
             },
@@ -343,7 +346,7 @@ pub const Node = struct
             {
                 for (self.value.block_expr.statements.items) |statement|
                 {
-                    try std.fmt.format(writer, "    {}\n", .{statement});
+                    try std.fmt.format(writer, "    {};\n", .{statement});
                 }
             },
             Node.ID.var_decl =>
@@ -440,11 +443,11 @@ pub const Node = struct
                 try writer.writeAll(")\n{\n");
                 for (self.value.loop_expr.body.value.block_expr.statements.items) |loop_st|
                 {
-                    try std.fmt.format(writer, "{}", .{loop_st});
+                    try std.fmt.format(writer, "{};\n", .{loop_st});
                 }
                 for (self.value.loop_expr.postfix.value.block_expr.statements.items) |postfix_st|
                 {
-                    try std.fmt.format(writer, "{}", .{postfix_st});
+                    try std.fmt.format(writer, "{};\n", .{postfix_st});
                 }
                 try writer.writeAll("}");
             },
@@ -455,7 +458,7 @@ pub const Node = struct
                 try writer.writeAll(")\n{\n");
                 for (self.value.branch_expr.if_block.value.block_expr.statements.items) |if_st|
                 {
-                    try std.fmt.format(writer, "{}\n", .{if_st});
+                    try std.fmt.format(writer, "{};\n", .{if_st});
                 }
                 try writer.writeAll("}\n");
                 if (self.value.branch_expr.else_block) |else_block|
@@ -463,14 +466,14 @@ pub const Node = struct
                     try writer.writeAll("else\n{\n");
                     for (else_block.value.block_expr.statements.items) |else_st|
                     {
-                        try std.fmt.format(writer, "{}\n", .{else_st});
+                        try std.fmt.format(writer, "{};\n", .{else_st});
                     }
                     try writer.writeAll("}");
                 }
             },
             Node.ID.break_expr =>
             {
-                try writer.writeAll("break;");
+                try writer.writeAll("break");
             },
             Node.ID.invoke_expr =>
             {
@@ -523,7 +526,7 @@ const TokenConsumer = struct
     fn consume(self: *TokenConsumer) void 
     {
         const consumed_token = self.tokens[self.next_index];
-        //self.compiler.log("Consuming {}\n", .{consumed_token});
+        self.compiler.log("Consuming {}\n", .{consumed_token});
         self.next_index += 1;
     }
 
@@ -532,6 +535,17 @@ const TokenConsumer = struct
         const token = self.tokens[self.next_index];
         if (token.value == id) {
             self.consume();
+            return token;
+        }
+
+        return null;
+    }
+
+    fn expect_operator(self: *TokenConsumer, operator: Operator) ?Token
+    {
+        const token = self.tokens[self.next_index];
+        if (token.value == Token.ID.operator and token.value.operator == operator)
+        {
             return token;
         }
 
@@ -549,6 +563,16 @@ const TokenConsumer = struct
         return null;
     }
 
+    fn expect_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token
+    {
+        const token = self.tokens[self.next_index];
+        if (token.value == Token.ID.keyword and token.value.keyword == keyword)
+        {
+            return token;
+        }
+
+        return null;
+    }
 
     fn expect_and_consume_sign(self: *TokenConsumer, sign: u8) ?Token
     {
@@ -561,19 +585,21 @@ const TokenConsumer = struct
         return token;
     }
 
-    fn expect_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token
+
+    fn expect_and_consume_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token
     {
-        const token = self.tokens[self.next_index];
-        if (token.value == Token.ID.keyword and token.value.keyword == keyword)
+        const token = self.expect_keyword(keyword);
+        if (token != null)
         {
-            return token;
+            self.consume();
         }
 
-        return null;
+        return token;
     }
 
-    fn expect_and_consume_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token {
-        const token = self.expect_keyword(keyword);
+    fn expect_and_consume_operator(self: *TokenConsumer, operator: Operator) ?Token
+    {
+        const token = self.expect_operator(operator);
         if (token != null)
         {
             self.consume();
@@ -612,7 +638,7 @@ const TokenConsumer = struct
                         //{
                             //panic("Not implemented\n", .{});
                         //}
-                        //const right_bracket = self.expect_and_consume_sign(']');
+                        //const right_bracket = self.expect_and_consume_operator(Operator.RightBracket);
                         //if (right_bracket == null)
                         //{
                             //panic("Expected ] after array index\n", .{});
@@ -658,7 +684,7 @@ const TokenConsumer = struct
                             //const field_name_token = self.expect_and_consume(Token.ID.identifier);
                             //assert(field_name_token != null);
                             //const field_name = field_name_token.?.value.identifier;
-                            //const colon = self.expect_and_consume_sign(':');
+                            //const colon = self.expect_and_consume_operator(Operator.Declaration);
                             //assert(colon != null);
                             //const field_type = self.get_type_consuming_tokens(allocator, types);
                             //print("Field name: {s}\n", .{field_name});
@@ -904,7 +930,7 @@ const Parser = struct
             {
                 consumer.consume();
                 const identifier_name = token.value.identifier;
-                if (consumer.expect_and_consume_sign(':') != null)
+                if (consumer.expect_and_consume_operator(Operator.Declaration) != null)
                 {
                     var var_decl_node = Node
                     {
@@ -925,7 +951,7 @@ const Parser = struct
                     const result = self.append_and_get(var_decl_node);
                     return result;
                 }
-                else if (consumer.expect_and_consume_sign('(') != null)
+                else if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
                 {
                     const invoke_expr_node_value = Node
                     {
@@ -940,7 +966,7 @@ const Parser = struct
                     };
                     var invoke_expr_node = self.append_and_get(invoke_expr_node_value);
 
-                    var args_left_to_parse = consumer.expect_and_consume_sign(')') == null;
+                    var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
 
                     while (args_left_to_parse)
                     {
@@ -949,7 +975,7 @@ const Parser = struct
                             invoke_expr_node.value.invoke_expr.arguments.append(new_arg) catch |err| {
                                 panic("Failed to append argument for invoke expression\n", .{});
                             };
-                            args_left_to_parse = consumer.expect_and_consume_sign(')') == null;
+                            args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
                             if (args_left_to_parse)
                             {
                                 if (consumer.expect_and_consume_sign(',') == null)
@@ -1001,7 +1027,7 @@ const Parser = struct
                         consumer.consume();
                         if (self.parse_expression(allocator, consumer, types, parent_node)) |expr_in_parenthesis|
                         {
-                            if (consumer.expect_and_consume_sign(')') == null)
+                            if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
                             {
                                 panic("Expected closing parenthesis after opening parenthesis\n", .{});
                             }
@@ -1084,7 +1110,7 @@ const Parser = struct
                         };
 
                         var array_lit_node = self.append_and_get(array_lit_node_value);
-                        if (consumer.expect_and_consume_sign(']') == null)
+                        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
                         {
                             while (true)
                             {
@@ -1094,7 +1120,7 @@ const Parser = struct
                                         panic("Couldn't allocate memory for element of array literal\n", .{});
                                     };
 
-                                    const elements_to_parse = consumer.expect_and_consume_sign(']') == null;
+                                    const elements_to_parse = consumer.expect_and_consume_operator(Operator.RightBracket) == null;
                                     if (elements_to_parse)
                                     {
                                         if (consumer.expect_and_consume_sign(',') == null)
@@ -1152,6 +1178,11 @@ const Parser = struct
         Call,
         Declaration,
         Primary,
+
+        fn increment(self: Precedence) Precedence
+        {
+            return @intToEnum(Precedence, (@enumToInt(self) + 1));
+        }
     };
 
     // List of expressions
@@ -1172,7 +1203,7 @@ const Parser = struct
     
     const ParseFn = fn (self: *Parser, allocator: *Allocator, consumer: *TokenConsumer) void;
 
-    fn parse_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) ?*Node
+    fn parse_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
     {
         const result = self.parse_precedence(allocator, consumer, parent_node, Precedence.Assignment);
         return result;
@@ -1186,7 +1217,7 @@ const Parser = struct
         }
     }
 
-    fn parse_prefix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) ?*Node
+    fn parse_prefix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
     {
         const token = consumer.peek();
         consumer.consume();
@@ -1215,86 +1246,20 @@ const Parser = struct
             Token.ID.identifier =>
             {
                 const identifier_name = token.value.identifier;
-                //if (consumer.expect_and_consume_sign(':') != null)
-                //{
-                    //var var_decl_node = Node
-                    //{
-                        //.value = Node.Value {
-                            //.var_decl = VariableDeclaration {
-                                //.name = identifier_name,
-                                //// Info: These are set later 
-                                //.var_type =  undefined,
-                                //.var_value =  undefined,
-                                //.var_scope =  undefined,
-                                //.backend_ref =  undefined,
-                                //.is_function_arg =  undefined,
-                            //},
-                        //},
-                        //.parent = parent_node,
-                        //.value_type = Node.ValueType.LValue,
-                    //};
-                    //const result = self.append_and_get(var_decl_node);
-                    //return result;
-                //}
-                //else if (consumer.expect_and_consume_sign('(') != null)
-                //{
-                    //const invoke_expr_node_value = Node
-                    //{
-                        //.value = Node.Value {
-                            //.invoke_expr = InvokeExpression {
-                                //.arguments = NodeRefBuffer.init(allocator),
-                                //.expression = self.find_existing_invoke_expression(identifier_name),
-                            //},
-                        //},
-                        //.parent = parent_node,
-                        //.value_type = Node.ValueType.RValue,
-                    //};
-                    //var invoke_expr_node = self.append_and_get(invoke_expr_node_value);
-
-                    //var args_left_to_parse = consumer.expect_and_consume_sign(')') == null;
-
-                    //while (args_left_to_parse)
-                    //{
-                        //if (self.parse_expression(allocator, consumer, invoke_expr_node)) |new_arg|
-                        //{
-                            //invoke_expr_node.value.invoke_expr.arguments.append(new_arg) catch |err| {
-                                //panic("Failed to append argument for invoke expression\n", .{});
-                            //};
-                            //args_left_to_parse = consumer.expect_and_consume_sign(')') == null;
-                            //if (args_left_to_parse)
-                            //{
-                                //if (consumer.expect_and_consume_sign(',') == null)
-                                //{
-                                    //panic("Expected comma after invoke expression argument\n", .{});
-                                //}
-                            //}
-                        //}
-                        //else
-                        //{
-                            //// @TODO: convert into a compiler error
-                            //panic("Couldn't parse argument for invoke expression: {s}\n", .{identifier_name});
-                        //}
-                    //}
-
-                    //return invoke_expr_node;
-                //}
-                //else
-                //{
-                    const var_expr_node_value = Node
-                    {
-                        .value = Node.Value {
-                            .identifier_expr = IdentifierExpression {
-                                // .reference = self.find_existing_variable(identifier_name),
-                                .reference = null,
-                                .name = identifier_name,
-                            },
+                const id_expr_node_value = Node
+                {
+                    .value = Node.Value {
+                        .identifier_expr = IdentifierExpression {
+                            // .reference = self.find_existing_variable(identifier_name),
+                            .reference = null,
+                            .name = identifier_name,
                         },
-                        .parent = parent_node,
-                        .value_type = Node.ValueType.RValue,
-                    };
-                    const var_expr_node = self.append_and_get(var_expr_node_value);
-                    return var_expr_node;
-                //}
+                        },
+                    .parent = parent_node,
+                    .value_type = Node.ValueType.RValue,
+                };
+                const id_expr_node = self.append_and_get(id_expr_node_value);
+                return id_expr_node;
             },
             else => panic("Prefix rule not implemented for {}\n", .{token.value}),
         }
@@ -1305,7 +1270,36 @@ const Parser = struct
         panic("foo\n", .{});
     }
 
-    fn get_precedence(token: Token) Precedence
+    const OperatorResult = struct 
+    {
+        precedence: Precedence,
+        binop: BinaryExpression.ID,
+    };
+
+    fn get_precedence_for_operator(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, operator: Operator) Precedence
+    {
+        switch (operator)
+        {
+            Operator.RightParenthesis => return Precedence.None,
+
+            Operator.Plus,
+            Operator.Minus => return Precedence.LightArithmetic,
+
+            Operator.Multiplication,
+            Operator.Division => return Precedence.HeavyArithmetic,
+
+            Operator.Equal,
+            Operator.GreaterThan,
+            Operator.LessThan => return Precedence.Compare,
+
+            Operator.LeftParenthesis => return Precedence.Call,
+
+            Operator.Assignment => return Precedence.Assignment,
+            else => panic("Precedence not implemented for {}\n", .{operator}),
+        }
+    }
+
+    fn get_precedence(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, token: Token) Precedence
     {
         switch (token.value)
         {
@@ -1314,45 +1308,152 @@ const Parser = struct
                 const sign = token.value.sign;
                 switch (sign)
                 {
-                    ':' => return Precedence.Declaration,
+                    '{' => return Precedence.None,
                     ';' => return Precedence.None,
                     else => panic("Precedence not implemented for sign {c}\n", .{sign}),
                 }
+            },
+            Token.ID.operator =>
+            {
+                const operator = token.value.operator;
+                return self.get_precedence_for_operator(allocator, consumer, operator);
             },
             else => panic("Precedence not implemented for {}\n", .{token.value}),
         }
     }
 
-    fn parse_precedence(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, precedence: Precedence) ?*Node
+    fn parse_anonymous_function_with_first_arg(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence, arg_list: *NodeRefBuffer) *Node
     {
-        if (self.parse_prefix(allocator, consumer, parent_node)) |prefix_node|
+        panic("not implemented yet\n", .{});
+    }
+
+    fn parse_function_call_with_first_arg(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence, arg_list: *NodeRefBuffer) *Node
+    {
+        panic("not implemented yet\n", .{});
+    }
+
+    fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        self.compiler.log("Parsing argument list\n", .{});
+        var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
+        var arg_list = NodeRefBuffer.init(allocator);
+
+        if (args_left_to_parse)
         {
-            var left_expr = prefix_node;
             while (true)
             {
-                const next = consumer.peek();
-                const new_precedence = get_precedence(next);
+                const arg = self.parse_expression(allocator, consumer, parent_node);
+                arg_list.append(arg) catch |err| {
+                    panic("Error allocating memory for argument node\n", .{});
+                };
 
-                self.compiler.log("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
-                if (@enumToInt(precedence) <= @enumToInt(new_precedence))
-                {
-                    consumer.consume();
-                    const infix_rule = get_infix_rule(next);
-                    panic("not implemented. Implement as a function rather than as a fetching instruction pointer/switch case retrieve of function pointer\n", .{});
-                    //infix_rule(self, allocator, consumer, parent_node);
-                }
-                else
+                const next_token = consumer.peek();
+                consumer.consume();
+
+                if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis)
                 {
                     break;
                 }
+                else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
+                {
+                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{next_token.value});
+                }
             }
+        }
 
-            return left_expr;
-        }
-        else
+        panic("not implemented\n", .{});
+    }
+
+    fn parse_infix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        switch (operator)
         {
-            panic("Can't get prefix node\n", .{});
+            Operator.Equal,
+            Operator.GreaterThan,
+            Operator.Assignment,
+            Operator.Plus,
+            Operator.Minus,
+            Operator.Multiplication =>
+            {
+                const binary_expr = self.parse_binary_expression(allocator, consumer, parent_node, left_expr, operator, precedence);
+                return binary_expr;
+            },
+
+            Operator.LeftParenthesis =>
+            {
+                const call_expr = self.parse_function_call(allocator, consumer, parent_node, left_expr, operator, precedence);
+                return call_expr;
+            },
+            else => panic("operator not implemented: {}\n", .{operator}),
         }
+    }
+
+    fn parse_precedence(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, precedence: Precedence) *Node
+    {
+        const prefix_node = self.parse_prefix(allocator, consumer, parent_node);
+        var left_expr = prefix_node;
+
+        while (true)
+        {
+            const token = consumer.peek();
+            const new_precedence = self.get_precedence(allocator, consumer, token);
+
+            self.compiler.log("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
+            if (@enumToInt(precedence) <= @enumToInt(new_precedence))
+            {
+                consumer.consume();
+                assert(token.value == Token.ID.operator);
+                const operator = token.value.operator;
+                left_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr, operator, new_precedence);
+            }
+            else
+            {
+                break;
+            }
+        }
+
+        return left_expr;
+    }
+
+    // @TODO: Rectify signature if needed
+    fn parse_binary_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        const right_expr = self.parse_precedence(allocator, consumer, parent_node, precedence.increment());
+        self.compiler.log("Right expr: {}\n", .{right_expr});
+        const binary_op: BinaryExpression.ID = switch (operator)
+        {
+            Operator.Assignment => BinaryExpression.ID.Assignment,
+            Operator.Plus => BinaryExpression.ID.Plus,
+            Operator.Minus => BinaryExpression.ID.Minus,
+            Operator.Multiplication => BinaryExpression.ID.Multiplication,
+            Operator.Equal => BinaryExpression.ID.Compare_Equal,
+            Operator.GreaterThan => BinaryExpression.ID.Compare_GreaterThan,
+            else => panic("not implemented: {}\n", .{operator}),
+        };
+
+        if (binary_op == BinaryExpression.ID.Assignment)
+        {
+            left_expr.value_type = Node.ValueType.LValue;
+        }
+
+        const binary_node_value = Node
+        {
+            .value = Node.Value {
+                .binary_expr = BinaryExpression {
+                    .left = left_expr,
+                    .right = right_expr,
+                    .id = binary_op,
+                    .parenthesis = false,
+                },
+                },
+            .parent = parent_node,
+            .value_type = Node.ValueType.RValue,
+        };
+
+        const binary_node = self.append_and_get(binary_node_value);
+
+        self.compiler.log("New binary expression: {}\n", .{binary_node});
+        return binary_node;
     }
 
     fn _expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer) ?*Node
@@ -1365,7 +1466,7 @@ const Parser = struct
                 var var_decl_node = left;
                 var_decl_node.value.var_decl.var_type = parser.parse_type(allocator, consumer, );
 
-                if (consumer.expect_and_consume_sign('=') != null)
+                if (consumer.expect_and_consume_operator(Operator.Assignment) != null)
                 {
                     if (self.parse_expression(allocator, consumer, var_decl_node)) |var_value|
                     {
@@ -1381,13 +1482,10 @@ const Parser = struct
                         panic("Variable assignment followed by an equal must be an assignment\n", .{});
                     }
                 }
-                else if (self.parsing_function_args)
-                {
-                    return var_decl_node;
-                }
                 else
                 {
-                    panic("Variable declarations are not allowed to have no value for now\n", .{});
+                    // No value
+                    return var_decl_node;
                 }
             }
             else
@@ -1433,9 +1531,9 @@ const Parser = struct
                         ':' =>
                         {
                             consumer.consume();
-                            if (consumer.expect_and_consume_sign(':') != null)
+                            if (consumer.expect_and_consume_operator(Operator.Declaration) != null)
                             {
-                                if (consumer.expect_sign('(') != null)
+                                if (consumer.expect_operator(Operator.LeftParenthesis) != null)
                                 {
                                     panic("Unreachable. Unexpected function here\n", .{});
                                 }
@@ -1451,6 +1549,9 @@ const Parser = struct
                         },
                         '=' =>
                         {
+                            // unreachable;
+                            if (true)
+                                panic("foo\n", .{});
                             consumer.consume();
                             if (consumer.expect_and_consume_sign('=') != null)
                             {
@@ -1521,7 +1622,7 @@ const Parser = struct
                             {
                                 subscript_node.value.array_subscript_expr.index = index_node;
 
-                                if (consumer.expect_and_consume_sign(']') == null)
+                                if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
                                 {
                                     panic("Expected array subscript termination\n", .{});
                                 }
@@ -1782,7 +1883,21 @@ const Parser = struct
                 .value_type = Node.ValueType.RValue,
             };
 
-            var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
+            const value_type = Node
+            {
+                .value = Node.Value {
+                    .type_identifier = TypeIdentifier {
+                        .value = TypeIdentifier.Value {
+                            .simple = "s32",
+                        },
+                    },
+                },
+                .parent = parent_node,
+                .value_type = Node.ValueType.LValue,
+            };
+
+            var it_decl_literal_node = self.append_and_get(value_type);
+            const it_decl_type_node = self.append_and_get(it_decl_decl_value);
             const it_decl_value = Node
             {
                 .value = Node.Value {
@@ -1790,7 +1905,7 @@ const Parser = struct
                         .name = it_identifier.value.identifier,
                         .is_function_arg = false,
                         .var_scope = self.current_block,
-                        .var_type = undefined, // @TODO: implement
+                        .var_type = it_decl_type_node,
                         .var_value = it_decl_literal_node,
                         .backend_ref = 0,
                     },
@@ -1799,10 +1914,6 @@ const Parser = struct
                 .value_type = Node.ValueType.LValue,
             };
 
-            if (true)
-            {
-                panic("fix previous undefined\n", .{});
-            }
             const it_decl_node = self.append_and_get(it_decl_value);
             it_decl_literal_node.parent = it_decl_node;
 
@@ -1816,7 +1927,7 @@ const Parser = struct
             // Prefix
             {
                 self.current_block = for_node.value.loop_expr.prefix;
-                if (consumer.expect_and_consume_sign(':') == null)
+                if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
                 {
                     panic("Expected colon after a loop variable declaration\n", .{});
                 }
@@ -1889,7 +2000,7 @@ const Parser = struct
             // Block
             {
                 // @Info: this sets the target block as current block, so no need here to set it in advance
-                self.block(allocator, consumer, types, for_node.value.loop_expr.body, true);
+                self.block(allocator, consumer, for_node.value.loop_expr.body, true);
             }
 
             // Postfix
@@ -1987,50 +2098,44 @@ const Parser = struct
         };
 
         var branch_node = self.append_and_get(branch_node_value);
-        if (self.parse_expression(allocator, consumer, parent_node)) |condition_node|
+        const condition_node = self.parse_expression(allocator, consumer, parent_node);
+        branch_node.value.branch_expr.condition = condition_node;
+        const if_block_value = Node
         {
-            branch_node.value.branch_expr.condition = condition_node;
-            const if_block_value = Node
+            .value = Node.Value {
+                .block_expr = BlockExpression {
+                    .statements = NodeRefBuffer.init(allocator),
+                    .id = BlockExpression.ID.IfBlock,
+                }
+            },
+            .parent = branch_node,
+            .value_type = Node.ValueType.RValue,
+        };
+        const if_block_node = self.append_and_get(if_block_value);
+        self.block(allocator, consumer, if_block_node, true);
+        branch_node.value.branch_expr.if_block = if_block_node;
+
+        self.current_block = parent_node;
+
+        if (consumer.expect_and_consume_keyword(KeywordID.@"else") != null)
+        {
+            const else_block_value = Node
             {
                 .value = Node.Value {
                     .block_expr = BlockExpression {
                         .statements = NodeRefBuffer.init(allocator),
-                        .id = BlockExpression.ID.IfBlock,
+                        .id = BlockExpression.ID.ElseBlock,
                     }
                 },
                 .parent = branch_node,
                 .value_type = Node.ValueType.RValue,
             };
-            const if_block_node = self.append_and_get(if_block_value);
-            self.block(allocator, consumer, if_block_node, true);
-            branch_node.value.branch_expr.if_block = if_block_node;
-
-            self.current_block = parent_node;
-
-            if (consumer.expect_and_consume_keyword(KeywordID.@"else") != null)
-            {
-                const else_block_value = Node
-                {
-                    .value = Node.Value {
-                        .block_expr = BlockExpression {
-                            .statements = NodeRefBuffer.init(allocator),
-                            .id = BlockExpression.ID.ElseBlock,
-                        }
-                    },
-                    .parent = branch_node,
-                    .value_type = Node.ValueType.RValue,
-                };
-                const else_block_node = self.append_and_get(else_block_value);
-                self.block(allocator, consumer, else_block_node, true);
-                branch_node.value.branch_expr.else_block = else_block_node;
-            }
-
-            return branch_node;
+            const else_block_node = self.append_and_get(else_block_value);
+            self.block(allocator, consumer, else_block_node, true);
+            branch_node.value.branch_expr.else_block = else_block_node;
         }
-        else
-        {
-            panic("Couldn't parse if condition\n", .{});
-        }
+
+        return branch_node;
     }
 
     fn parse_break(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) ?*Node
@@ -2106,7 +2211,7 @@ const Parser = struct
             {
                 const identifier_name = token.value.identifier;
                 consumer.consume();
-                if (consumer.expect_and_consume_sign(':') != null)
+                if (consumer.expect_and_consume_operator(Operator.Declaration) != null)
                 {
                     var var_decl_node_value = Node
                     {
@@ -2126,11 +2231,11 @@ const Parser = struct
                     };
 
                     var var_decl_node = self.append_and_get(var_decl_node_value);
-                    if (consumer.expect_and_consume_sign('=') == null)
+                    if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
                     {
                         var_decl_node.value.var_decl.var_type = self.parse_type(allocator, consumer, parent_node);
 
-                        if (consumer.expect_and_consume_sign('=') == null)
+                        if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
                         {
                             panic("expected assignment after type in variable declaration\n", .{});
                         }
@@ -2143,14 +2248,7 @@ const Parser = struct
 
                     if (consumer.expect_sign(';') == null)
                     {
-                        if (self.parse_expression(allocator, consumer, parent_node)) |var_decl_value|
-                        {
-                            var_decl_node.value.var_decl.var_value = var_decl_value;
-                        }
-                        else
-                        {
-                            panic("Couldn't parse variable initialization value\n", .{});
-                        }
+                        var_decl_node.value.var_decl.var_value = self.parse_expression(allocator, consumer, parent_node);
                     }
                     else
                     {
@@ -2162,6 +2260,7 @@ const Parser = struct
                 }
                 else
                 {
+                    self.compiler.log("Rectifying and parsing identifier expression...\n", .{});
                     consumer.next_index -= 1;
                     statement_node = self.parse_expression(allocator, consumer, parent_node);
                 }
@@ -2193,7 +2292,6 @@ const Parser = struct
             if (consumer.expect_and_consume_sign(';') == null)
             {
                 self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
-                std.os.exit(1);
             }
         }
 
@@ -2210,7 +2308,6 @@ const Parser = struct
         if (!has_braces and !allow_no_braces)
         {
             self.compiler.report_error("Expected braces in block\n", .{});
-            std.os.exit(1);
         }
 
         if (has_braces)
@@ -2222,6 +2319,7 @@ const Parser = struct
             {
                 if (self.statement(allocator, consumer, block_node)) |statement_node|
                 {
+                    self.compiler.log("New statement: {}\n", .{statement_node});
                     block_node.value.block_expr.statements.append(statement_node) catch |err| {
                         panic("Failed to allocate memory for statement", .{});
                     };
@@ -2231,7 +2329,6 @@ const Parser = struct
                 else
                 {
                     self.compiler.report_error("Error parsing statement\n", .{});
-                    std.os.exit(1);
                 }
             }
 
@@ -2239,7 +2336,6 @@ const Parser = struct
             if (end == null)
             {
                 self.compiler.report_error("Expected end sign at the end of the block", .{});
-                std.os.exit(1);
             }
         }
         else
@@ -2253,12 +2349,11 @@ const Parser = struct
             else
             {
                 self.compiler.report_error("Error parsing statement\n", .{});
-                std.os.exit(1);
             }
         }
     }
 
-    fn function(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, name: []const u8) !?*Node
+    fn parse_function_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer) !?*Node
     {
         var function_node_value = Node
         {
@@ -2266,7 +2361,7 @@ const Parser = struct
             {
                 .function_decl = FunctionDeclaration
                 {
-                    .name = name,
+                    .name = "",
                     .arguments = ArrayList(*Node).init(allocator),
                     .blocks = ArrayList(*Node).init(allocator),
                     .variables = ArrayList(*Node).init(allocator),
@@ -2294,76 +2389,56 @@ const Parser = struct
 
         var next_token = consumer.tokens[consumer.next_index];
         var arg_types = NodeRefBuffer.init(allocator);
-        var args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
+        var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
         {
             self.parsing_function_args = true;
 
             while (args_left_to_parse)
             {
-                if (self.parse_expression(allocator, consumer, function_node)) |arg_node|
+                const arg_node = self.parse_expression(allocator, consumer, function_node);
+                if (arg_node.value != Node.ID.var_decl)
                 {
-                    if (arg_node.value != Node.ID.var_decl)
-                    {
-                        // @TODO: improve error message
-                        self.compiler.report_error("Error parsing argument\n", .{});
-                        return null;
-                    }
-
-                    arg_node.value.var_decl.is_function_arg = true;
-                    try function_node.value.function_decl.arguments.append(arg_node);
-
-                    next_token = consumer.tokens[consumer.next_index];
-                    args_left_to_parse = !(next_token.value == Token.ID.sign and next_token.value.sign == ')');
-
-                    if (args_left_to_parse)
-                    {
-                        const comma = consumer.expect_and_consume_sign(',');
-                        if (comma == null)
-                        {
-                            // print error
-                            self.compiler.report_error("Expected comma after function argument", .{});
-                            return null;
-                        }
-                    }
-                }
-                else
-                {
+                    // @TODO: improve error message
                     self.compiler.report_error("Error parsing argument\n", .{});
-                    return null;
+                }
+
+                arg_node.value.var_decl.is_function_arg = true;
+                try function_node.value.function_decl.arguments.append(arg_node);
+
+                next_token = consumer.tokens[consumer.next_index];
+                args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
+
+                if (args_left_to_parse)
+                {
+                    const comma = consumer.expect_and_consume_sign(',');
+                    if (comma == null)
+                    {
+                        // print error
+                        self.compiler.report_error("Expected comma after function argument", .{});
+                    }
                 }
             }
 
             self.parsing_function_args = false;
         }
 
-        if (consumer.expect_and_consume_sign(')') == null)
+        if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
         {
             self.compiler.report_error("Expected end of argument list\n", .{});
-            return null;
         }
 
         var return_type: ?*Node = null;
-        if (consumer.expect_and_consume_sign('-') != null)
+        if (consumer.expect_and_consume_operator(Operator.Arrow) != null)
         {
-            if (consumer.expect_and_consume_sign('>') == null)
-            {
-                self.compiler.report_error("Expected > after - in the function declaration return part\n", .{});
-                return null;
-            }
-
             return_type = self.parse_type(allocator, consumer, null);
         }
 
         var function_type_node_value = Node
         {
-            .value = Node.Value
-            {
-                .type_identifier = TypeIdentifier
-                {
-                    .value = TypeIdentifier.Value
-                    {
-                        .function = TypeIdentifier.Function
-                        {
+            .value = Node.Value {
+                .type_identifier = TypeIdentifier {
+                    .value = TypeIdentifier.Value {
+                        .function = TypeIdentifier.Function {
                             .arg_types = arg_types,
                             .return_type = return_type,
                         },
@@ -2418,27 +2493,20 @@ const Parser = struct
             panic("not implemented\n", .{});
         }
 
-        const first_token = consumer.tokens[consumer.next_index];
-        const second_token = consumer.tokens[consumer.next_index + 1];
-
-        if (!(first_token.value == Token.ID.sign and first_token.value.sign == ':' and second_token.value == Token.ID.sign and second_token.value.sign == ':'))
+        const constant = consumer.expect_and_consume_operator(Operator.Constant);
+        if (constant == null)
         {
-            // @TODO: handle this properly
-            panic("not implemented\n", .{});
+            panic("not implemented: top level declaration with type in the middle specified\n", .{});
         }
 
-        // @Info: Now this is a constant
-        consumer.consume();
-        consumer.consume();
-
-        if (consumer.expect_and_consume_sign('(') != null)
+        if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
         {
-            const function_result = self.function(allocator, consumer, name) catch |err| {
+            const function_result = self.parse_function_declaration(allocator, consumer) catch |err| {
                 self.compiler.report_error("Couldn't parse the function\n", .{});
-                std.os.exit(1);
             };
             if (function_result) |function_node|
             {
+                function_node.value.function_decl.name = name;
                 self.function_declarations.append(function_node) catch |err| {
                     panic("Failed to allocate node reference for top-level declaration\n", .{});
                 };
@@ -2446,7 +2514,6 @@ const Parser = struct
             else
             {
                 self.compiler.report_error("Couldn't parse the function\n", .{});
-                std.os.exit(1);
             }
         }
         else if (consumer.expect_keyword(KeywordID.@"struct") != null)

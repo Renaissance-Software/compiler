@@ -345,14 +345,55 @@ pub const Type = struct
     }
 };
 
+pub const Operator = enum
+{
+    Declaration,
+    LeftParenthesis,
+    RightParenthesis,
+    LeftBracket,
+    RightBracket,
+    Plus,
+    Minus,
+    AddressOf,
+    Dereference,
+    Multiplication,
+    Division,
+    Modulus,
+    LeftShift,
+    RightShift,
+    LessThan,
+    LessOrEqualThan,
+    GreaterThan,
+    GreaterOrEqualThan,
+    Equal,
+    NotEqual,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXOR,
+    Assignment,
+    PlusAssignment,
+    MinusAssignment,
+    MultiplicationAssignment,
+    DivisionAssignment,
+    ModulusAssignment,
+    RightShiftAssignment,
+    LeftShiftAssignment,
+    BitwiseAndAssignment,
+    BitwiseOrAssignment,
+    BitwiseXORAssignment,
+    Arrow,
+    Constant,
+};
+
 pub const Compiler = struct
 {
     errors_reported: bool,
 
-    pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) void
+    pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) noreturn 
     {
         self.errors_reported = true;
         print(fmt, args);
+        std.os.exit(1);
     }
 
     pub fn log(self: *Compiler, comptime format: []const u8, args: anytype) void
