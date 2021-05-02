@@ -34,7 +34,10 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     defer arena.deinit();
     const allocator = &arena.allocator;
     const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
-    print("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+    if (Internal.should_log)
+    {
+        print("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+    }
     defer allocator.free(file_content);
 
     if (!compiler_work_on_file_content(allocator, file_content))

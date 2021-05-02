@@ -7,7 +7,7 @@ const print = std.debug.print;
 const _BucketArrayModule = @import("bucket_array.zig");
 const BucketArrayList = _BucketArrayModule.BucketArrayList;
 
-pub const should_log = true;
+pub const should_log = false;
 
 pub const KeywordID = enum
 {

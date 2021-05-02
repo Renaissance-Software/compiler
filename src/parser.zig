@@ -575,8 +575,6 @@ const Parser = struct
 
     compiler: *Compiler,
 
-    parsing_function_args: bool,
-
     fn append_and_get(self: *Parser, node: Node) *Node
     {
         const result = self.nb.append(node) catch |err| {
@@ -1849,35 +1847,30 @@ const Parser = struct
         var next_token = consumer.tokens[consumer.next_index];
         var arg_types = NodeRefBuffer.init(allocator);
         var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
+
+        while (args_left_to_parse)
         {
-            self.parsing_function_args = true;
-
-            while (args_left_to_parse)
+            const arg_node = self.parse_expression(allocator, consumer, function_node);
+            if (arg_node.value != Node.ID.var_decl)
             {
-                const arg_node = self.parse_expression(allocator, consumer, function_node);
-                if (arg_node.value != Node.ID.var_decl)
-                {
-                    self.compiler.report_error("Error parsing argument\n", .{});
-                }
-
-                arg_node.value.var_decl.is_function_arg = true;
-                try function_node.value.function_decl.arguments.append(arg_node);
-
-                next_token = consumer.tokens[consumer.next_index];
-                args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
-
-                if (args_left_to_parse)
-                {
-                    const comma = consumer.expect_and_consume_sign(',');
-                    if (comma == null)
-                    {
-                        // print error
-                        self.compiler.report_error("Expected comma after function argument", .{});
-                    }
-                }
+                self.compiler.report_error("Error parsing argument\n", .{});
             }
 
-            self.parsing_function_args = false;
+            arg_node.value.var_decl.is_function_arg = true;
+            try function_node.value.function_decl.arguments.append(arg_node);
+
+            next_token = consumer.tokens[consumer.next_index];
+            args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
+
+            if (args_left_to_parse)
+            {
+                const comma = consumer.expect_and_consume_sign(',');
+                if (comma == null)
+                {
+                    // print error
+                    self.compiler.report_error("Expected comma after function argument", .{});
+                }
+            }
         }
 
         if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
@@ -1990,13 +1983,17 @@ const Parser = struct
 pub const ParserResult = struct
 {
     function_declarations: []*Node,
+    node_buffer: NodeBuffer,
 
     fn print_tree(self: *const ParserResult, compiler: *Compiler) void
     {
-        print("Printing AST:\n\n", .{});
-        for (self.function_declarations) |function|
+        if (Internal.should_log)
         {
-            compiler.log("{}", .{function});
+            print("Printing AST:\n\n", .{});
+            for (self.function_declarations) |function|
+            {
+                compiler.log("{}", .{function});
+            }
         }
     }
 };
@@ -2023,7 +2020,6 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
         .compiler = compiler,
         .function_declarations = NodeRefBuffer.init(allocator),
         .type_declarations = NodeRefBuffer.init(allocator),
-        .parsing_function_args = false,
     };
 
     while (token_consumer.next_index < token_count)
@@ -2036,6 +2032,7 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     const result = ParserResult
     {
         .function_declarations = parser.function_declarations.items,
+        .node_buffer = parser.nb,
     };
 
     result.print_tree(compiler);
