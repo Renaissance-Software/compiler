@@ -1,3 +1,5 @@
+// @TODO: fix up all the parent nodes
+// @TODO: separate variable declaration and initialization value
 const std = @import("std");
 const assert = std.debug.assert;
 const print = std.debug.print;
@@ -30,18 +32,11 @@ pub const UnaryExpression = struct
 {
     node_ref: *Node,
     id: ID,
-    location: Location,
 
     pub const ID = enum
     {
         AddressOf,
-        PointerDereference,
-    };
-
-    pub const Location = enum
-    {
-        Prefix,
-        Postfix,
+        Dereference,
     };
 };
 
@@ -148,36 +143,31 @@ const TypeIdentifier = struct
 
     pub const Pointer = struct
     {
-        p_type: *Node,
+        type: *Node,
     };
 
     pub const Array = struct
     {
-        a_type: *Node,
-        count: u64,
-    };
-
-    pub const Field = struct
-    {
-        field_name: []const u8,
-        type_name: *Node,
+        type: *Node,
+        len_expr: *Node,
     };
 
     pub const Struct = struct
     {
+        // @Info: struct fields are of type var_decl
+        // @TODO: change?
         fields: NodeRefBuffer,
         name: []const u8,
     };
 
-    fn to_string(self: *const TypeIdentifier) []const u8
+    pub fn format(self: TypeIdentifier, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         switch (self.value)
         {
-            TypeIdentifier.ID.simple =>
-            {
-                return self.value.simple;
-            },
-            else => panic("Not implemented: {}\n", .{self.value}),
+            TypeIdentifier.ID.simple => try std.fmt.format(writer, "{s}", .{self.value.simple}),
+            TypeIdentifier.ID.pointer => try std.fmt.format(writer, "&{}", .{self.value.pointer.type.value.type_identifier}),
+            TypeIdentifier.ID.array => try std.fmt.format(writer, "[]{}", .{self.value.array.type.value.type_identifier}),
+            else => panic("ni: {}\n", .{self.value}),
         }
     }
 };
@@ -255,10 +245,9 @@ const ArraySubscriptExpression = struct
 const ArrayLiteral = struct
 {
     elements: NodeRefBuffer,
-    type_expression: *Node,
 };
 
-const StructSubscriptExpression = struct
+const FieldAccessExpression = struct
 {
     expression: *Node,
     field_expr: *Node,
@@ -287,7 +276,7 @@ pub const Node = struct
         loop_expr: LoopExpression,
         break_expr: BreakExpression,
         array_subscript_expr: ArraySubscriptExpression,
-        struct_subscript_expr: StructSubscriptExpression,
+        field_access_expr: FieldAccessExpression,
     };
 
     pub const ID = enum
@@ -307,7 +296,7 @@ pub const Node = struct
         loop_expr,
         break_expr,
         array_subscript_expr,
-        struct_subscript_expr,
+        field_access_expr,
     };
 
     pub const ValueType = enum
@@ -331,7 +320,7 @@ pub const Node = struct
                 const type_node = self.value.function_decl.type;
                 if (type_node.value.type_identifier.value.function.return_type) |return_type|
                 {
-                    try std.fmt.format(writer, " -> {s}", .{return_type.value.type_identifier.to_string()});
+                    try std.fmt.format(writer, " -> {}", .{return_type.value.type_identifier});
                 }
                 try writer.writeAll("\n{\n");
                 const block_count = self.value.function_decl.blocks.items.len;
@@ -477,7 +466,22 @@ pub const Node = struct
             },
             Node.ID.invoke_expr =>
             {
-                try std.fmt.format(writer, "{s}(", .{self.value.invoke_expr.expression.value.function_decl.name});
+                const invoke_expr = self.value.invoke_expr.expression;
+                switch (invoke_expr.value)
+                {
+                    Node.ID.function_decl =>
+                    {
+                        try std.fmt.format(writer, "{s}(", .{invoke_expr.value.function_decl.name});
+                    },
+                    Node.ID.identifier_expr =>
+                    {
+                        try std.fmt.format(writer, "{s}(", .{invoke_expr.value.identifier_expr.name});
+                    },
+                    else =>
+                    {
+                        panic("ni: {}\n", .{invoke_expr.value});
+                    }
+                }
                 for (self.value.invoke_expr.arguments.items) |arg|
                 {
                     try std.fmt.format(writer, "{}, ", .{arg});
@@ -492,19 +496,19 @@ pub const Node = struct
                     {
                         try std.fmt.format(writer, "&{}", .{self.value.unary_expr.node_ref});
                     },
-                    UnaryExpression.ID.PointerDereference =>
+                    UnaryExpression.ID.Dereference =>
                     {
                         try std.fmt.format(writer, "@{}", .{self.value.unary_expr.node_ref});
                     },
                 }
             },
-            Node.ID.struct_subscript_expr =>
+            Node.ID.field_access_expr =>
             {
-                try std.fmt.format(writer, "{}.{}", .{self.value.struct_subscript_expr.expression, self.value.struct_subscript_expr.field_expr});
+                try std.fmt.format(writer, "{}.{}", .{self.value.field_access_expr.expression, self.value.field_access_expr.field_expr});
             },
             Node.ID.type_identifier =>
             {
-                try std.fmt.format(writer, "{s}", .{self.value.type_identifier.to_string()});
+                try std.fmt.format(writer, "{}", .{self.value.type_identifier});
             },
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
@@ -607,208 +611,6 @@ const TokenConsumer = struct
 
         return token;
     }
-
-    fn get_type_consuming_tokens(self: *TokenConsumer, allocator: *Allocator, parent_node: ?*Node) *Node
-    {
-        panic("to be implemented\n", .{});
-        //const t = self.tokens[self.next_index];
-        //self.consume();
-
-        //switch (t.value)
-        //{
-            //Token.ID.sign =>
-            //{
-                //const sign = t.value.sign;
-                //switch (sign)
-                //{
-                    //'&' =>
-                    //{
-                        //const pointer_type = self.get_type_consuming_tokens(allocator, parent_node);
-                        //panic("this is not correct: fix it\n", .{});
-                    //},
-                    //'[' =>
-                    //{
-                        //const in_brackets_token = self.expect_and_consume(Token.ID.int_lit);
-                        //var array_length: u64 = 0;
-                        //if (in_brackets_token != null)
-                        //{
-                            //array_length = in_brackets_token.?.value.int_lit;
-                        //}
-                        //else
-                        //{
-                            //panic("Not implemented\n", .{});
-                        //}
-                        //const right_bracket = self.expect_and_consume_operator(Operator.RightBracket);
-                        //if (right_bracket == null)
-                        //{
-                            //panic("Expected ] after array index\n", .{});
-                        //}
-
-                        //const array_elem_type = self.get_type_consuming_tokens(allocator, parent_node);
-
-                        //const array_type = Type.get_array_type(array_elem_type, array_length);
-                        //return array_type;
-                    //},
-                    //else => {}
-                //}
-            //},
-            //Token.ID.keyword =>
-            //{
-                //switch (t.value.keyword)
-                //{
-                    //KeywordID.@"struct" =>
-                    //{
-                        //print("Parsing anonymous struct...\n", .{});
-                        //if (self.expect_and_consume_sign('{') == null)
-                        //{
-                            //panic("Struct expects to open a brace next\n", .{});
-                        //}
-
-                        //const struct_type_value = Type {
-                            //.value = Type.Value {
-                                //.structure = Type.Struct {
-                                    //.fields = undefined,
-                                    //.name = "",
-                                //},
-                            //},
-                        //};
-
-                        //var struct_type = types.append(struct_type_value) catch |err| {
-                            //panic("Error allocating memory for struct type\n", .{});
-                        //};
-
-                        //var fields_to_parse = self.expect_and_consume_sign('}') == null;
-                        //var field_list = ArrayList(Type.Struct.Field).init(allocator);
-                        //while (fields_to_parse)
-                        //{
-                            //const field_name_token = self.expect_and_consume(Token.ID.identifier);
-                            //assert(field_name_token != null);
-                            //const field_name = field_name_token.?.value.identifier;
-                            //const colon = self.expect_and_consume_operator(Operator.Declaration);
-                            //assert(colon != null);
-                            //const field_type = self.get_type_consuming_tokens(allocator, types);
-                            //print("Field name: {s}\n", .{field_name});
-                            //print("Field type: {}\n", .{field_type});
-
-                            //const field = Type.Struct.Field
-                            //{
-                                //.type = field_type,
-                                //.name = field_name,
-                                //.parent = struct_type,
-                                //.index = field_list.items.len,
-                            //};
-
-                            //field_list.append(field) catch |err| {
-                                //panic("Error allocating memory for struct field type\n", .{});
-                            //};
-                            
-                            //const next_token = self.expect_and_consume(Token.ID.sign).?;
-                            //const sign = next_token.value.sign;
-
-                            //if (sign == ',')
-                            //{
-                                //fields_to_parse = self.expect_and_consume_sign('}') == null;
-                            //}
-                            //else if (sign == '}')
-                            //{
-                                //fields_to_parse = false;
-                            //}
-                            //else
-                            //{
-                                //panic("Error parsing struct. Unexpected token\n", .{});
-                            //}
-                        //}
-
-                        //struct_type.value.structure.fields = field_list.items;
-
-                        //print("New struct\n", .{});
-                        //return struct_type;
-                    //},
-                    //else => panic("not implemented: {}\n", .{t.value.keyword}),
-                //}
-            //},
-            //Token.ID.identifier =>
-            //{
-                //const identifier_name = t.value.identifier;
-
-                //for (types.list.items) |type_bucket|
-                //{
-                    //var i : u64 = 0;
-
-                    //while (i < type_bucket.len) : (i += 1)
-                    //{
-                        //const type_expr = &type_bucket.items[i];
-                        //if (type_expr.value == Type.ID.structure)
-                        //{
-                            //const struct_name = type_expr.value.structure.name;
-                            //print("Struct: {s}. Len: {}\n", .{struct_name, struct_name.len});
-                            //if (std.mem.eql(u8, struct_name, identifier_name))
-                            //{
-                                //return type_expr;
-                            //}
-                        //}
-                    //}
-                //}
-
-                //panic("Can't get struct type: {s}\n", .{identifier_name});
-            //},
-            //else => { panic("not implemented: {}\n", .{t.value}); }
-        //}
-
-        //panic("Couldn't find type for token {}", .{t});
-    //}
-//};
-
-//fn get_type(node: *Node, expected_type: ?*Type) *Type
-//{
-    //switch (node.value)
-    //{
-        //Node.ID.var_decl =>
-        //{
-            //const var_type = node.value.var_decl.var_type;
-            //return var_type;
-        //},
-        //Node.ID.int_lit =>
-        //{
-            //if (expected_type) |type_expected|
-            //{
-                //switch (type_expected.value)
-                //{
-                    //Type.ID.integer =>
-                    //{
-                        //return type_expected;
-                    //},
-                    //Type.ID.array =>
-                    //{
-                        //const arr_type = type_expected.value.array.type;
-                        //assert(arr_type.value == Type.ID.integer);
-                        //return arr_type;
-                    //},
-                    //else =>
-                    //{
-                        //panic("Not implemented: {}\n", .{type_expected});
-                    //}
-                //}
-            //}
-            //else
-            //{
-                //panic("Not implemented\n", .{});
-            //}
-        //},
-        //Node.ID.function_decl => panic("not implemented\n", .{}),
-        //Node.ID.array_lit => panic("not implemented\n", .{}),
-        //Node.ID.unary_expr => panic("not implemented\n", .{}),
-        //Node.ID.binary_expr => panic("not implemented\n", .{}),
-        //Node.ID.return_expr => panic("not implemented\n", .{}),
-        //Node.ID.identifier_expr => panic("not implemented\n", .{}),
-        //Node.ID.invoke_expr => panic("not implemented\n", .{}),
-        //Node.ID.block_expr => panic("not implemented\n", .{}),
-        //Node.ID.branch_expr => panic("not implemented\n", .{}),
-        //Node.ID.loop_expr => panic("not implemented\n", .{}),
-        //Node.ID.break_expr => panic("not implemented\n", .{}),
-        //Node.ID.array_subscript_expr => panic("not implemented\n", .{}),
-        //Node.ID.struct_subscript_expr => panic("not implemented\n", .{}),
-    }
 };
 
 const Parser = struct
@@ -874,6 +676,7 @@ const Parser = struct
 
     fn parse_type(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: ?*Node) *Node
     {
+        self.compiler.log("Parsing type...\n", .{});
         const next_token = consumer.peek();
         consumer.consume();
 
@@ -896,6 +699,130 @@ const Parser = struct
 
                 const type_node = self.append_and_get(type_node_value);
                 return type_node;
+            },
+            Token.ID.keyword =>
+            {
+                const keyword = next_token.value.keyword;
+
+                switch (keyword)
+                {
+                    KeywordID.@"struct" =>
+                    {
+                        if (consumer.expect_and_consume_sign('{') == null)
+                        {
+                            self.compiler.report_error("Error: expected '{c}' at the beginning of the struct\n", .{'{'});
+                        }
+
+                        const struct_type_node = Node
+                        {
+                            .value = Node.Value {
+                                .type_identifier = TypeIdentifier {
+                                    .value = TypeIdentifier.Value {
+                                        .structure = TypeIdentifier.Struct {
+                                            .fields = NodeRefBuffer.init(allocator),
+                                            .name = "",
+                                        },
+                                    },
+                                },
+                            },
+                            .parent = null,
+                            .value_type = Node.ValueType.RValue,
+                        };
+
+                        var result = self.append_and_get(struct_type_node);
+
+                        if (consumer.expect_and_consume_sign('}') == null)
+                        {
+                            while (true)
+                            {
+                                const field = self.parse_expression(allocator, consumer, result);
+                                result.value.type_identifier.value.structure.fields.append(field) catch |err| {
+                                    panic("Error allocating memory for struct field\n", .{});
+                                };
+
+                                const token = consumer.peek();
+                                consumer.consume();
+
+                                if (token.value == Token.ID.sign and token.value.sign == '}')
+                                {
+                                    break;
+                                }
+                                else if (token.value == Token.ID.sign and token.value.sign != ',')
+                                {
+                                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{token.value});
+                                }
+                                else
+                                {
+                                    if (consumer.expect_and_consume_sign('}') != null)
+                                    {
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        else
+                        {
+                            self.compiler.report_error("Empty struct is not allowed\n", .{});
+                        }
+
+                        return result;
+                    },
+                    else => panic("ni: {}\n", .{keyword}),
+                }
+            },
+            Token.ID.operator =>
+            {
+                const operator = next_token.value.operator;
+                switch (operator)
+                {
+                    Operator.AddressOf =>
+                    {
+                        const type_node_value = Node {
+                            .value = Node.Value {
+                                .type_identifier = TypeIdentifier {
+                                    .value = TypeIdentifier.Value {
+                                        .pointer = TypeIdentifier.Pointer {
+                                            .type = self.parse_type(allocator, consumer, parent_node),
+                                        },
+                                    },
+                                },
+                            },
+                            .parent = parent_node,
+                            .value_type = Node.ValueType.LValue,
+                        };
+
+                        const type_node = self.append_and_get(type_node_value);
+                        return type_node;
+                    },
+                    Operator.LeftBracket =>
+                    {
+                        var type_node_value = Node {
+                            .value = Node.Value {
+                                .type_identifier = TypeIdentifier {
+                                    .value = TypeIdentifier.Value {
+                                        .array = TypeIdentifier.Array {
+                                            .type = undefined,
+                                            .len_expr = self.parse_expression(allocator, consumer, parent_node.?),
+                                        },
+                                    },
+                                },
+                            },
+                            .parent = parent_node,
+                            .value_type = Node.ValueType.LValue,
+                        };
+
+                        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
+                        {
+                            self.compiler.report_error("Expected ']' in array type\n", .{});
+                        }
+
+                        type_node_value.value.type_identifier.value.array.type = self.parse_type(allocator, consumer, parent_node);
+
+                        const type_node = self.append_and_get(type_node_value);
+                        return type_node;
+                    },
+                    else => panic("ni: {}\n", .{operator}),
+                }
             },
             else => panic("not implemented: {}\n", .{next_token.value}),
         }
@@ -1048,7 +975,7 @@ const Parser = struct
                             .value = Node.Value {
                                 .unary_expr = UnaryExpression {
                                     .node_ref = undefined,
-                                    .id = UnaryExpression.ID.PointerDereference,
+                                    .id = UnaryExpression.ID.Dereference,
                                     .location = UnaryExpression.Location.Prefix,
                                 }
                             },
@@ -1209,12 +1136,75 @@ const Parser = struct
         return result;
     }
 
-    fn get_prefix_rule(token: Token) ParseFn
+    fn parse_unary_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, operator: Operator) *Node
     {
-        switch (token.value)
+        const unary_expr_id = switch (operator)
         {
-            else => panic("Prefix rule not implemented for {}\n", .{token.value}),
+            Operator.AddressOf => UnaryExpression.ID.AddressOf,
+            Operator.Dereference => UnaryExpression.ID.Dereference,
+            else => panic("ni: {}\n", .{operator}),
+        };
+
+        const unary_expr_node = Node {
+            .value = Node.Value {
+                .unary_expr = UnaryExpression 
+                {
+                    .node_ref = self.parse_precedence(allocator, consumer, parent_node, Precedence.Unary),
+                    .id = unary_expr_id,
+                },
+            },
+            .value_type = Node.ValueType.RValue,
+            .parent = parent_node,
+        };
+
+        const unary_expr = self.append_and_get(unary_expr_node);
+        return unary_expr;
+    }
+
+    fn parse_array_literal(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
+    {
+        var array_list = NodeRefBuffer.init(allocator);
+            
+        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
+        {
+            while (true)
+            {
+                const array_elem = self.parse_expression(allocator, consumer, parent_node);
+                array_list.append(array_elem) catch |err| {
+                    panic("Error allocating memory for array literal element\n", .{});
+                };
+                
+                const next_token = consumer.peek();
+                consumer.consume();
+
+                if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightBracket)
+                {
+                    break;
+                }
+                else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
+                {
+                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{next_token.value});
+                }
+            }
         }
+        else
+        {
+            self.compiler.log("Empty array literal is not allowed\n", .{});
+        }
+
+        const array_literal_node = Node
+        {
+            .value = Node.Value {
+                .array_lit = ArrayLiteral {
+                    .elements = array_list,
+                },
+            },
+            .value_type = Node.ValueType.RValue,
+            .parent = parent_node,
+        };
+
+        const array_literal = self.append_and_get(array_literal_node);
+        return array_literal;
     }
 
     fn parse_prefix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
@@ -1261,7 +1251,27 @@ const Parser = struct
                 const id_expr_node = self.append_and_get(id_expr_node_value);
                 return id_expr_node;
             },
-            else => panic("Prefix rule not implemented for {}\n", .{token.value}),
+            Token.ID.operator =>
+            {
+                const operator = token.value.operator;
+                switch (operator)
+                {
+                    // @Info: this is not array subscript, but array literal constant
+                    Operator.LeftBracket =>
+                    {
+                        const array_lit_expr = self.parse_array_literal(allocator, consumer, parent_node);
+                        return array_lit_expr;
+                    },
+                    Operator.AddressOf,
+                    Operator.Dereference =>
+                    {
+                        const unary_expr = self.parse_unary_expression(allocator, consumer, parent_node, operator);
+                        return unary_expr;
+                    },
+                    else => panic("ni: {}\n", .{operator}),
+                }
+            },
+            else => panic("Prefix functionality not implemented for {}\n", .{token.value}),
         }
     }
 
@@ -1280,21 +1290,33 @@ const Parser = struct
     {
         switch (operator)
         {
-            Operator.RightParenthesis => return Precedence.None,
+            Operator.RightParenthesis,
+            Operator.RightBracket,
+                => return Precedence.None,
 
             Operator.Plus,
-            Operator.Minus => return Precedence.LightArithmetic,
+            Operator.Minus
+                => return Precedence.LightArithmetic,
 
             Operator.Multiplication,
-            Operator.Division => return Precedence.HeavyArithmetic,
+            Operator.Division
+                => return Precedence.HeavyArithmetic,
 
             Operator.Equal,
             Operator.GreaterThan,
-            Operator.LessThan => return Precedence.Compare,
+            Operator.LessThan
+                => return Precedence.Compare,
 
-            Operator.LeftParenthesis => return Precedence.Call,
 
             Operator.Assignment => return Precedence.Assignment,
+
+            Operator.Declaration => return Precedence.Declaration,
+
+            Operator.LeftParenthesis,
+            Operator.LeftBracket,
+            Operator.Dot,
+                => return Precedence.Call,
+
             else => panic("Precedence not implemented for {}\n", .{operator}),
         }
     }
@@ -1310,6 +1332,7 @@ const Parser = struct
                 {
                     '{' => return Precedence.None,
                     ';' => return Precedence.None,
+                    ',' => return Precedence.None,
                     else => panic("Precedence not implemented for sign {c}\n", .{sign}),
                 }
             },
@@ -1322,12 +1345,7 @@ const Parser = struct
         }
     }
 
-    fn parse_anonymous_function_with_first_arg(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence, arg_list: *NodeRefBuffer) *Node
-    {
-        panic("not implemented yet\n", .{});
-    }
-
-    fn parse_function_call_with_first_arg(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence, arg_list: *NodeRefBuffer) *Node
+    fn parse_anonymous_function_with_arg_list(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence, arg_list: NodeRefBuffer, return_type_node: ?*Node) *Node
     {
         panic("not implemented yet\n", .{});
     }
@@ -1337,6 +1355,7 @@ const Parser = struct
         self.compiler.log("Parsing argument list\n", .{});
         var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
         var arg_list = NodeRefBuffer.init(allocator);
+        var is_function_declaration = false;
 
         if (args_left_to_parse)
         {
@@ -1358,10 +1377,116 @@ const Parser = struct
                 {
                     self.compiler.report_error("Expected comma after argument. Found: {}\n", .{next_token.value});
                 }
+                const first_arg = arg_list.items[0];
+                is_function_declaration = first_arg.value == Node.ID.var_decl;
             }
         }
 
-        panic("not implemented\n", .{});
+        self.compiler.log("Argument count in argument list: {}\n", .{arg_list.items.len});
+
+        var return_type_node: ?*Node = null;
+        // @Info: in case this is a function declaration
+        if (consumer.expect_and_consume_operator(Operator.Arrow) != null)
+        {
+            is_function_declaration = true;
+            return_type_node = self.parse_type(allocator, consumer, parent_node);
+        }
+
+        var result: *Node = undefined;
+        if (consumer.expect_and_consume_sign('{') != null)
+        {
+            self.compiler.log("Parsing function declaration\n", .{});
+            result = self.parse_anonymous_function_with_arg_list(allocator, consumer, parent_node, left_expr, operator, precedence, arg_list, return_type_node);
+        }
+        else
+        {
+            self.compiler.log("Parsing function call expression\n", .{});
+            const function_call = Node
+            {
+                .value = Node.Value {
+                    .invoke_expr = InvokeExpression {
+                        .arguments = arg_list,
+                        .expression = left_expr,
+                    },
+                    },
+                .value_type = Node.ValueType.RValue,
+                .parent = parent_node,
+            };
+
+            result = self.append_and_get(function_call);
+        }
+
+        return result;
+    }
+
+    fn parse_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        const type_expr = self.parse_type(allocator, consumer, parent_node);
+
+        assert(left_expr.value == Node.ID.identifier_expr);
+        const var_name = left_expr.value.identifier_expr.name;
+
+        const declaration_node = Node
+        {
+            .value = Node.Value {
+                .var_decl = VariableDeclaration 
+                {
+                    .name = var_name,
+                    .var_type = type_expr,
+                    .var_value = null,
+                    .var_scope = parent_node,
+                    .backend_ref = 0,
+                    .is_function_arg = false,
+                },
+            },
+            .value_type = Node.ValueType.LValue,
+            .parent = parent_node,
+        };
+
+        const declaration = self.append_and_get(declaration_node);
+        return declaration;
+    }
+
+    fn parse_array_subscript(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        const subscript_node_value = Node
+        {
+            .value = Node.Value {
+                .array_subscript_expr = ArraySubscriptExpression {
+                    .expression = left_expr,
+                    .index = self.parse_expression(allocator, consumer, parent_node),
+                },
+                },
+            .parent = parent_node,
+            .value_type = Node.ValueType.RValue,
+        };
+
+        var subscript_node = self.append_and_get(subscript_node_value);
+        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
+        {
+            self.compiler.report_error("Expected ']' in array subscript expression", .{});
+        }
+
+        return subscript_node;
+    }
+
+    fn parse_field_access(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    {
+        const field_acces_value = Node
+        {
+            .value = Node.Value {
+                .field_access_expr = FieldAccessExpression {
+                    .expression = left_expr,
+                    .field_expr = self.parse_expression(allocator, consumer, parent_node),
+                },
+                },
+            .parent = parent_node,
+            .value_type = Node.ValueType.RValue,
+        };
+
+        var field_access_node = self.append_and_get(field_acces_value);
+
+        return field_access_node;
     }
 
     fn parse_infix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
@@ -1381,8 +1506,23 @@ const Parser = struct
 
             Operator.LeftParenthesis =>
             {
-                const call_expr = self.parse_function_call(allocator, consumer, parent_node, left_expr, operator, precedence);
+                const call_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr, operator, precedence);
                 return call_expr;
+            },
+            Operator.Declaration => 
+            {
+                const declaration_expr = self.parse_declaration(allocator, consumer, parent_node, left_expr, operator, precedence);
+                return declaration_expr;
+            },
+            Operator.LeftBracket =>
+            {
+                const array_subscript_expr = self.parse_array_subscript(allocator, consumer, parent_node, left_expr, operator, precedence);
+                return array_subscript_expr;
+            },
+            Operator.Dot =>
+            {
+                const field_access_expr = self.parse_field_access(allocator, consumer, parent_node, left_expr, operator, precedence);
+                return field_access_expr;
             },
             else => panic("operator not implemented: {}\n", .{operator}),
         }
@@ -1404,7 +1544,7 @@ const Parser = struct
                 consumer.consume();
                 assert(token.value == Token.ID.operator);
                 const operator = token.value.operator;
-                left_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr, operator, new_precedence);
+                left_expr = self.parse_infix(allocator, consumer, parent_node, left_expr, operator, new_precedence);
             }
             else
             {
@@ -2265,24 +2405,21 @@ const Parser = struct
                     statement_node = self.parse_expression(allocator, consumer, parent_node);
                 }
             },
-            Token.ID.sign =>
+            Token.ID.operator =>
             {
-                const sign = token.value.sign;
-                switch (sign)
+                const operator = token.value.operator;
+                switch (operator)
                 {
-                    '@' =>
+                    Operator.Dereference =>
                     {
                         statement_node = self.parse_expression(allocator, consumer, parent_node);
                     },
-                    else =>
-                    {
-                        panic("sign not implemented for statement: {c}\n", .{sign});
-                    }
+                    else => panic("ni: {}\n", .{token.value}),
                 }
             },
             else =>
             {
-                panic("Case: {}\n", .{token.value});
+                panic("ni: {}\n", .{token.value});
             },
         }
 
@@ -2518,8 +2655,9 @@ const Parser = struct
         }
         else if (consumer.expect_keyword(KeywordID.@"struct") != null)
         {
-            var struct_type = consumer.get_type_consuming_tokens(allocator, null);
-            struct_type.value.type_identifier.value.structure.name = name;
+            _ = self.parse_type(allocator, consumer, null);
+            //var struct_type = consumer.get_type_consuming_tokens(allocator, null);
+            //struct_type.value.type_identifier.value.structure.name = name;
         }
         else
         {

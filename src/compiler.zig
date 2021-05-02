@@ -352,6 +352,7 @@ pub const Operator = enum
     RightParenthesis,
     LeftBracket,
     RightBracket,
+    Dot,
     Plus,
     Minus,
     AddressOf,
@@ -393,7 +394,14 @@ pub const Compiler = struct
     {
         self.errors_reported = true;
         print(fmt, args);
-        std.os.exit(1);
+        if (true)
+        {
+            panic("panicked here\n", .{});
+        }
+        else
+        {
+            std.os.exit(1);
+        }
     }
 
     pub fn log(self: *Compiler, comptime format: []const u8, args: anytype) void

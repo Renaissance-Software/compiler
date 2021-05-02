@@ -94,6 +94,11 @@ pub const Token = struct
                         Operator.Multiplication => try writer.writeAll("Operator *"),
                         Operator.LessThan => try writer.writeAll("Operator <"),
                         Operator.GreaterThan => try writer.writeAll("Operator >"),
+                        Operator.AddressOf => try writer.writeAll("Operator &"),
+                        Operator.Dereference => try writer.writeAll("Operator @"),
+                        Operator.LeftBracket => try writer.writeAll("Operator ["),
+                        Operator.RightBracket => try writer.writeAll("Operator ]"),
+                        Operator.Dot => try writer.writeAll("Operator ."),
                         else => panic("not implemented: {}\n", .{operator}),
                     }
                 },
@@ -174,6 +179,8 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             continue;
         }
 
+        const column = @intCast(u32, start - current_line_start);
+
         switch (c)
         {
             'a'...'z', 'A'...'Z', '_' =>
@@ -189,7 +196,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 const len = end - start;
                 const identifier_slice = src_file[start..end];
                 //print("Symbol found: {}. Length: {}\n", .{ symbol_slice, len });
-                const column = @intCast(u32, start - current_line_start);
 
                 const token_type = tokenizer.match_name(identifier_slice);
 
@@ -213,7 +219,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 const int_lit = Token.Value{
                     .int_lit = value,
                 };
-                const column = @intCast(u32, start - current_line_start);
                 tokenizer.new_token(int_lit, start, end, line_count, column);
             },
 
@@ -230,7 +235,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 const len = end - start;
                 const str_lit = src_file[start..end];
                 // print("String literal found: {}. Length: {}\n", .{ str_lit, len });
-                const column = @intCast(u32, start - current_line_start);
                 const str_lit_type = Token.Value{
                     .str_lit = str_lit,
                 };
@@ -243,16 +247,14 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 end = i + 2;
                 i += 2;
 
-                const column = @intCast(u32, start - current_line_start);
                 const char_lit_type = Token.Value{
                     .char_lit = char_lit,
                 };
                 tokenizer.new_token(char_lit_type, start, end, line_count, column);
             },
-            ';', '{', '}' =>
+            ';', '{', '}', ',' =>
             {
                 // print("Default sign token: {c}\n", .{c});
-                const column = @intCast(u32, start - current_line_start);
                 const sign = Token.Value
                 {
                     .sign = c,
@@ -264,7 +266,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             {
                 if (src_file[i + 1] == ':')
                 {
-                    const column = @intCast(u32, start - current_line_start);
                     const operator = Token.Value
                     {
                         .operator = Operator.Constant,
@@ -275,7 +276,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 }
                 else
                 {
-                    const column = @intCast(u32, start - current_line_start);
                     const operator = Token.Value
                     {
                         .operator = Operator.Declaration,
@@ -286,7 +286,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '(' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const operator = Token.Value
                 {
                     .operator = Operator.LeftParenthesis,
@@ -296,7 +295,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             ')' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const operator = Token.Value
                 {
                     .operator = Operator.RightParenthesis,
@@ -306,7 +304,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '+' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
                 if (next_ch == '=')
                 {
@@ -330,7 +327,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '-' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
                 if (next_ch == '=')
                 {
@@ -364,7 +360,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '*' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
                 if (next_ch == '=')
                 {
@@ -388,7 +383,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '=' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
 
                 if (next_ch == '=')
@@ -413,7 +407,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '>' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
 
                 if (next_ch == '=')
@@ -462,7 +455,6 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
             },
             '<' =>
             {
-                const column = @intCast(u32, start - current_line_start);
                 const next_ch = src_file[i + 1];
 
                 if (next_ch == '=')
@@ -508,6 +500,51 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                     end = i + 1;
                     tokenizer.new_token(operator, start, end, line_count, column);
                 }
+            },
+            '&' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.AddressOf,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
+            },
+            '@' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.Dereference,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
+            },
+            '[' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.LeftBracket,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
+            },
+            ']' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.RightBracket,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
+            },
+            '.' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.Dot,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
             },
             // Ignore spaces, tabs and return characters
             '\t', ' ', '\r' => {},
