@@ -5,9 +5,9 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
-const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
-const TypeBuffer = BucketArrayList(TypeIdentifier, 64);
 const Internal = @import("compiler.zig");
+const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
+const Type = Internal.Type;
 
 const Operator = Internal.Operator;
 const Compiler = Internal.Compiler;
@@ -15,8 +15,8 @@ const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
 const Token = Lexer.Token;
 const LexerResult = Lexer.LexerResult;
-const NodeRefBuffer = ArrayList(*Node);
-const NodeBuffer = BucketArrayList(Node, 64);
+pub const NodeRefBuffer = ArrayList(*Node);
+pub const NodeBuffer = BucketArrayList(Node, 64);
 
 const IntegerLiteral = struct
 {
@@ -70,10 +70,10 @@ const ReturnExpression = struct
 const IdentifierExpression = struct
 {
     name: []const u8,
-    reference: ?*Node,
+    reference: *Node,
 };
 
-const TypeIdentifier = struct
+pub const TypeIdentifier = struct
 {
     value: Value,
 
@@ -227,6 +227,7 @@ pub const Node = struct
         binary_expr: BinaryExpression,
         return_expr: ReturnExpression,
         type_identifier: TypeIdentifier,
+        resolved_type: *Type,
         identifier_expr: IdentifierExpression,
         invoke_expr: InvokeExpression,
         block_expr: BlockExpression,
@@ -248,6 +249,7 @@ pub const Node = struct
         return_expr,
         identifier_expr,
         type_identifier,
+        resolved_type,
         invoke_expr,
         block_expr,
         branch_expr,
@@ -461,6 +463,10 @@ pub const Node = struct
             {
                 try std.fmt.format(writer, "{}", .{self.value.type_identifier});
             },
+            Node.ID.resolved_type =>
+            {
+                panic("ni\n", .{});
+            }
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
@@ -869,7 +875,7 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .identifier_expr = IdentifierExpression {
-                            .reference = null,
+                            .reference = undefined,
                             .name = identifier_name,
                         },
                         },
@@ -1982,8 +1988,9 @@ const Parser = struct
 
 pub const ParserResult = struct
 {
-    function_declarations: []*Node,
+    function_declarations: NodeRefBuffer,
     node_buffer: NodeBuffer,
+    type_declarations: NodeRefBuffer,
 
     fn print_tree(self: *const ParserResult, compiler: *Compiler) void
     {
@@ -2031,7 +2038,8 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
 
     const result = ParserResult
     {
-        .function_declarations = parser.function_declarations.items,
+        .function_declarations = parser.function_declarations,
+        .type_declarations = parser.type_declarations,
         .node_buffer = parser.nb,
     };
 

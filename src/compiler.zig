@@ -89,6 +89,22 @@ pub const Type = struct
         };
     };
 
+    pub fn find_type_by_name(types: *TypeBuffer, name: []const u8) ?*Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.void_type)
+                {
+                    return type_decl;
+                }
+            }
+        }
+    }
+
     pub fn get_void_type(types: *TypeBuffer) ?*Type
     {
         for (types.list.items) |type_bucket|
@@ -191,6 +207,26 @@ pub const Type = struct
 
         return result;
     }
+
+    pub fn create_struct_type(types: *TypeBuffer, fields: []Type.Struct.Field, name: []const u8) *Type
+    {
+        const new_struct = Type
+        {
+            .value = Type.Value {
+                .structure = Struct{
+                    .fields = fields,
+                    .name = name,
+                },
+            },
+        };
+
+        const result = types.append(new_struct) catch |err| {
+            panic("Failed to allocate memory for new struct type\n", .{});
+        };
+
+        return result;
+    }
+
 
     pub fn get_function_type(types: *TypeBuffer, function_type: Function) *Type
     {

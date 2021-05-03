@@ -4,8 +4,9 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 
-const Parser = @import("parser.zig");
 const Lexer = @import("lexer.zig");
+const Parser = @import("parser.zig");
+const Semantics = @import("semantics.zig");
 const IR = @import("bytecode.zig");
 const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
@@ -22,6 +23,8 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     // @Info: lexer_result.line_count is ignored
 
     const parser_result = Parser.parse(allocator, &compiler, lexer_result);
+
+    Semantics.analyze(&compiler, allocator, parser_result.function_declarations, parser_result.type_declarations);
 
     //IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
 
