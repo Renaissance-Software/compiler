@@ -1,8 +1,11 @@
 const std = @import("std");
+
 const ArrayList = std.ArrayList;
 const print = std.debug.print;
 const panic = std.debug.panic;
+const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
+
 const Internal = @import("compiler.zig");
 const TypeBuffer = Internal.TypeBuffer;
 const KeywordID = Internal.KeywordID;
@@ -197,6 +200,7 @@ pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] 
                 const identifier_slice = src_file[start..end];
                 //print("Symbol found: {}. Length: {}\n", .{ symbol_slice, len });
 
+                assert(identifier_slice.len != 0);
                 const token_type = tokenizer.match_name(identifier_slice);
 
                 tokenizer.new_token(token_type, start, end, line_count, column);

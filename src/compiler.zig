@@ -7,7 +7,7 @@ const print = std.debug.print;
 const _BucketArrayModule = @import("bucket_array.zig");
 const BucketArrayList = _BucketArrayModule.BucketArrayList;
 
-pub const should_log = false;
+pub const should_log = true;
 
 pub const KeywordID = enum
 {
@@ -61,7 +61,7 @@ pub const Type = struct
 
     pub const Pointer = struct
     {
-        p_type: *Type,
+        type: *Type,
     };
 
     pub const Array = struct
@@ -105,7 +105,7 @@ pub const Type = struct
         }
     }
 
-    pub fn get_void_type(types: *TypeBuffer) ?*Type
+    pub fn get_void_type(types: *TypeBuffer) *Type
     {
         for (types.list.items) |type_bucket|
         {
@@ -149,7 +149,7 @@ pub const Type = struct
             while (index < type_bucket.len) : (index += 1)
             {
                 const type_decl = &type_bucket.items[index];
-                if (type_decl.value == Type.ID.pointer and type_decl.value.pointer.p_type == p_type)
+                if (type_decl.value == Type.ID.pointer and type_decl.value.pointer.type == p_type)
                 {
                     return type_decl;
                 }
@@ -162,7 +162,7 @@ pub const Type = struct
             {
                 .pointer = Type.Pointer
                 {
-                    .p_type = p_type,
+                    .type = p_type,
                 },
             },
         };
@@ -307,6 +307,26 @@ pub const Type = struct
             return Type.get_integer_type(64, false, types);
         }
 
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                switch (type_decl.value)
+                {
+                    Type.ID.structure =>
+                    {
+                        if (std.mem.eql(u8, type_decl.value.structure.name, name))
+                        {
+                            return type_decl;
+                        }
+                    },
+                    else => { },
+                }
+            }
+        }
+
         return null;
     }
 
@@ -373,7 +393,7 @@ pub const Type = struct
             },
             Type.ID.pointer =>
             {
-                try std.fmt.format(writer, "&{}", .{self.value.pointer.p_type});
+                try std.fmt.format(writer, "&{}", .{self.value.pointer.type});
             },
             Type.ID.structure => try std.fmt.format(writer, "{s}", .{self.value.structure.name}),
             else => panic("Not implemented: {}\n", .{self.value}),

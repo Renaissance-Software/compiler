@@ -70,7 +70,6 @@ const ReturnExpression = struct
 const IdentifierExpression = struct
 {
     name: []const u8,
-    reference: *Node,
 };
 
 pub const TypeIdentifier = struct
@@ -227,8 +226,10 @@ pub const Node = struct
         binary_expr: BinaryExpression,
         return_expr: ReturnExpression,
         type_identifier: TypeIdentifier,
-        resolved_type: *Type,
         identifier_expr: IdentifierExpression,
+        resolved_type: *Type,
+        resolved_identifier: *Node,
+        field_expr: *Type.Struct.Field,
         invoke_expr: InvokeExpression,
         block_expr: BlockExpression,
         branch_expr: BranchExpression,
@@ -250,6 +251,8 @@ pub const Node = struct
         identifier_expr,
         type_identifier,
         resolved_type,
+        resolved_identifier,
+        field_expr,
         invoke_expr,
         block_expr,
         branch_expr,
@@ -466,7 +469,15 @@ pub const Node = struct
             Node.ID.resolved_type =>
             {
                 panic("ni\n", .{});
-            }
+            },
+            Node.ID.resolved_identifier =>
+            {
+                panic("ni\n", .{});
+            },
+            Node.ID.field_expr =>
+            {
+                try std.fmt.format(writer, "{}", .{self.value.field_expr});
+            },
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
@@ -586,6 +597,7 @@ const Parser = struct
         const result = self.nb.append(node) catch |err| {
             panic("Couldn't allocate memory for node", .{});
         };
+        self.compiler.log("new node:\n\n{s}\n\n", .{@tagName(result.value)});
         return result;
     }
 
@@ -875,10 +887,9 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .identifier_expr = IdentifierExpression {
-                            .reference = undefined,
                             .name = identifier_name,
                         },
-                        },
+                    },
                     .parent = parent_node,
                     .value_type = Node.ValueType.RValue,
                 };
@@ -940,8 +951,6 @@ const Parser = struct
                 is_function_declaration = first_arg.value == Node.ID.var_decl;
             }
         }
-
-        self.compiler.log("Argument count in argument list: {}\n", .{arg_list.items.len});
 
         var return_type_node: ?*Node = null;
         // @Info: in case this is a function declaration
@@ -1045,7 +1054,8 @@ const Parser = struct
         };
 
         var field_access_node = self.append_and_get(field_acces_value);
-        field_access_node.value.field_access_expr.field_expr = self.parse_expression(allocator, consumer, parent_node);
+        field_access_node.value.field_access_expr.field_expr = self.parse_precedence(allocator, consumer, field_access_node, Precedence.Call.increment());
+        assert(field_access_node.value.field_access_expr.field_expr.value == Node.ID.identifier_expr);
 
         return field_access_node;
     }
@@ -1307,8 +1317,8 @@ const Parser = struct
                 .value_type = Node.ValueType.LValue,
             };
 
-            var it_decl_literal_node = self.append_and_get(value_type);
-            const it_decl_type_node = self.append_and_get(it_decl_decl_value);
+            var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
+            const it_decl_type_node = self.append_and_get(value_type);
             const it_decl_value = Node
             {
                 .value = Node.Value {
@@ -1319,7 +1329,7 @@ const Parser = struct
                         .var_type = it_decl_type_node,
                         .backend_ref = 0,
                     },
-                    },
+                },
                 .parent = parent_node,
                 .value_type = Node.ValueType.LValue,
             };
@@ -1338,7 +1348,6 @@ const Parser = struct
                 .value = Node.Value {
                     .identifier_expr = IdentifierExpression {
                         .name = it_decl_node.value.var_decl.name,
-                        .reference = it_decl_node,
                     },
                 },
                 .value_type = Node.ValueType.LValue,
@@ -1407,7 +1416,6 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .identifier_expr = IdentifierExpression {
-                            .reference = it_decl_node,
                             .name = it_identifier.value.identifier,
                         }
                     },
@@ -1451,7 +1459,6 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .identifier_expr = IdentifierExpression {
-                            .reference = it_decl_node,
                             .name = it_identifier.value.identifier,
                         }
                     },
@@ -1698,9 +1705,9 @@ const Parser = struct
                                     .var_type =  undefined,
                                     .var_scope =  block_node,
                                     .backend_ref =  0,
-                                    .is_function_arg =  false,
+                                    .is_function_arg = false,
                                 },
-                                },
+                            },
                             .parent = block_node,
                             .value_type = Node.ValueType.LValue,
                         };
@@ -1730,7 +1737,6 @@ const Parser = struct
                                 .value = Node.Value {
                                     .identifier_expr = IdentifierExpression {
                                         .name = identifier_name,
-                                        .reference = var_decl_node,
                                     },
                                 },
                                 .value_type = Node.ValueType.LValue,
@@ -1862,6 +1868,10 @@ const Parser = struct
                 self.compiler.report_error("Error parsing argument\n", .{});
             }
 
+            arg_types.append(arg_node.value.var_decl.var_type) catch |err| {
+                panic("Error allocating memory for argument type\n", .{});
+            };
+
             arg_node.value.var_decl.is_function_arg = true;
             try function_node.value.function_decl.arguments.append(arg_node);
 
@@ -1905,6 +1915,8 @@ const Parser = struct
             .parent = function_node,
             .value_type = Node.ValueType.RValue,
         };
+
+        self.compiler.log("arg type count in the parser: {}\n", .{arg_types.items.len});
 
         function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
 
@@ -1997,7 +2009,7 @@ pub const ParserResult = struct
         if (Internal.should_log)
         {
             print("Printing AST:\n\n", .{});
-            for (self.function_declarations) |function|
+            for (self.function_declarations.items) |function|
             {
                 compiler.log("{}", .{function});
             }

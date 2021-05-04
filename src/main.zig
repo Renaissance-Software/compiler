@@ -22,9 +22,9 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content);
     // @Info: lexer_result.line_count is ignored
 
-    const parser_result = Parser.parse(allocator, &compiler, lexer_result);
+    var parser_result = Parser.parse(allocator, &compiler, lexer_result);
 
-    Semantics.analyze(&compiler, allocator, parser_result.function_declarations, parser_result.type_declarations);
+    Semantics.analyze(&compiler, allocator, &parser_result);
 
     //IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
 
@@ -73,7 +73,7 @@ const test_files = [_][]const u8
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
@@ -86,7 +86,7 @@ pub fn main() anyerror!void
     }
     else
     {
-        //const index = 4;
+        //const index = 11;
         const index = test_files.len - 1;
         try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
     }
