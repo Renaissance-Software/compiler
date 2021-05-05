@@ -24,9 +24,9 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
 
     var parser_result = Parser.parse(allocator, &compiler, lexer_result);
 
-    Semantics.analyze(&compiler, allocator, &parser_result);
+    var semantics_result = Semantics.analyze(&compiler, allocator, &parser_result);
 
-    //IR.encode(allocator, &compiler, parser_result.function_declarations, &types);
+    IR.encode(allocator, &compiler, &semantics_result);
 
     return true;
 }
@@ -73,7 +73,7 @@ const test_files = [_][]const u8
 
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 

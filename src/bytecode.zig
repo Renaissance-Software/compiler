@@ -9,11 +9,14 @@ const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 
 const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
+
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
 const BinaryOp = Parser.BinaryExpression.ID;
 const UnaryOp = Parser.UnaryExpression.ID;
 
+const Semantics = @import("semantics.zig");
+const SemanticsResult = Semantics.SemanticsResult;
 
 const Type = struct
 {
@@ -202,6 +205,11 @@ const Value = struct
                 const bitcast_operator = @ptrCast(*const OperatorBitCast, self);
                 try std.fmt.format(writer, "{}", .{bitcast_operator.*});
             },
+            Value.ID.ConstantArray =>
+            {
+                const constant_array = @ptrCast(*const ConstantArray, self);
+                try std.fmt.format(writer, "{}", .{constant_array.*});
+            },
             else =>
             {
                 panic("Not implemented: {}\n", .{self.id});
@@ -281,6 +289,11 @@ const ConstantArray = struct
     base: Value,
     array_type: *Type,
     array_values: []*Value,
+
+    pub fn format(self: ConstantArray, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        try writer.writeAll("constant_array_placeholder");
+    }
 };
 
 const Intrinsic = struct
@@ -1770,64 +1783,71 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         },
         Node.ID.var_decl => 
         {
-            const ast_type = node.value.var_decl.var_type;
+            const ast_type_node = node.value.var_decl.var_type;
+            assert(ast_type_node.value == Node.ID.resolved_type);
+            const ast_type = ast_type_node.value.resolved_type;
             const rns_type = get_type(allocator, builder.context, ast_type, ast_types);
             // @TODO: for arrays, consider creating an array alloca
             // @TODO: verify that LLVM indeed does this
             const var_alloca = builder.create_alloca(rns_type, null);
             node.value.var_decl.backend_ref = @ptrToInt(var_alloca);
 
-            const value_node = node.value.var_decl.var_value;
-            // @TODO: assert that the value is not null: maybe turn into optional pointer?
-            // assert(value_node != 0);
-            const value_result = do_node(allocator, compiler, builder, ast_types, value_node, rns_type);
+            // @Info: variable initialization is no longer part of the variable declaration
+            // @TODO: is this correct?
 
-            if (value_result) |expr_value|
-            {
-                switch (rns_type.id)
-                {
-                    Type.ID.array =>
-                    {
-                        // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
-                        assert(expr_value.id == Value.ID.ConstantArray);
-                        const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
-                        const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, var_alloca), pointer_to_i8_type);
-                        const memcpy_size = get_size(rns_type);
-                        const memcpy_size_value = builder.context.get_constant_int(builder.context.get_integer_type(64), memcpy_size, false);
-                        // @Info: We need to bitcast **as operator** the constant array
-                        assert(expr_value.id == Value.ID.ConstantArray);
-                        const bitcast_constant_array = builder.create_bitcast_operator(allocator, expr_value, pointer_to_i8_type);
-                        var memcpy_args = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
-                            panic("Error allocating memory for memcpy args\n", .{});
-                        }; 
-                        memcpy_args.append(@ptrCast(*Value, array_cast_to_i8)) catch |err| {
-                            panic("Error appending new memcpy arg\n", .{});
-                        };
-                        memcpy_args.append(@ptrCast(*Value, bitcast_constant_array)) catch |err| {
-                            panic("Error appending new memcpy arg\n", .{});
-                        };
-                        memcpy_args.append(@ptrCast(*Value, memcpy_size_value)) catch |err| {
-                            panic("Error appending new memcpy arg\n", .{});
-                        };
-                        _ = builder.create_memcpy_intrinsic(allocator, memcpy_args.items);
-                    },
-                    else =>
-                    {
-                        _ = builder.create_store(allocator, expr_value, @ptrCast(*Value, var_alloca));
-                    },
-                }
-            }
-            else
-            {
-                panic("Couldn't find value for variable declaration\n", .{});
-            }
+            //const value_node = node.value.var_decl.var_value;
+            //// @TODO: assert that the value is not null: maybe turn into optional pointer?
+            //// assert(value_node != 0);
+            //const value_result = do_node(allocator, compiler, builder, ast_types, value_node, rns_type);
+
+            //if (value_result) |expr_value|
+            //{
+                //switch (rns_type.id)
+                //{
+                    //Type.ID.array =>
+                    //{
+                        //// @TODO: maybe unify in a big if if the variable is an array (see above TODOs
+                        //assert(expr_value.id == Value.ID.ConstantArray);
+                        //const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
+                        //const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, var_alloca), pointer_to_i8_type);
+                        //const memcpy_size = get_size(rns_type);
+                        //const memcpy_size_value = builder.context.get_constant_int(builder.context.get_integer_type(64), memcpy_size, false);
+                        //// @Info: We need to bitcast **as operator** the constant array
+                        //assert(expr_value.id == Value.ID.ConstantArray);
+                        //const bitcast_constant_array = builder.create_bitcast_operator(allocator, expr_value, pointer_to_i8_type);
+                        //var memcpy_args = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
+                            //panic("Error allocating memory for memcpy args\n", .{});
+                        //}; 
+                        //memcpy_args.append(@ptrCast(*Value, array_cast_to_i8)) catch |err| {
+                            //panic("Error appending new memcpy arg\n", .{});
+                        //};
+                        //memcpy_args.append(@ptrCast(*Value, bitcast_constant_array)) catch |err| {
+                            //panic("Error appending new memcpy arg\n", .{});
+                        //};
+                        //memcpy_args.append(@ptrCast(*Value, memcpy_size_value)) catch |err| {
+                            //panic("Error appending new memcpy arg\n", .{});
+                        //};
+                        //_ = builder.create_memcpy_intrinsic(allocator, memcpy_args.items);
+                    //},
+                    //else =>
+                    //{
+                        //_ = builder.create_store(allocator, expr_value, @ptrCast(*Value, var_alloca));
+                    //},
+                //}
+            //}
+            //else
+            //{
+                //panic("Couldn't find value for variable declaration\n", .{});
+            //}
         },
-        Node.ID.identifier_expr =>
+        Node.ID.resolved_identifier =>
         {
-            const ast_declaration = node.value.identifier_expr.reference;
+            const ast_declaration = node.value.resolved_identifier;
             assert(ast_declaration.value == Node.ID.var_decl);
             const alloca_ptr = @intToPtr(*Value, ast_declaration.value.var_decl.backend_ref);
-            const ast_type = ast_declaration.value.var_decl.var_type;
+            const ast_type_node = ast_declaration.value.var_decl.var_type;
+            assert(ast_type_node.value == Node.ID.resolved_type);
+            const ast_type = ast_type_node.value.resolved_type;
             const var_type = get_type(allocator, builder.context, ast_type, ast_types);
 
             const var_load = builder.create_load(allocator, var_type, alloca_ptr);
@@ -1890,12 +1910,14 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 switch (ast_left.value)
                 {
-                    Node.ID.identifier_expr =>
+                    Node.ID.resolved_identifier =>
                     {
-                        const var_decl = ast_left.value.identifier_expr.reference;
+                        const var_decl = ast_left.value.resolved_identifier;
                         assert(var_decl.value == Node.ID.var_decl);
                         const alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
-                        const ast_type = var_decl.value.var_decl.var_type;
+                        const ast_type_node = var_decl.value.var_decl.var_type;
+                        assert(ast_type_node.value == Node.ID.resolved_type);
+                        const ast_type = ast_type_node.value.resolved_type;
                         const var_type = get_type(allocator, builder.context, ast_type, ast_types);
                         if (do_node(allocator, compiler, builder, ast_types, ast_right, var_type)) |right_value|
                         {
@@ -1908,7 +1930,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     },
                     Node.ID.unary_expr =>
                     {
-                        assert(ast_left.value.unary_expr.id == UnaryOp.PointerDereference);
+                        assert(ast_left.value.unary_expr.id == UnaryOp.Dereference);
 
                         if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
                         {
@@ -1928,7 +1950,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     },
                     Node.ID.array_subscript_expr =>
                     {
-                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.identifier_expr);
+                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.resolved_identifier);
                         assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
                         if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
                         {
@@ -1945,6 +1967,10 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                         {
                             panic("Failed to decipher array expression\n", .{});
                         }
+                    },
+                    Node.ID.identifier_expr =>
+                    {
+                        panic("This shouldn't ever be reached\n", .{});
                     },
                     else =>
                     {
@@ -2135,11 +2161,12 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         {
             const ast_unary_op_type = node.value.unary_expr.id;
             const ast_unary_op_expr = node.value.unary_expr.node_ref;
-            assert(node.value.unary_expr.location == Parser.UnaryExpression.Location.Prefix);
-            assert(ast_unary_op_expr.value == Node.ID.identifier_expr);
-            const ast_var_decl = ast_unary_op_expr.value.identifier_expr.reference;
+            assert(ast_unary_op_expr.value == Node.ID.resolved_identifier);
+            const ast_var_decl = ast_unary_op_expr.value.resolved_identifier;
             assert(ast_var_decl.value == Node.ID.var_decl);
-            const ast_var_type = ast_var_decl.value.var_decl.var_type;
+            const ast_var_type_node = ast_var_decl.value.var_decl.var_type;
+            assert(ast_var_type_node.value == Node.ID.resolved_type);
+            const ast_var_type = ast_var_type_node.value.resolved_type;
             const var_alloca = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
 
             switch (ast_unary_op_type)
@@ -2148,7 +2175,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 {
                     return var_alloca;
                 },
-                Parser.UnaryExpression.ID.PointerDereference =>
+                Parser.UnaryExpression.ID.Dereference =>
                 {
                     assert(ast_var_type.value == Internal.Type.ID.pointer);
                     const pointer_type = get_type(allocator, builder.context, ast_var_type, ast_types);
@@ -2171,8 +2198,10 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         {
             const count = node.value.array_lit.elements.items.len;
             assert(count > 0);
-            const ast_type = node.value.array_lit.type_expression;
-            const type_expr = get_type(allocator, builder.context, ast_type, ast_types);
+            //const ast_type = expected_type.?;
+            //const type_expr = get_type(allocator, builder.context, ast_type, ast_types);
+            assert(expected_type != null);
+            const type_expr = expected_type.?;
             assert(type_expr.id == Type.ID.array);
             const array_type = @ptrCast(*ArrayType, type_expr);
 
@@ -2207,16 +2236,20 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 switch (ast_array_subscript_expr.value)
                 {
-                    Node.ID.identifier_expr => {},
+                    Node.ID.resolved_identifier => {},
                     Node.ID.binary_expr =>
                     {
                         print("\nLeft:\n\n{}\n\n", .{ast_array_subscript_expr.value.binary_expr.left});
                         print("\nRight:\n\n{}\n\n", .{ast_array_subscript_expr.value.binary_expr.right});
                     },
+                    Node.ID.identifier_expr => 
+                    {
+                        panic("This shouldn't ever be reached\n", .{});
+                    },
                     else => panic("Not implemented: {}\n", .{ast_array_subscript_expr.value}),
                 }
-                assert(ast_array_subscript_expr.value == Node.ID.identifier_expr);
-                const ast_var_decl = ast_array_subscript_expr.value.identifier_expr.reference;
+                assert(ast_array_subscript_expr.value == Node.ID.resolved_identifier);
+                const ast_var_decl = ast_array_subscript_expr.value.resolved_identifier;
                 assert(ast_var_decl.value == Node.ID.var_decl);
                 const alloca_value = @intToPtr(*Value, ast_var_decl.value.var_decl.backend_ref);
                 assert(alloca_value.id == Value.ID.Instruction);
@@ -2239,16 +2272,18 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 panic("Couldn't get bytecode for index in array subscript_expr\n", .{});
             }
         },
-        Node.ID.struct_subscript_expr =>
+        Node.ID.field_access_expr =>
         {
-            const ast_struct_expr = node.value.struct_subscript_expr.expression;
+            const ast_struct_expr = node.value.field_access_expr.expression;
             // @Info: this should emit a struct load
             if (do_node(allocator, compiler, builder, ast_types, ast_struct_expr, null)) |struct_expr|
             {
-                const ast_field_expr = node.value.struct_subscript_expr.field_expr;
-                const ast_field_type = ast_field_expr.type;
+                const ast_field_expr = node.value.field_access_expr.field_expr;
+                assert(ast_field_expr.value == Node.ID.field_expr);
+                const ast_field = ast_field_expr.value.field_expr;
+                const ast_field_type = ast_field.type;
                 const field_type = get_type(allocator, builder.context, ast_field_type, ast_types);
-                const index = ast_field_expr.index;
+                const index = ast_field.index;
                 const zero_value = builder.context.get_constant_int(builder.context.get_integer_type(32), 0, false);
                 const index_value = builder.context.get_constant_int(builder.context.get_integer_type(32), index, false);
 
@@ -2266,7 +2301,12 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             }
         },
         Node.ID.function_decl => panic("Not implemented\n", .{}),
-        //else => panic("Not implemented\n", .{}),
+        Node.ID.type_identifier => panic("Type identifier should be resolved before IR generation\n", .{}),
+        Node.ID.identifier_expr =>
+        {
+            panic("This shouldn't ever be reached\n", .{});
+        },
+        else => panic("Not implemented: {}\n", .{node.value}),
     }
 
     if (Internal.should_log)
@@ -2375,7 +2415,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
         },
         Internal.Type.ID.pointer =>
         {
-            const ast_appointee = ast_type.value.pointer.p_type;
+            const ast_appointee = ast_type.value.pointer.type;
             const appointee = get_type(allocator, context, ast_appointee, ast_types);
             const result = context.get_pointer_type(appointee);
             return result;
@@ -2432,7 +2472,7 @@ fn get_size(type_: *Type) usize
     }
 }
 
-pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarations: []*Node, ast_types: *Internal.TypeBuffer) void
+pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *SemanticsResult) void
 {
     //print("Bytecode\n", .{});
     var module = Module {
@@ -2443,17 +2483,19 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarati
 
     var context = Context.create(allocator);
 
-    for (ast_function_declarations) |ast_function|
+    for (semantics_result.function_declarations.items) |ast_function|
     {
         assert(ast_function.value == Node.ID.function_decl);
-        const ast_function_type = ast_function.value.function_decl.type;
+        const ast_function_type_node = ast_function.value.function_decl.type;
+        assert(ast_function_type_node.value == Node.ID.resolved_type);
+        const ast_function_type = ast_function_type_node.value.resolved_type;
         assert(ast_function_type.value == Internal.Type.ID.function);
         // @TODO: get RNS function type
-        const function_type = get_type(allocator, &context, ast_function_type, ast_types);
+        const function_type = get_type(allocator, &context, ast_function_type, &semantics_result.types);
         Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
     }
 
-    assert(ast_function_declarations.len == module.functions.len());
+    assert(semantics_result.function_declarations.items.len == module.functions.len());
 
     var basic_block_buffer = BlockBuffer.init(allocator) catch |block_err| {
         panic("Couldn't allocate big block buffer\n", .{});
@@ -2462,11 +2504,8 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarati
         panic("Couldn't allocate big instruction buffer\n", .{});
     };
 
-    var function_index: u64 = 0;
-
-    while (function_index < ast_function_declarations.len) : (function_index += 1) 
+    for (semantics_result.function_declarations.items) |ast_function, function_index|
     {
-        const ast_function = ast_function_declarations[function_index];
         // @TODO: code this access faster
         var function = module.functions.get(function_index).?;
 
@@ -2505,7 +2544,6 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarati
             {
                 Node.ID.branch_expr =>
                 {
-
                     if (introspect_for_allocas(&builder, ast_statement.value.branch_expr.if_block))
                     {
                         builder.explicit_return = true;
@@ -2559,8 +2597,10 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarati
             {
                 assert(ast_arg.value == Node.ID.var_decl);
                 assert(ast_arg.value.var_decl.is_function_arg);
-                const ast_arg_type = ast_arg.value.var_decl.var_type;
-                const arg_type = get_type(allocator, &context, ast_arg_type, ast_types);
+                const ast_arg_type_node = ast_arg.value.var_decl.var_type;
+                assert(ast_arg_type_node.value == Node.ID.resolved_type);
+                const ast_arg_type = ast_arg_type_node.value.resolved_type;
+                const arg_type = get_type(allocator, &context, ast_arg_type, &semantics_result.types);
 
                 const index = argument_list.items.len;
                 const arg = Function.Argument {
@@ -2584,7 +2624,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, ast_function_declarati
 
         builder.function.arguments = argument_list.items;
 
-        _ = do_node(allocator, compiler, &builder, ast_types, ast_main_block, null);
+        _ = do_node(allocator, compiler, &builder, &semantics_result.types, ast_main_block, null);
 
         if (builder.conditional_alloca)
         {
