@@ -18,6 +18,7 @@ const BinaryExpression = Parser.BinaryExpression;
 const UnaryExpression = Parser.UnaryExpression;
 
 const Compiler = Internal.Compiler;
+const Log = Compiler.LogLevel;
 const TypeBuffer = Internal.TypeBuffer;
 const Type = Internal.Type;
 const TypeRefBuffer = Internal.TypeRefBuffer;
@@ -37,12 +38,12 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                     const name = type_in_analysis.value.type_identifier.value.structure.name;
                     if (Type.get_type_by_name(types, name)) |type_found|
                     {
-                        print("Type already found\n", .{});
+                        compiler.log(Log.debug, "Type already found\n", .{});
                         return type_found;
                     }
                     else
                     {
-                        print("Type not found. Must create\n", .{});
+                        compiler.log(Log.debug, "Type not found. Must create\n", .{});
                     }
 
                     const struct_name = type_in_analysis.value.type_identifier.value.structure.name;
@@ -364,7 +365,7 @@ pub fn typecheck_type(compiler: *Compiler, lvalue_type: *Type, right: *Node, typ
 pub fn typecheck(compiler: *Compiler, left: *Node, right: *Node, types: *TypeBuffer) *Type
 {
     const lvalue_type = get_type(compiler, left, types);
-    print("lvalue type: {}\n", .{lvalue_type});
+    compiler.log(Log.debug, "lvalue type: {}\n", .{lvalue_type});
 
     return typecheck_type(compiler, lvalue_type, right, types);
 }
@@ -564,7 +565,7 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
             const function_call_id_node = node.value.invoke_expr.expression;
             assert(function_call_id_node.value == Node.ID.identifier_expr);
             const function_call_name = function_call_id_node.value.identifier_expr.name;
-            compiler.log("function call name: {s}\n", .{function_call_name});
+            compiler.log(Log.debug, "function call name: {s}\n", .{function_call_name});
             node.value.invoke_expr.expression = find_function_decl(compiler, allocator, current_function, current_block, function_call_name, types, functions);
 
             for (node.value.invoke_expr.arguments.items) |*arg|
@@ -620,6 +621,7 @@ pub const SemanticsResult = struct
 
 pub fn analyze(compiler: *Compiler, allocator: *Allocator, parser_result: *ParserResult) SemanticsResult
 {
+    compiler.current_module = Compiler.Module.semantics;
     var types = Type.init(allocator);
 
     for (parser_result.type_declarations.items) |typename|

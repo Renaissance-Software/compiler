@@ -12,21 +12,18 @@ const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
 const Type = Internal.Type;
 
-fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8) bool
+fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, file_content: []const u8) bool
 {
-    var compiler = Compiler{
-        .errors_reported = false,
-    };
     var types : Internal.TypeBuffer = Type.init(allocator);
 
-    const lexer_result = Lexer.lexical_analyze(allocator, &compiler, file_content);
+    const lexer_result = Lexer.lexical_analyze(allocator, compiler, file_content);
     // @Info: lexer_result.line_count is ignored
 
-    var parser_result = Parser.parse(allocator, &compiler, lexer_result);
+    var parser_result = Parser.parse(allocator, compiler, lexer_result);
 
-    var semantics_result = Semantics.analyze(&compiler, allocator, &parser_result);
+    var semantics_result = Semantics.analyze(compiler, allocator, &parser_result);
 
-    IR.encode(allocator, &compiler, &semantics_result);
+    IR.encode(allocator, compiler, &semantics_result);
 
     return true;
 }
@@ -37,15 +34,26 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     defer arena.deinit();
     const allocator = &arena.allocator;
     const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
-    if (Internal.should_log)
+
+    const log_general = false;
+    const log_lexer = false;
+    const log_parser = false;
+    const log_semantics = false;
+    const log_bytecode = false;
+
+    var compiler = Compiler
     {
-        print("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
-    }
+        .log_level = Compiler.LogLevel.debug,
+        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode),
+        .current_module = Compiler.Module.general,
+    };
+
+        compiler.log(Compiler.LogLevel.info, "\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
     defer allocator.free(file_content);
 
-    if (!compiler_work_on_file_content(allocator, file_content))
+    if (!compiler_work_on_file_content(allocator, &compiler, file_content))
     {
-        print("Compiler workflow failed\n", .{});
+        compiler.report_error("Compiler workflow failed\n", .{});
     }
 }
 

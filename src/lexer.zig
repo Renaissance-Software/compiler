@@ -11,6 +11,7 @@ const TypeBuffer = Internal.TypeBuffer;
 const KeywordID = Internal.KeywordID;
 const Type = Internal.Type;
 const Compiler = Internal.Compiler;
+const Log = Compiler.LogLevel;
 const Operator = Internal.Operator;
 
 pub const Token = struct
@@ -124,7 +125,7 @@ const Tokenizer = struct
             .line = line,
             .column = column,
         };
-        self.compiler.log("Added new token: {}\n", .{token});
+        self.compiler.log(Log.debug, "Added new token: {}\n", .{token});
         self.tokens.append(token) catch |err| {
             panic("Failed to allocate a new token\n", .{});
         };
@@ -152,7 +153,8 @@ pub const LexerResult = struct
 
 pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8) LexerResult
 {
-    // print("Lexer\n", .{});
+    compiler.current_module = Compiler.Module.lexer;
+
     var tokenizer = Tokenizer
     {
         .tokens = ArrayList(Token).init(allocator),

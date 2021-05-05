@@ -11,6 +11,7 @@ const Type = Internal.Type;
 
 const Operator = Internal.Operator;
 const Compiler = Internal.Compiler;
+const Log = Compiler.LogLevel;
 const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
 const Token = Lexer.Token;
@@ -498,7 +499,7 @@ const TokenConsumer = struct
     fn consume(self: *TokenConsumer) void 
     {
         const consumed_token = self.tokens[self.next_index];
-        self.compiler.log("Consuming {}\n", .{consumed_token});
+        self.compiler.log(Log.debug, "Consuming {}\n", .{consumed_token});
         self.next_index += 1;
     }
 
@@ -597,13 +598,13 @@ const Parser = struct
         const result = self.nb.append(node) catch |err| {
             panic("Couldn't allocate memory for node", .{});
         };
-        self.compiler.log("new node:\n\n{s}\n\n", .{@tagName(result.value)});
+        self.compiler.log(Log.debug, "new node:\n\n{s}\n\n", .{@tagName(result.value)});
         return result;
     }
 
     fn parse_type(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: ?*Node) *Node
     {
-        self.compiler.log("Parsing type...\n", .{});
+        self.compiler.log(Log.debug, "Parsing type...\n", .{});
         const next_token = consumer.peek();
         consumer.consume();
 
@@ -849,7 +850,7 @@ const Parser = struct
         }
         else
         {
-            self.compiler.log("Empty array literal is not allowed\n", .{});
+            self.compiler.report_error("Empty array literal is not allowed\n", .{});
         }
 
         return array_literal;
@@ -922,7 +923,7 @@ const Parser = struct
 
     fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
     {
-        self.compiler.log("Parsing argument list\n", .{});
+        self.compiler.log(Log.debug, "Parsing argument list\n", .{});
         var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
         var arg_list = NodeRefBuffer.init(allocator);
         var is_function_declaration = false;
@@ -963,12 +964,12 @@ const Parser = struct
         var result: *Node = undefined;
         if (consumer.expect_and_consume_sign('{') != null)
         {
-            self.compiler.log("Parsing function declaration\n", .{});
+            self.compiler.log(Log.debug, "Parsing function declaration\n", .{});
             panic("not implemented yet\n", .{});
         }
         else
         {
-            self.compiler.log("Parsing function call expression\n", .{});
+            self.compiler.log(Log.debug, "Parsing function call expression\n", .{});
             const function_call = Node
             {
                 .value = Node.Value {
@@ -1156,7 +1157,7 @@ const Parser = struct
                 else => panic("Precedence not implemented for {}\n", .{token.value}),
             };
 
-            self.compiler.log("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
+            self.compiler.log(Log.debug, "Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
             if (@enumToInt(precedence) <= @enumToInt(new_precedence))
             {
                 consumer.consume();
@@ -1192,7 +1193,7 @@ const Parser = struct
         const binary_node = self.append_and_get(binary_node_value);
 
         const right_expr = self.parse_precedence(allocator, consumer, binary_node, precedence.increment());
-        self.compiler.log("Right expr: {}\n", .{right_expr});
+        self.compiler.log(Log.debug, "Right expr: {}\n", .{right_expr});
         binary_node.value.binary_expr.right = right_expr;
 
         const binary_op: BinaryExpression.ID = switch (operator)
@@ -1212,7 +1213,7 @@ const Parser = struct
             left_expr.value_type = Node.ValueType.LValue;
         }
 
-        self.compiler.log("New binary expression: {}\n", .{binary_node});
+        self.compiler.log(Log.debug, "New binary expression: {}\n", .{binary_node});
         return binary_node;
     }
 
@@ -1772,7 +1773,7 @@ const Parser = struct
                     }
                     else
                     {
-                        self.compiler.log("Rectifying and parsing identifier expression...\n", .{});
+                        self.compiler.log(Log.debug, "Rectifying and parsing identifier expression...\n", .{});
                         consumer.next_index -= 1;
                         const identifier_expr = self.parse_expression(allocator, consumer, block_node);
                         if (consumer.expect_and_consume_sign(';') == null)
@@ -1916,7 +1917,7 @@ const Parser = struct
             .value_type = Node.ValueType.RValue,
         };
 
-        self.compiler.log("arg type count in the parser: {}\n", .{arg_types.items.len});
+        self.compiler.log(Log.debug, "arg type count in the parser: {}\n", .{arg_types.items.len});
 
         function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
 
@@ -2006,12 +2007,12 @@ pub const ParserResult = struct
 
     fn print_tree(self: *const ParserResult, compiler: *Compiler) void
     {
-        if (Internal.should_log)
+        if (compiler.should_log(Log.info))
         {
             print("Printing AST:\n\n", .{});
             for (self.function_declarations.items) |function|
             {
-                compiler.log("{}", .{function});
+                compiler.log(Log.info, "{}", .{function});
             }
         }
     }
@@ -2019,6 +2020,8 @@ pub const ParserResult = struct
 
 pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult) ParserResult
 {
+    compiler.current_module = Compiler.Module.parser;
+
     const token_count = lexer_result.tokens.len;
     assert(token_count > 0);
 

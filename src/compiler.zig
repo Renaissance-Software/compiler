@@ -7,8 +7,6 @@ const print = std.debug.print;
 const _BucketArrayModule = @import("bucket_array.zig");
 const BucketArrayList = _BucketArrayModule.BucketArrayList;
 
-pub const should_log = true;
-
 pub const KeywordID = enum
 {
     @"if",
@@ -444,12 +442,13 @@ pub const Operator = enum
 
 pub const Compiler = struct
 {
-    errors_reported: bool,
+    log_level: LogLevel,
+    module_log: u8,
+    current_module: Module,
 
     pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) noreturn 
     {
-        self.errors_reported = true;
-        print(fmt, args);
+        self.always_log(fmt, args);
         if (true)
         {
             panic("panicked here\n", .{});
@@ -460,11 +459,53 @@ pub const Compiler = struct
         }
     }
 
-    pub fn log(self: *Compiler, comptime format: []const u8, args: anytype) void
+    pub fn always_log(self: *Compiler, comptime format: []const u8, args: anytype) void
     {
-        if (should_log)
+        print(format, args);
+    }
+
+    pub fn should_log(self: *Compiler, log_level: Compiler.LogLevel) bool
+    {
+        const log_level_is_enough = @enumToInt(log_level) >= @enumToInt(self.log_level);
+        const should_log_module = self.module_log & (@as(u32, 1) << @intCast(u5, @enumToInt(self.current_module))) != 0;
+        const result = log_level_is_enough and should_log_module;
+
+        return result;
+    }
+
+    pub fn log(self: *Compiler, level: Compiler.LogLevel, comptime format: []const u8, args: anytype) void
+    {
+        if (self.should_log(level))
         {
-            print(format, args);
+            self.always_log(format, args);
         }
     }
+
+    pub fn get_log_module(log_general: bool, log_lexer: bool, log_parser: bool, log_semantics: bool, log_bytecode: bool) u8
+    {
+        const log_general_int: u8 = @as(u8, @boolToInt(log_general)) << @enumToInt(Module.general);
+        const log_lexer_int: u8 = @as(u8, @boolToInt(log_lexer)) << @enumToInt(Module.lexer);
+        const log_parser_int: u8 = @as(u8, @boolToInt(log_parser)) << @enumToInt(Module.parser);
+        const log_semantics_int: u8 = @as(u8, @boolToInt(log_semantics)) << @enumToInt(Module.semantics);
+        const log_bytecode_int: u8 = @as(u8, @boolToInt(log_bytecode)) << @enumToInt(Module.bytecode);
+
+        const module_log: u8 = log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int;
+        return module_log;
+    }
+
+    pub const LogLevel = enum
+    {
+        debug,
+        info,
+        critical,
+    };
+
+    pub const Module = enum
+    {
+        general,
+        lexer,
+        parser,
+        semantics,
+        bytecode,
+    };
 };

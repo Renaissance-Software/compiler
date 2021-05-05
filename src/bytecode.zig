@@ -9,6 +9,7 @@ const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 
 const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
+const Log = Compiler.LogLevel;
 
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
@@ -292,6 +293,7 @@ const ConstantArray = struct
 
     pub fn format(self: ConstantArray, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        // @TODO: change this. This is a bug
         try writer.writeAll("constant_array_placeholder");
     }
 };
@@ -1383,10 +1385,8 @@ const Builder = struct
                 panic("Failed to allocate memory for instruction\n", .{});
             };
             result.parent = current;
-            if (Internal.should_log)
-            {
-                print("New instruction: {}\n", .{instruction.id});
-            }
+
+                //("New instruction: {}\n", .{instruction.id});
             //print("Instructions in the block: {}:\n", .{current.instructions.items.len});
             //if (false)
             //{
@@ -1715,7 +1715,8 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 {
     var result: ?*Value = null;
     var instruction_count_before : u64 = 0; 
-    if (Internal.should_log)
+    const should_log = compiler.should_log(Log.debug);
+    if (should_log)
     {
         instruction_count_before = count_instructions(builder);
     }
@@ -2309,11 +2310,11 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         else => panic("Not implemented: {}\n", .{node.value}),
     }
 
-    if (Internal.should_log)
+    if (should_log)
     {
         const instruction_count_after: u64 = count_instructions(builder);
         const instruction_count = instruction_count_after - instruction_count_before;
-        compiler.log("Call to do_node for {s} generated {} instructions\n===========================\n", .{@tagName(node.value), instruction_count});
+        compiler.log(Log.debug, "Call to do_node for {s} generated {} instructions\n===========================\n", .{@tagName(node.value), instruction_count});
         const expand = false;
         if (expand)
         {
@@ -2474,7 +2475,7 @@ fn get_size(type_: *Type) usize
 
 pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *SemanticsResult) void
 {
-    //print("Bytecode\n", .{});
+    compiler.current_module = Compiler.Module.bytecode;
     var module = Module {
         .functions = FunctionBuffer.init(allocator) catch |err| {
             panic("Failed to allocate function bucket array\n", .{});
@@ -2696,10 +2697,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
             // @TODO: figure out how to return here without causing a panic
             _ = builder.create_ret_void(allocator);
         }
-        if (Internal.should_log)
-        {
-            print_function(allocator, builder.context, function);
-        }
+        print_function(compiler, allocator, builder.context, function);
     }
 }
 
@@ -2965,122 +2963,125 @@ const InstructionPrinter = struct
     }
 };
 
-fn print_function(allocator: *Allocator, context: *Context, function: *Function) void
+fn print_function(compiler: *Compiler, allocator: *Allocator, context: *Context, function: *Function) void
 {
-    // @TODO: change hardcoding (starting_id, next_id)
-    var slot_tracker = SlotTracker {
-        .next_id = 0,
-        .not_used = 0,
-        .starting_id = 0,
-        .map = ArrayList(*Value).init(allocator),
-    };
-
-    for (function.arguments) |*argument|
+    if (compiler.should_log(Compiler.LogLevel.info))
     {
-        _ = slot_tracker.new_id(@ptrCast(*Value, argument));
-    }
-
-    var foo_element : Value = undefined;
-    _ = slot_tracker.new_id(&foo_element);
-
-    var block_printers = ArrayList(BlockPrinter).initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
-        panic("Failed to allocate block printers array\n", .{});
-    };
-
-    const entry_block_id = 0xffffffffffffffff;
-    for (function.basic_blocks.items) |basic_block|
-    {
-        var block_printer = BlockPrinter
-        {
-            .instruction_printers = ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
-                panic("Failed to allocate memory for instruction printer buffer\n", .{});
-            },
-            .id = block_id_label: {
-                var id: u64 = undefined;
-                if (basic_block.parent.basic_blocks.items[0] != basic_block)
-                {
-                    id = slot_tracker.new_id(@ptrCast(*Value, basic_block));
-                }
-                else
-                {
-                    id = entry_block_id;
-                }
-                break :block_id_label id;
-            },
-            .block = basic_block,
-            .block_printer_list = &block_printers,
+        // @TODO: change hardcoding (starting_id, next_id)
+        var slot_tracker = SlotTracker {
+            .next_id = 0,
+            .not_used = 0,
+            .starting_id = 0,
+            .map = ArrayList(*Value).init(allocator),
         };
 
-        for (basic_block.instructions.items) |instruction|
+        for (function.arguments) |*argument|
         {
-            var instruction_printer = InstructionPrinter {
-                .ref = instruction,
-                .result = undefined,
-                .block_ref = &block_printer,
-                .context = context,
+            _ = slot_tracker.new_id(@ptrCast(*Value, argument));
+        }
+
+        var foo_element : Value = undefined;
+        _ = slot_tracker.new_id(&foo_element);
+
+        var block_printers = ArrayList(BlockPrinter).initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
+            panic("Failed to allocate block printers array\n", .{});
+        };
+
+        const entry_block_id = 0xffffffffffffffff;
+        for (function.basic_blocks.items) |basic_block|
+        {
+            var block_printer = BlockPrinter
+            {
+                .instruction_printers = ArrayList(InstructionPrinter).initCapacity(allocator, basic_block.instructions.items.len) catch |err| {
+                    panic("Failed to allocate memory for instruction printer buffer\n", .{});
+                },
+                .id = block_id_label: {
+                    var id: u64 = undefined;
+                    if (basic_block.parent.basic_blocks.items[0] != basic_block)
+                    {
+                        id = slot_tracker.new_id(@ptrCast(*Value, basic_block));
+                    }
+                    else
+                    {
+                        id = entry_block_id;
+                    }
+                    break :block_id_label id;
+                },
+                .block = basic_block,
+                .block_printer_list = &block_printers,
             };
 
-            switch (instruction.id)
+            for (basic_block.instructions.items) |instruction|
             {
-                Instruction.ID.Ret,
-                Instruction.ID.Alloca,
-                Instruction.ID.Load,
-                Instruction.ID.ICmp,
-                Instruction.ID.Add,
-                Instruction.ID.Sub,
-                Instruction.ID.Mul,
-                Instruction.ID.BitCast,
-                Instruction.ID.GetElementPtr,
-                =>
+                var instruction_printer = InstructionPrinter {
+                    .ref = instruction,
+                    .result = undefined,
+                    .block_ref = &block_printer,
+                    .context = context,
+                };
+
+                switch (instruction.id)
                 {
-                    instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
-                },
-                Instruction.ID.Call =>
-                {
-                    if (instruction.base.type != context.get_void_type())
+                    Instruction.ID.Ret,
+                    Instruction.ID.Alloca,
+                    Instruction.ID.Load,
+                    Instruction.ID.ICmp,
+                    Instruction.ID.Add,
+                    Instruction.ID.Sub,
+                    Instruction.ID.Mul,
+                    Instruction.ID.BitCast,
+                    Instruction.ID.GetElementPtr,
+                    =>
                     {
                         instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
+                    },
+                    Instruction.ID.Call =>
+                    {
+                        if (instruction.base.type != context.get_void_type())
+                        {
+                            instruction_printer.result = slot_tracker.new_id(@ptrCast(*Value, instruction));
+                        }
+                    },
+                    Instruction.ID.Br,
+                    Instruction.ID.Store, => { },
+                    else =>
+                    {
+                        panic("Not implemented: {}\n", .{instruction.id});
                     }
-                },
-                Instruction.ID.Br,
-                Instruction.ID.Store, => { },
-                else =>
-                {
-                    panic("Not implemented: {}\n", .{instruction.id});
                 }
+
+                block_printer.instruction_printers.append(instruction_printer) catch |err| {
+                    panic("Couldn't allocate memory for instruction printer\n", .{});
+                };
             }
 
-            block_printer.instruction_printers.append(instruction_printer) catch |err| {
-                panic("Couldn't allocate memory for instruction printer\n", .{});
+            block_printers.append(block_printer) catch |err| {
+                panic("Error allocating a new block printer\n", .{});
             };
         }
 
-        block_printers.append(block_printer) catch |err| {
-            panic("Error allocating a new block printer\n", .{});
-        };
-    }
+        const function_type = @ptrCast(*FunctionType, function.type);
+        const ret_type = function_type.ret_type;
+        compiler.log(Compiler.LogLevel.info, "\ndefine dso_local {} @{s}(", .{ret_type, function.name});
 
-    const function_type = @ptrCast(*FunctionType, function.type);
-    const ret_type = function_type.ret_type;
-    print("\ndefine dso_local {} @{s}(", .{ret_type, function.name});
-
-    const arg_count = function.arguments.len;
-    if (arg_count > 0)
-    {
-        var arg_i : u64 = 0;
-        while (arg_i < arg_count - 1) : (arg_i += 1)
+        const arg_count = function.arguments.len;
+        if (arg_count > 0)
         {
-            print("{}, ", .{function.arguments[arg_i]});
+            var arg_i : u64 = 0;
+            while (arg_i < arg_count - 1) : (arg_i += 1)
+            {
+                compiler.log(Compiler.LogLevel.info, "{}, ", .{function.arguments[arg_i]});
+            }
+            compiler.log(Compiler.LogLevel.info, "{}", .{function.arguments[arg_i]});
         }
-        print("{}", .{function.arguments[arg_i]});
+
+        compiler.log(Compiler.LogLevel.info, ")\n{c}\n", .{'{'});
+
+        for (block_printers.items) |*block_printer|
+        {
+            compiler.log(Compiler.LogLevel.info, "{}", .{block_printer});
+        }
+
+        compiler.log(Compiler.LogLevel.info, "{c}\n", .{'}'});
     }
-
-    print(")\n{c}\n", .{'{'});
-
-    for (block_printers.items) |*block_printer|
-    {
-        print("{}", .{block_printer});
-    }
-
-    print("{c}\n", .{'}'});
 }
