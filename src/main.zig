@@ -87,9 +87,13 @@ pub fn main() anyerror!void
 
     if (all_tests)
     {
-        for (test_files) |test_file, i|
+        var j: u64 = 0;
+        while (j < 10000) : (j += 1)
         {
-            try compiler_file_workflow(page_allocator, cwd, test_file, i);
+            for (test_files) |test_file, i|
+            {
+                try compiler_file_workflow(page_allocator, cwd, test_file, i);
+            }
         }
     }
     else
