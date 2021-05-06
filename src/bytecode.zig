@@ -1711,7 +1711,13 @@ fn count_instructions(builder: *Builder) u64
     return count;
 }
 
-fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type) ?*Value
+pub const ValueSide = enum 
+{
+    RValue,
+    LValue,
+};
+
+fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type, value_side: ValueSide) ?*Value
 {
     var result: ?*Value = null;
     var instruction_count_before : u64 = 0; 
@@ -1729,7 +1735,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 if (!builder.emitted_return)
                 {
-                    _ = do_node(allocator, compiler, builder, ast_types, ast_statement, null);
+                    _ = do_node(allocator, compiler, builder, ast_types, ast_statement, null, ValueSide.RValue);
                 }
             }
         },
@@ -1744,7 +1750,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 builder.explicit_return = true;
 
                 // @TODO: typecheck return expression with return type
-                if (do_node(allocator, compiler, builder, ast_types, ast_return_expression, null)) |ret_value|
+                if (do_node(allocator, compiler, builder, ast_types, ast_return_expression, null, ValueSide.RValue)) |ret_value|
                 {
                     if (builder.conditional_alloca)
                     {
@@ -1793,12 +1799,74 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const var_alloca = builder.create_alloca(rns_type, null);
             node.value.var_decl.backend_ref = @ptrToInt(var_alloca);
 
-            // @Info: variable initialization is no longer part of the variable declaration
-            // @TODO: is this correct?
+        },
+        Node.ID.resolved_identifier =>
+        {
+            const ast_declaration = node.value.resolved_identifier;
+            assert(ast_declaration.value == Node.ID.var_decl);
+            const alloca_ptr = @intToPtr(*Value, ast_declaration.value.var_decl.backend_ref);
+            const ast_type_node = ast_declaration.value.var_decl.var_type;
+            assert(ast_type_node.value == Node.ID.resolved_type);
+            const ast_type = ast_type_node.value.resolved_type;
+            const var_type = get_type(allocator, builder.context, ast_type, ast_types);
+
+            const var_load = builder.create_load(allocator, var_type, alloca_ptr);
+            result = @ptrCast(*Value, var_load);
+        },
+        Node.ID.loop_expr =>
+        {
+            const ast_loop_prefix = node.value.loop_expr.prefix;
+            const ast_loop_body = node.value.loop_expr.body;
+            const ast_loop_postfix = node.value.loop_expr.postfix;
+
+            var loop_prefix_block = builder.create_block(allocator);
+            var loop_body_block = builder.create_block(allocator);
+            var loop_postfix_block = builder.create_block(allocator);
+            var loop_end_block = builder.create_block(allocator);
+
+            const loop_continue_block = loop_postfix_block;
+            node.value.loop_expr.continue_block_ref = @ptrToInt(loop_continue_block);
+            node.value.loop_expr.exit_block_ref = @ptrToInt(loop_end_block);
+
+            _ = builder.create_br(allocator, loop_prefix_block);
+            builder.append_to_current_function(loop_prefix_block);
+            builder.set_block(loop_prefix_block);
+
+            assert(ast_loop_prefix.value.block_expr.statements.items.len == 1);
+            const ast_condition = ast_loop_prefix.value.block_expr.statements.items[0];
+            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type(), ValueSide.RValue)) |condition|
+            {
+                _ = builder.create_conditional_br(allocator, loop_body_block, loop_end_block, condition);
+                builder.append_to_current_function(loop_body_block);
+                builder.set_block(loop_body_block);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_body, null, ValueSide.RValue);
+
+                _ = builder.create_br(allocator, loop_postfix_block);
+                builder.append_to_current_function(loop_postfix_block);
+                builder.set_block(loop_postfix_block);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_postfix, null, ValueSide.RValue);
+
+                if (!builder.emitted_return)
+                {
+                    _ = builder.create_br(allocator, loop_prefix_block);
+                    builder.append_to_current_function(loop_end_block);
+                    builder.set_block(loop_end_block);
+                }
+            }
+            else
+            {
+                panic("Couldn't find condition for loop expression\n", .{});
+            }
+
+
+        },
+        Node.ID.binary_expr =>
+        {
+            const ast_left = node.value.binary_expr.left;
+            const ast_right = node.value.binary_expr.right;
+            const binary_op = node.value.binary_expr.id;
 
             //const value_node = node.value.var_decl.var_value;
-            //// @TODO: assert that the value is not null: maybe turn into optional pointer?
-            //// assert(value_node != 0);
             //const value_result = do_node(allocator, compiler, builder, ast_types, value_node, rns_type);
 
             //if (value_result) |expr_value|
@@ -1840,150 +1908,129 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             //{
                 //panic("Couldn't find value for variable declaration\n", .{});
             //}
-        },
-        Node.ID.resolved_identifier =>
-        {
-            const ast_declaration = node.value.resolved_identifier;
-            assert(ast_declaration.value == Node.ID.var_decl);
-            const alloca_ptr = @intToPtr(*Value, ast_declaration.value.var_decl.backend_ref);
-            const ast_type_node = ast_declaration.value.var_decl.var_type;
-            assert(ast_type_node.value == Node.ID.resolved_type);
-            const ast_type = ast_type_node.value.resolved_type;
-            const var_type = get_type(allocator, builder.context, ast_type, ast_types);
-
-            const var_load = builder.create_load(allocator, var_type, alloca_ptr);
-            result = @ptrCast(*Value, var_load);
-        },
-        Node.ID.loop_expr =>
-        {
-            const ast_loop_prefix = node.value.loop_expr.prefix;
-            const ast_loop_body = node.value.loop_expr.body;
-            const ast_loop_postfix = node.value.loop_expr.postfix;
-
-            var loop_prefix_block = builder.create_block(allocator);
-            var loop_body_block = builder.create_block(allocator);
-            var loop_postfix_block = builder.create_block(allocator);
-            var loop_end_block = builder.create_block(allocator);
-
-            const loop_continue_block = loop_postfix_block;
-            node.value.loop_expr.continue_block_ref = @ptrToInt(loop_continue_block);
-            node.value.loop_expr.exit_block_ref = @ptrToInt(loop_end_block);
-
-            _ = builder.create_br(allocator, loop_prefix_block);
-            builder.append_to_current_function(loop_prefix_block);
-            builder.set_block(loop_prefix_block);
-
-            assert(ast_loop_prefix.value.block_expr.statements.items.len == 1);
-            const ast_condition = ast_loop_prefix.value.block_expr.statements.items[0];
-            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
-            {
-                _ = builder.create_conditional_br(allocator, loop_body_block, loop_end_block, condition);
-                builder.append_to_current_function(loop_body_block);
-                builder.set_block(loop_body_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_body, null);
-
-                _ = builder.create_br(allocator, loop_postfix_block);
-                builder.append_to_current_function(loop_postfix_block);
-                builder.set_block(loop_postfix_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_postfix, null);
-
-                if (!builder.emitted_return)
-                {
-                    _ = builder.create_br(allocator, loop_prefix_block);
-                    builder.append_to_current_function(loop_end_block);
-                    builder.set_block(loop_end_block);
-                }
-            }
-            else
-            {
-                panic("Couldn't find condition for loop expression\n", .{});
-            }
-
-
-        },
-        Node.ID.binary_expr =>
-        {
-            const ast_left = node.value.binary_expr.left;
-            const ast_right = node.value.binary_expr.right;
-            const binary_op = node.value.binary_expr.id;
-
             if (binary_op == BinaryOp.Assignment)
             {
-                switch (ast_left.value)
+                var alloca_value: *Value = undefined;
+                const lvalue_type = switch (ast_left.value)
                 {
-                    Node.ID.resolved_identifier =>
+                    Node.ID.resolved_identifier => resolved_identifier_blk:
                     {
                         const var_decl = ast_left.value.resolved_identifier;
                         assert(var_decl.value == Node.ID.var_decl);
-                        const alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
+                        alloca_value = @intToPtr(*Value, var_decl.value.var_decl.backend_ref);
                         const ast_type_node = var_decl.value.var_decl.var_type;
                         assert(ast_type_node.value == Node.ID.resolved_type);
                         const ast_type = ast_type_node.value.resolved_type;
-                        const var_type = get_type(allocator, builder.context, ast_type, ast_types);
-                        if (do_node(allocator, compiler, builder, ast_types, ast_right, var_type)) |right_value|
+                        break :resolved_identifier_blk get_type(allocator, builder.context, ast_type, ast_types);
+                    },
+                    Node.ID.unary_expr =>
+                    {
+                        const unary_op = ast_left.value.unary_expr.id;
+                        switch (unary_op)
                         {
-                            _ = builder.create_store(allocator, right_value, alloca_value);
+                            UnaryOp.Dereference => deref_blk:
+                            {
+                                const pointer_type = @ptrCast(*PointerType, get_type(allocator, builder.context, ast_var_type, ast_types));
+                                
+                                const appointee_type = pointer_type.type;
+                                break :deref_blk appointee_type;
+                            },
+                            else => panic("ni: {}\n", .{unary_op}),
+                        }
+                    },
+                    else => panic("ni: {}\n", .{ast_left.value}),
+                };
+
+                switch (lvalue_type.id)
+                {
+                    Type.ID.integer, Type.ID.pointer =>
+                    {
+                        if (do_node(allocator, compiler, builder, ast_types, ast_right, lvalue_type, ValueSide.RValue)) |right_value|
+                        {
+                            if (do_node(allocator, compiler, builder, ast_types, ast_left, lvalue_type, ValueSide.LValue)) |left_value|
+                            {
+                            }
+                            else
+                            {
+                                panic("couldn't generate assignment statement\n", .{});
+                            }
                         }
                         else
                         { 
                             panic("Couldn't get right-side of binary expression\n", .{});
                         }
                     },
-                    Node.ID.unary_expr =>
-                    {
-                        assert(ast_left.value.unary_expr.id == UnaryOp.Dereference);
-
-                        if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
-                        {
-                            if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |pointer_load|
-                            {
-                                _ = builder.create_store(allocator, right_value, pointer_load);
-                            }
-                            else
-                            {
-                                panic("Couldn't get load of binary expression\n", .{});
-                            }
-                        }
-                        else
-                        {
-                            panic("Couldn't get right-side of binary expression\n", .{});
-                        }
-                    },
-                    Node.ID.array_subscript_expr =>
-                    {
-                        assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.resolved_identifier);
-                        assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
-                        if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
-                        {
-                            if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |array_elem_load|
-                            {
-                                _ = builder.create_store(allocator, right_value, array_elem_load);
-                            }
-                            else
-                            {
-                                panic("Couldn't get load of binary expression\n", .{});
-                            }
-                        }
-                        else
-                        {
-                            panic("Failed to decipher array expression\n", .{});
-                        }
-                    },
-                    Node.ID.identifier_expr =>
-                    {
-                        panic("This shouldn't ever be reached\n", .{});
-                    },
-                    else =>
-                    {
-                        panic("Not implemented: {}\n", .{ast_left.value});
-                    }
+                    else => panic("ni: {}\n", .{lvalue_type.id}),
                 }
+                //do_node(allocator, compiler, builder, ast_types, ast_right, foo);
+                //switch (ast_left.value)
+                //{
+                    //Node.ID.resolved_identifier =>
+                    //{
+                        ////if (do_node(allocator, compiler, builder, ast_types, ast_right, var_type)) |right_value|
+                        ////{
+                            ////_ = builder.create_store(allocator, right_value, alloca_value);
+                        ////}
+                        ////else
+                        ////{ 
+                            ////panic("Couldn't get right-side of binary expression\n", .{});
+                        ////}
+                    //},
+                    //Node.ID.unary_expr =>
+                    //{
+                        ////assert(ast_left.value.unary_expr.id == UnaryOp.Dereference);
+
+                        ////if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
+                        ////{
+                            ////if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |pointer_load|
+                            ////{
+                                ////_ = builder.create_store(allocator, right_value, pointer_load);
+                            ////}
+                            ////else
+                            ////{
+                                ////panic("Couldn't get load of binary expression\n", .{});
+                            ////}
+                        ////}
+                        ////else
+                        ////{
+                            ////panic("Couldn't get right-side of binary expression\n", .{});
+                        ////}
+                    //},
+                    //Node.ID.array_subscript_expr =>
+                    //{
+                        //assert(ast_left.value.array_subscript_expr.expression.value == Node.ID.resolved_identifier);
+                        //assert(ast_left.value.array_subscript_expr.index.value == Node.ID.int_lit);
+                        //if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right_value|
+                        //{
+                            //if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |array_elem_load|
+                            //{
+                                //_ = builder.create_store(allocator, right_value, array_elem_load);
+                            //}
+                            //else
+                            //{
+                                //panic("Couldn't get load of binary expression\n", .{});
+                            //}
+                        //}
+                        //else
+                        //{
+                            //panic("Failed to decipher array expression\n", .{});
+                        //}
+                    //},
+                    //Node.ID.identifier_expr =>
+                    //{
+                        //panic("This shouldn't ever be reached\n", .{});
+                    //},
+                    //else =>
+                    //{
+                        //panic("Not implemented: {}\n", .{ast_left.value});
+                    //}
+                //}
             }
             else
             {
-                if (do_node(allocator, compiler, builder, ast_types, ast_left, null)) |left|
+                if (do_node(allocator, compiler, builder, ast_types, ast_left, null, ValueSide.RValue)) |left|
                 {
-                    if (do_node(allocator, compiler, builder, ast_types, ast_right, null)) |right|
+                    if (do_node(allocator, compiler, builder, ast_types, ast_right, null, ValueSide.RValue)) |right|
                     {
                         var binary_op_instruction: *Instruction = undefined;
 
@@ -2059,7 +2106,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
 
             var exit_block_in_use = true;
-            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type())) |condition|
+            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type(), ValueSide.RValue)) |condition|
             {
                 if (if_block != else_block)
                 {
@@ -2083,7 +2130,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
             builder.append_to_current_function(if_block);
             builder.set_block(if_block);
-            _ = do_node(allocator, compiler, builder, ast_types, ast_if_block, null);
+            _ = do_node(allocator, compiler, builder, ast_types, ast_if_block, null, ValueSide.RValue);
             const if_block_returned = builder.emitted_return;
 
             _ = builder.create_br(allocator, exit_block);
@@ -2094,7 +2141,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 builder.append_to_current_function(else_block);
                 builder.set_block(else_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_else_block, null);
+                _ = do_node(allocator, compiler, builder, ast_types, ast_else_block, null, ValueSide.RValue);
 
                 _ = builder.create_br(allocator, exit_block);
             }
@@ -2143,7 +2190,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
                 for (node_arg_buffer.items) |ast_arg, i|
                 {
-                    if (do_node(allocator, compiler, builder, ast_types, ast_arg, null)) |arg|
+                    if (do_node(allocator, compiler, builder, ast_types, ast_arg, null, ValueSide.RValue)) |arg|
                     {
                         arg.type = function_type.arg_types[i];
                         argument_buffer[i] = arg;
@@ -2212,7 +2259,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
             for (node.value.array_lit.elements.items) |ast_array_lit_elem|
             {
-                if (do_node(allocator, compiler, builder, ast_types, ast_array_lit_elem, array_type.type)) |array_lit|
+                if (do_node(allocator, compiler, builder, ast_types, ast_array_lit_elem, array_type.type, ValueSide.RValue)) |array_lit|
                 {
                     array_values.append(array_lit) catch |err| {
                         panic("Error appending array literal element\n", .{});
@@ -2232,7 +2279,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const ast_array_subscript_expr = node.value.array_subscript_expr.expression;
             const ast_array_index_expr = node.value.array_subscript_expr.index;
 
-            const index_value = do_node(allocator, compiler, builder, ast_types, ast_array_index_expr, null);
+            const index_value = do_node(allocator, compiler, builder, ast_types, ast_array_index_expr, null, ValueSide.RValue);
             if (index_value) |index_const|
             {
                 switch (ast_array_subscript_expr.value)
@@ -2277,7 +2324,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         {
             const ast_struct_expr = node.value.field_access_expr.expression;
             // @Info: this should emit a struct load
-            if (do_node(allocator, compiler, builder, ast_types, ast_struct_expr, null)) |struct_expr|
+            if (do_node(allocator, compiler, builder, ast_types, ast_struct_expr, null, ValueSide.RValue)) |struct_expr|
             {
                 const ast_field_expr = node.value.field_access_expr.field_expr;
                 assert(ast_field_expr.value == Node.ID.field_expr);
@@ -2625,7 +2672,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
 
         builder.function.arguments = argument_list.items;
 
-        _ = do_node(allocator, compiler, &builder, &semantics_result.types, ast_main_block, null);
+        _ = do_node(allocator, compiler, &builder, &semantics_result.types, ast_main_block, null, ValueSide.RValue);
 
         if (builder.conditional_alloca)
         {

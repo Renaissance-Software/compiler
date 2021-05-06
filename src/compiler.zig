@@ -21,6 +21,7 @@ pub const KeywordID = enum
 
 pub const TypeBuffer = BucketArrayList(Type, 64);
 pub const TypeRefBuffer = ArrayList(*Type);
+
 pub const Type = struct
 {
     value: Value,
@@ -28,6 +29,7 @@ pub const Type = struct
     pub const Value = union(ID)
     {
         void_type,
+        unresolved,
         integer: Integer,
         function: Function,
         pointer: Pointer,
@@ -38,6 +40,7 @@ pub const Type = struct
     pub const ID = enum
     {
         void_type,
+        unresolved,
         integer,
         function,
         pointer,
@@ -119,6 +122,24 @@ pub const Type = struct
         }
 
         panic("Void type is not registered\n", .{});
+    }
+
+    pub fn get_literal_type(types: *TypeBuffer) *Type
+    {
+        for (types.list.items) |type_bucket|
+        {
+            var index : u64 = 0;
+            while (index < type_bucket.len) : (index += 1)
+            {
+                const type_decl = &type_bucket.items[index];
+                if (type_decl.value == Type.ID.unresolved)
+                {
+                    return type_decl;
+                }
+            }
+        }
+
+        panic("Literal type is not registered\n", .{});
     }
 
     pub fn get_integer_type(bits: u16, signed: bool, types: *TypeBuffer) *Type
@@ -367,6 +388,15 @@ pub const Type = struct
             panic("Error allocating memory for void type\n", .{});
         };
 
+        // @TODO: this is a placeholder for literal types, which are resolved later
+        const literal_type = Type
+        {
+            .value = Type.ID.unresolved,
+        };
+        _ = types.append(literal_type) catch |err| {
+            panic("Error allocating memory for literal type\n", .{});
+        };
+
         return types;
     }
 
@@ -467,7 +497,8 @@ pub const Compiler = struct
     pub fn should_log(self: *Compiler, log_level: Compiler.LogLevel) bool
     {
         const log_level_is_enough = @enumToInt(log_level) >= @enumToInt(self.log_level);
-        const should_log_module = self.module_log & (@as(u32, 1) << @intCast(u5, @enumToInt(self.current_module))) != 0;
+        const shl = @as(u32, 1) << @intCast(u5, @enumToInt(self.current_module));
+        const should_log_module = self.module_log & shl != 0;
         const result = log_level_is_enough and should_log_module;
 
         return result;
@@ -489,7 +520,7 @@ pub const Compiler = struct
         const log_semantics_int: u8 = @as(u8, @boolToInt(log_semantics)) << @enumToInt(Module.semantics);
         const log_bytecode_int: u8 = @as(u8, @boolToInt(log_bytecode)) << @enumToInt(Module.bytecode);
 
-        const module_log: u8 = log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int;
+        const module_log: u8 = log_general_int | log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int;
         return module_log;
     }
 

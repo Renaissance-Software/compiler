@@ -216,6 +216,7 @@ pub const Node = struct
     value: Value,
     parent: ?*Node,
     value_type: ValueType,
+    type: *Type,
 
     pub const Value = union(ID)
     {
@@ -623,6 +624,7 @@ const Parser = struct
                     },
                     .parent = parent_node,
                     .value_type = Node.ValueType.LValue,
+                    .type = undefined,
                 };
 
                 const type_node = self.append_and_get(type_node_value);
@@ -655,6 +657,7 @@ const Parser = struct
                             },
                             .parent = parent_node,
                             .value_type = Node.ValueType.RValue,
+                            .type = undefined,
                         };
 
                         var result = self.append_and_get(struct_type_node);
@@ -717,6 +720,7 @@ const Parser = struct
                             },
                             .parent = parent_node,
                             .value_type = Node.ValueType.LValue,
+                            .type = undefined,
                         };
 
                         const type_node = self.append_and_get(type_node_value);
@@ -737,6 +741,7 @@ const Parser = struct
                             },
                             .parent = parent_node,
                             .value_type = Node.ValueType.LValue,
+                            .type = undefined,
                         };
 
                         const type_node = self.append_and_get(type_node_value);
@@ -803,6 +808,7 @@ const Parser = struct
             },
             .value_type = Node.ValueType.RValue,
             .parent = parent_node,
+            .type = undefined,
         };
 
         const unary_expr = self.append_and_get(unary_expr_node);
@@ -822,6 +828,7 @@ const Parser = struct
             },
             .value_type = Node.ValueType.RValue,
             .parent = parent_node,
+            .type = undefined,
         };
 
         const array_literal = self.append_and_get(array_literal_node);
@@ -877,6 +884,7 @@ const Parser = struct
                     },
                     .value_type = Node.ValueType.RValue,
                     .parent = parent_node,
+                    .type = undefined,
                 };
 
                 return self.append_and_get(int_lit_node);
@@ -893,6 +901,7 @@ const Parser = struct
                     },
                     .parent = parent_node,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
                 const id_expr_node = self.append_and_get(id_expr_node_value);
                 return id_expr_node;
@@ -977,9 +986,10 @@ const Parser = struct
                         .arguments = arg_list,
                         .expression = left_expr,
                     },
-                    },
+                },
                 .value_type = Node.ValueType.RValue,
                 .parent = parent_node,
+                .type = undefined,
             };
 
             result = self.append_and_get(function_call);
@@ -1009,6 +1019,7 @@ const Parser = struct
             },
             .value_type = Node.ValueType.LValue,
             .parent = parent_node,
+            .type = undefined,
         };
 
         const declaration = self.append_and_get(declaration_node);
@@ -1027,6 +1038,7 @@ const Parser = struct
             },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         var subscript_node = self.append_and_get(subscript_node_value);
@@ -1052,6 +1064,7 @@ const Parser = struct
             },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         var field_access_node = self.append_and_get(field_acces_value);
@@ -1188,6 +1201,7 @@ const Parser = struct
                 },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         const binary_node = self.append_and_get(binary_node_value);
@@ -1228,6 +1242,7 @@ const Parser = struct
             },
             .value_type = Node.ValueType.LValue,
             .parent = parent_node,
+            .type = undefined,
         };
 
         var return_node = self.append_and_get(return_node_value);
@@ -1253,6 +1268,7 @@ const Parser = struct
                 },
             .parent = for_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
         const loop_block_node = self.append_and_get(loop_block_value);
         self.current_function.value.function_decl.blocks.append(loop_block_node) catch |err| {
@@ -1281,6 +1297,7 @@ const Parser = struct
             },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         var for_node = self.append_and_get(for_loop_node_value);
@@ -1303,6 +1320,7 @@ const Parser = struct
                 // @Info: this is set later
                 .parent = undefined,
                 .value_type = Node.ValueType.RValue,
+                .type = undefined,
             };
 
             const value_type = Node
@@ -1316,6 +1334,7 @@ const Parser = struct
                 },
                 .parent = parent_node,
                 .value_type = Node.ValueType.LValue,
+                .type = undefined,
             };
 
             var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
@@ -1333,6 +1352,7 @@ const Parser = struct
                 },
                 .parent = parent_node,
                 .value_type = Node.ValueType.LValue,
+                .type = undefined,
             };
 
             const it_decl_node = self.append_and_get(it_decl_value);
@@ -1353,6 +1373,7 @@ const Parser = struct
                 },
                 .value_type = Node.ValueType.LValue,
                 .parent = parent_node,
+                .type = undefined,
             };
 
             const it_decl_var_ref_node = self.append_and_get(it_decl_ref);
@@ -1369,6 +1390,7 @@ const Parser = struct
                 },
                 .value_type = Node.ValueType.RValue,
                 .parent = parent_node,
+                .type = undefined,
             };
 
             const assignment_node = self.append_and_get(assignment);
@@ -1403,6 +1425,7 @@ const Parser = struct
                             },
                             .parent = self.current_block,
                             .value_type = Node.ValueType.RValue,
+                            .type = undefined,
                         };
 
                         right_node = self.append_and_get(literal_node_value);
@@ -1422,6 +1445,7 @@ const Parser = struct
                     },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
 
                 const iterator_ref_expr = self.append_and_get(iterator_ref_expr_value);
@@ -1438,6 +1462,7 @@ const Parser = struct
                     },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
 
                 const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
@@ -1465,6 +1490,7 @@ const Parser = struct
                     },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.LValue,
+                    .type = undefined,
                 };
                 const identifier_expr_node = self.append_and_get(identifier_expr_value);
 
@@ -1478,6 +1504,7 @@ const Parser = struct
                     },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
                 const one_lit_node = self.append_and_get(one_lit_value);
 
@@ -1493,6 +1520,7 @@ const Parser = struct
                         },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
 
                 const postfix_increment_node = self.append_and_get(postfix_increment_value);
@@ -1509,6 +1537,7 @@ const Parser = struct
                         },
                     .parent = self.current_block,
                     .value_type = Node.ValueType.RValue,
+                    .type = undefined,
                 };
 
                 const postfix_assignment_node = self.append_and_get(postfix_assignment_value);
@@ -1543,6 +1572,7 @@ const Parser = struct
             },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         var branch_node = self.append_and_get(branch_node_value);
@@ -1558,6 +1588,7 @@ const Parser = struct
             },
             .parent = branch_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
         const if_block_node = self.append_and_get(if_block_value);
         self.block(allocator, consumer, if_block_node, true);
@@ -1577,6 +1608,7 @@ const Parser = struct
                 },
                 .parent = branch_node,
                 .value_type = Node.ValueType.RValue,
+                .type = undefined,
             };
             const else_block_node = self.append_and_get(else_block_value);
             self.block(allocator, consumer, else_block_node, true);
@@ -1613,6 +1645,7 @@ const Parser = struct
             },
             .parent = parent_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         const result = self.append_and_get(break_value);
@@ -1711,6 +1744,7 @@ const Parser = struct
                             },
                             .parent = block_node,
                             .value_type = Node.ValueType.LValue,
+                            .type = undefined,
                         };
 
                         var var_decl_node = self.append_and_get(var_decl_node_value);
@@ -1742,6 +1776,7 @@ const Parser = struct
                                 },
                                 .value_type = Node.ValueType.LValue,
                                 .parent = block_node,
+                                .type = undefined,
                             };
 
                             const id_expr_node = self.append_and_get(id_expr);
@@ -1841,6 +1876,7 @@ const Parser = struct
             },
             .parent = null,
             .value_type = Node.ValueType.LValue,
+            .type = undefined,
         };
 
         var function_node = self.append_and_get(function_node_value);
@@ -1915,6 +1951,7 @@ const Parser = struct
             },
             .parent = function_node,
             .value_type = Node.ValueType.RValue,
+            .type = undefined,
         };
 
         self.compiler.log(Log.debug, "arg type count in the parser: {}\n", .{arg_types.items.len});
@@ -1923,8 +1960,6 @@ const Parser = struct
 
         var block_node_value = Node
         {
-            .parent = function_node,
-            .value_type = Node.ValueType.LValue,
             .value = Node.Value
             {
                 .block_expr = BlockExpression
@@ -1932,8 +1967,11 @@ const Parser = struct
                     .statements = NodeRefBuffer.init(allocator),
                     .id = BlockExpression.ID.Function,
                 },
-                },
-            };
+            },
+            .parent = function_node,
+            .value_type = Node.ValueType.LValue,
+            .type = undefined,
+        };
 
         var block_node = self.append_and_get(block_node_value);
         self.current_function.value.function_decl.blocks.append(block_node) catch |err| {
