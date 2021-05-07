@@ -134,7 +134,6 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                 else => panic("not implemented: {}\n", .{type_in_analysis.value.type_identifier.value}),
             }
         },
-        Node.ID.resolved_type => return type_in_analysis.value.resolved_type,
         else => panic("Unreachable or ni: {}\n", .{type_in_analysis.value}),
     }
 }
@@ -157,103 +156,25 @@ fn resolve_compile_time_uint_constant(compiler: *Compiler, node: *Node) usize
     }
 }
 
-
-//pub fn get_type(compiler: *Compiler, node: *Node, types: *TypeBuffer) *Type
-//{
-    //switch (node.value)
-    //{
-        //Node.ID.resolved_identifier =>
-        //{
-            //const decl = node.value.resolved_identifier.type;
-            ////compiler.log("Getting type of variable: {}\n", .{decl});
-        //},
-        //Node.ID.var_decl =>
-        //{
-            //const decl_type_node = node.value.var_decl.var_type;
-            //if (decl_type_node.value != Node.ID.resolved_type)
-            //{
-                //panic("Unexpected type node: {}\n", .{decl_type_node.value});
-            //}
-            //const decl_type = decl_type_node.value.resolved_type;
-            //return decl_type;
-        //},
-        //Node.ID.binary_expr => 
-       //{
-            //const left = node.value.binary_expr.left;
-            //const right = node.value.binary_expr.right;
-            //const binary_op = node.value.binary_expr.id;
-            //const binary_type = typecheck(compiler, left, right, types);
-            //return binary_type;
-        //},
-        //Node.ID.invoke_expr =>
-        //{
-            //const callee_decl = node.value.invoke_expr.expression;
-            //const callee_decl_type_node = callee_decl.value.function_decl.type;
-            //assert(callee_decl_type_node.value == Node.ID.resolved_type);
-            //const fn_type = callee_decl_type_node.value.resolved_type;
-            //const return_type = fn_type.value.function.ret_type;
-            //return return_type;
-            
-        //},
-        //Node.ID.unary_expr =>
-        //{
-            //const unary_expr = node.value.unary_expr.id;
-            //switch (unary_expr)
-            //{
-                //UnaryExpression.ID.AddressOf =>
-                //{
-                    //const appointee_var_node = node.value.unary_expr.node_ref;
-                    //const appointee_type = get_type(compiler, appointee_var_node, types);
-                    //const pointer_to_appointee_type = Type.get_pointer_type(appointee_type, types);
-                    //return pointer_to_appointee_type;
-                //},
-                //UnaryExpression.ID.Dereference =>
-                //{
-                    //const deref_node = node.value.unary_expr.node_ref;
-                    //const pointer_type = get_type(compiler, deref_node, types);
-                    //const appointee_type = pointer_type.value.pointer.type;
-                    //return appointee_type;
-                //},
-                ////else => panic("unary expr ni: {}\n", .{unary_expr}),
-            //}
-        //},
-        //Node.ID.array_subscript_expr =>
-        //{
-            //const array_type = get_type(compiler, node.value.array_subscript_expr.expression, types);
-            //if (array_type.value != Type.ID.array)
-            //{
-                //compiler.report_error("Expected array type, found: {}\n", .{array_type});
-            //}
-            //const array_element_type = array_type.value.array.type;
-            //return array_element_type;
-        //},
-        //Node.ID.field_access_expr =>
-        //{
-            //const field_expr = node.value.field_access_expr.field_expr;
-            //switch (field_expr.value)
-            //{
-                //Node.ID.field_expr =>
-                //{
-                    //const struct_field = field_expr.value.field_expr;
-                    //return struct_field.type;
-                //},
-                //else => panic("ni: {}\n", .{field_expr.value}),
-            //}
-        //},
-        //else => panic("ni: {}\n", .{node.value}),
-    //}
-//}
-
-pub fn typecheck_type(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
+pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
 {
+    compiler.log(Log.debug, "Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
+
     switch (lvalue_type.value)
     {
         Type.ID.integer =>
         {
             switch (right.value)
             {
-                // @TODO: make sure we have enough bytes in the lvalue type
-                Node.ID.int_lit => return lvalue_type,
+                Node.ID.int_lit =>
+                {
+                    assert(right.type.value == Type.ID.unresolved);
+                    right.type = lvalue_type;
+                    compiler.log(Log.debug, "Integer literal type resolved\n", .{});
+                    // @TODO: make sure we have enough bytes in the lvalue type
+
+                    return lvalue_type;
+                },
                 Node.ID.identifier_expr,
                 Node.ID.binary_expr,
                 Node.ID.resolved_identifier,
@@ -264,9 +185,14 @@ pub fn typecheck_type(compiler: *Compiler, lvalue_type: *Type, right: *Node, typ
                 =>
                 {
                     const rvalue_type = right.type;
+                    compiler.log(Log.debug, "{}\n", .{rvalue_type});
                     if (lvalue_type == rvalue_type)
                     {
                         return lvalue_type;
+                    }
+                    else
+                    {
+                        panic("reached here\n", .{});
                     }
                 },
                 else => panic("ni: {}\n", .{right.value}),
@@ -319,24 +245,31 @@ pub fn typecheck_type(compiler: *Compiler, lvalue_type: *Type, right: *Node, typ
             {
                 Node.ID.array_lit =>
                 {
-                    _ = typecheck_type(compiler, lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
+                    const result = typecheck(compiler, lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
+                    assert(result.value != Type.ID.unresolved);
+                    // @TODO: typecheck here
+                    compiler.log(Log.debug, "Array literal resolved into {}\n", .{result});
+                    right.type = lvalue_type;
                     return lvalue_type;
                 },
                 else => panic("ni: {}\n", .{right.value}),
+            }
+        },
+        Type.ID.unresolved =>
+        {
+            switch (right.type.value)
+            {
+                Type.ID.unresolved =>
+                {
+                    return lvalue_type;
+                },
+                else => panic("ni: {}\n", .{right.type.value}),
             }
         },
         else => panic("ni: {}\n", .{lvalue_type.value}),
     }
 
     compiler.report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
-}
-
-pub fn typecheck(compiler: *Compiler, left: *Node, right: *Node, types: *TypeBuffer) *Type
-{
-    const lvalue_type = left.type;
-    compiler.log(Log.debug, "lvalue type: {}\n", .{lvalue_type});
-
-    return typecheck_type(compiler, lvalue_type, right, types);
 }
 
 pub fn find_variable(compiler: *Compiler, allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer) *Node
@@ -396,51 +329,43 @@ pub fn explore_field_identifier_expression(compiler: *Compiler, allocator: *Allo
                                 {
                                     Node.ID.var_decl =>
                                     {
-                                        const type_node = decl_node.value.var_decl.var_type;
-                                        switch (type_node.value)
+                                        const decl_type = decl_node.type;
+                                        switch (decl_type.value)
                                         {
-                                            Node.ID.resolved_type =>
+                                            Type.ID.pointer =>
                                             {
-                                                const container_type = type_node.value.resolved_type;
-                                                switch (container_type.value)
+                                                const appointee_type = decl_type.value.pointer.type;
+                                                switch (appointee_type.value)
                                                 {
-                                                    Type.ID.pointer =>
+                                                    Type.ID.structure =>
                                                     {
-                                                        const appointee_type = container_type.value.pointer.type;
-                                                        switch (appointee_type.value)
+                                                        for (appointee_type.value.structure.fields) |*field|
                                                         {
-                                                            Type.ID.structure =>
+                                                            if (std.mem.eql(u8, field.name,  name))
                                                             {
-                                                                for (appointee_type.value.structure.fields) |*field|
+                                                                const field_node = Node
                                                                 {
-                                                                    if (std.mem.eql(u8, field.name,  name))
-                                                                    {
-                                                                        const field_node = Node
-                                                                        {
-                                                                            .value = Node.Value {
-                                                                                .field_expr = field,
-                                                                            },
-                                                                            .parent = node.parent,
-                                                                            .value_type = Node.ValueType.RValue,
-                                                                            .type = undefined,
-                                                                        };
+                                                                    .value = Node.Value {
+                                                                        .field_expr = field,
+                                                                    },
+                                                                    .parent = node.parent,
+                                                                    .value_type = Node.ValueType.RValue,
+                                                                    .type = field.type,
+                                                                };
 
-                                                                        var result = node_buffer.append(field_node) catch |err| {
-                                                                            panic("Error allocating memory for type node\n", .{});
-                                                                        };
-                                                                        return result;
-                                                                    }
-                                                                }
-
-                                                                compiler.report_error("Couldn't match field expression with structure\n", .{});
-                                                            },
-                                                            else => panic("ni: {}\n", .{appointee_type.value}),
+                                                                var result = node_buffer.append(field_node) catch |err| {
+                                                                    panic("Error allocating memory for type node\n", .{});
+                                                                };
+                                                                return result;
+                                                            }
                                                         }
+
+                                                        compiler.report_error("Couldn't match field expression with structure\n", .{});
                                                     },
-                                                    else => panic("ni: {}\n", .{container_type.value}),
+                                                    else => panic("ni: {}\n", .{appointee_type.value}),
                                                 }
                                             },
-                                            else => panic("ni: {}\n", .{type_node.value}),
+                                            else => panic("ni: {}\n", .{decl_type.value}),
                                         }
                                     },
                                     else => panic("ni: {}\n", .{decl_node.value}),
@@ -474,7 +399,7 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
             const binary_op = node.value.binary_expr.id;
             node.value.binary_expr.left = explore_expression(compiler, allocator, current_function, current_block, node.value.binary_expr.left, types, functions, node_buffer);
             node.value.binary_expr.right = explore_expression(compiler, allocator, current_function, current_block, node.value.binary_expr.right, types, functions, node_buffer);
-            node.type = typecheck(compiler, node.value.binary_expr.left, node.value.binary_expr.right, types);
+            node.type = typecheck(compiler, node.value.binary_expr.left.type, node.value.binary_expr.right, types);
         },
         Node.ID.identifier_expr =>
         {
@@ -579,8 +504,11 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
             for (node.value.array_lit.elements.items) |*array_elem|
             {
                 array_elem.* = explore_expression(compiler, allocator, current_function, current_block, array_elem.*, types, functions, node_buffer);
-                _ = typecheck(compiler, first_elem, array_elem.*, types);
+                _ = typecheck(compiler, first_elem_type, array_elem.*, types);
             }
+
+            // @TODO: improve
+            node.type = Type.get_literal_type(types);
         },
         Node.ID.array_subscript_expr =>
         {
@@ -609,6 +537,8 @@ pub const SemanticsResult = struct
 pub fn analyze(compiler: *Compiler, allocator: *Allocator, parser_result: *ParserResult) SemanticsResult
 {
     compiler.current_module = Compiler.Module.semantics;
+    compiler.log(Compiler.LogLevel.debug, "\n==============\nSEMANTICS\n==============\n\n", .{});
+
     var types = Type.init(allocator);
 
     for (parser_result.type_declarations.items) |typename|

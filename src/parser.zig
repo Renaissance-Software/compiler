@@ -66,8 +66,6 @@ const ReturnExpression = struct
     expression: ?*Node,
 };
 
-// @Info: Variable expression must reference a variable declaration (in which function arguments are included)
-// @Warning: this is not true anymore dgm 29-04-2021
 const IdentifierExpression = struct
 {
     name: []const u8,
@@ -229,7 +227,6 @@ pub const Node = struct
         return_expr: ReturnExpression,
         type_identifier: TypeIdentifier,
         identifier_expr: IdentifierExpression,
-        resolved_type: *Type,
         resolved_identifier: *Node,
         field_expr: *Type.Struct.Field,
         invoke_expr: InvokeExpression,
@@ -252,7 +249,6 @@ pub const Node = struct
         return_expr,
         identifier_expr,
         type_identifier,
-        resolved_type,
         resolved_identifier,
         field_expr,
         invoke_expr,
@@ -467,10 +463,6 @@ pub const Node = struct
             Node.ID.type_identifier =>
             {
                 try std.fmt.format(writer, "{}", .{self.value.type_identifier});
-            },
-            Node.ID.resolved_type =>
-            {
-                panic("ni\n", .{});
             },
             Node.ID.resolved_identifier =>
             {
@@ -1240,7 +1232,7 @@ const Parser = struct
                     .expression = null,
                 },
             },
-            .value_type = Node.ValueType.LValue,
+            .value_type = Node.ValueType.RValue,
             .parent = parent_node,
             .type = undefined,
         };
@@ -1333,7 +1325,7 @@ const Parser = struct
                     },
                 },
                 .parent = parent_node,
-                .value_type = Node.ValueType.LValue,
+                .value_type = Node.ValueType.RValue,
                 .type = undefined,
             };
 
@@ -1481,7 +1473,7 @@ const Parser = struct
             // Postfix
             {
                 self.current_block = for_node.value.loop_expr.postfix;
-                const identifier_expr_value = Node
+                const identifier_expr_lvalue = Node
                 {
                     .value = Node.Value {
                         .identifier_expr = IdentifierExpression {
@@ -1492,7 +1484,10 @@ const Parser = struct
                     .value_type = Node.ValueType.LValue,
                     .type = undefined,
                 };
-                const identifier_expr_node = self.append_and_get(identifier_expr_value);
+                var identifier_expr_rvalue = identifier_expr_lvalue;
+                identifier_expr_rvalue.value_type = Node.ValueType.RValue;
+                const identifier_lvalue = self.append_and_get(identifier_expr_lvalue);
+                const identifier_rvalue = self.append_and_get(identifier_expr_rvalue);
 
                 const one_lit_value = Node
                 {
@@ -1512,7 +1507,7 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .binary_expr = BinaryExpression {
-                            .left = identifier_expr_node,
+                            .left = identifier_rvalue,
                             .right =  one_lit_node,
                             .id =  BinaryExpression.ID.Plus,
                             .parenthesis = false,
@@ -1529,7 +1524,7 @@ const Parser = struct
                 {
                     .value = Node.Value {
                         .binary_expr = BinaryExpression {
-                            .left = identifier_expr_node,
+                            .left = identifier_lvalue,
                             .right =  postfix_increment_node,
                             .id =  BinaryExpression.ID.Assignment,
                             .parenthesis = false,
@@ -1969,7 +1964,7 @@ const Parser = struct
                 },
             },
             .parent = function_node,
-            .value_type = Node.ValueType.LValue,
+            .value_type = Node.ValueType.RValue,
             .type = undefined,
         };
 
@@ -2059,6 +2054,7 @@ pub const ParserResult = struct
 pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult) ParserResult
 {
     compiler.current_module = Compiler.Module.parser;
+    compiler.log(Compiler.LogLevel.debug, "\n==============\nPARSER\n==============\n\n", .{});
 
     const token_count = lexer_result.tokens.len;
     assert(token_count > 0);

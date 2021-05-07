@@ -23,7 +23,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, fil
 
     var semantics_result = Semantics.analyze(compiler, allocator, &parser_result);
 
-    //IR.encode(allocator, compiler, &semantics_result);
+    IR.encode(allocator, compiler, &semantics_result);
 
     return true;
 }
@@ -38,12 +38,12 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     const log_general = true;
     const log_lexer = false;
     const log_parser = false;
-    const log_semantics = false;
+    const log_semantics = true;
     const log_bytecode = true;
 
     var compiler = Compiler
     {
-        .log_level = Compiler.LogLevel.info,
+        .log_level = Compiler.LogLevel.debug,
         .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode),
         .current_module = Compiler.Module.general,
     };

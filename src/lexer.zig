@@ -154,6 +154,7 @@ pub const LexerResult = struct
 pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8) LexerResult
 {
     compiler.current_module = Compiler.Module.lexer;
+    compiler.log(Compiler.LogLevel.debug, "\n==============\nLEXER\n==============\n\n", .{});
 
     var tokenizer = Tokenizer
     {

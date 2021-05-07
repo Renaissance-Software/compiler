@@ -424,6 +424,7 @@ pub const Type = struct
                 try std.fmt.format(writer, "&{}", .{self.value.pointer.type});
             },
             Type.ID.structure => try std.fmt.format(writer, "{s}", .{self.value.structure.name}),
+            Type.ID.unresolved => try writer.writeAll("unresolved"),
             else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
