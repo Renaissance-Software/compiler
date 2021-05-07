@@ -121,10 +121,12 @@ const Value = struct
 {
     type: *Type,
     id: ID,
+    parent: *Value,
 
     const ID = enum
     {
         Undefined,
+        Module,
         Argument,
         BasicBlock,
         InlineASM,
@@ -293,8 +295,24 @@ const ConstantArray = struct
 
     pub fn format(self: ConstantArray, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        // @TODO: change this. This is a bug
-        try writer.writeAll("constant_array_placeholder");
+        const lvalue = self.base.parent;
+        assert(lvalue.id == Value.ID.Instruction);
+        const instruction = @ptrCast(*Instruction, lvalue);
+        assert(instruction.id == Instruction.ID.Alloca);
+
+        var it: *Value = self.base.parent;
+        while (true)
+        {
+            if (it.id == Value.ID.GlobalFunction)
+            {
+                break;
+            }
+            it = it.parent;
+        }
+
+        const function = @ptrCast(*Function, it);
+
+        try std.fmt.format(writer, "@__const.{s}.%{}", .{function.name, @ptrToInt(lvalue)});
     }
 };
 
@@ -634,7 +652,19 @@ const OperatorBitCast = struct
     cast_value: *Value,
     pub fn format(self: *const OperatorBitCast, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        try std.fmt.format(writer, "{} bitcast ({}* {s} to {})", .{self.base.type, self.cast_value.type, "constant_placeholder", self.base.type});
+        switch (self.cast_value.id)
+        {
+            Value.ID.ConstantArray =>
+            {
+                const constant_array = @ptrCast(*ConstantArray, self.cast_value);
+                try std.fmt.format(writer, "{} bitcast ({}* {} to {})", .{self.base.type, self.cast_value.type, constant_array, self.base.type});
+            },
+            else =>
+            {
+                try std.fmt.format(writer, "operator bitcast value id not implemented: {}", .{self.cast_value.id});
+                panic("operator bitcast value id not implemented: {}\n", .{self.cast_value.id});
+            },
+        }
     }
 };
 
@@ -642,6 +672,7 @@ const function_bucket_count = 64;
 const FunctionBuffer = BucketArrayList(Function, function_bucket_count);
 pub const Module = struct
 {
+    base: Value,
     functions: FunctionBuffer,
 
     fn find_function(self: *Module, name: []const u8) *Function
@@ -669,7 +700,6 @@ const Function = struct
     type: *Type,
     basic_blocks: ArrayList(*BasicBlock),
     arguments: []Argument,
-    parent: *Module,
 
     const Argument = struct
     {
@@ -691,12 +721,12 @@ const Function = struct
             .base = Value {
                 .type = ret_type,
                 .id = Value.ID.GlobalFunction,
+                .parent = @ptrCast(*Value, module),
             },
             .basic_blocks = ArrayList(*BasicBlock).init(allocator),
             .arguments = undefined, // @Info: this is defined later as the arguments are collected, and not in the function declaration
             .name = name,
             .type = type_expr,
-            .parent = module,
         };
         _ = module.functions.append(function_value) catch |err| {
             panic("Cannot allocate memory for bytecode function\n", .{});
@@ -708,7 +738,6 @@ const Instruction = struct
 {
     base: Value,
     id: ID,
-    parent: *BasicBlock,
     value: InstructionValue,
     operands: ArrayList(*Value),
 
@@ -811,7 +840,6 @@ const Instruction = struct
 const BasicBlock = struct
 {
     base: Value,
-    parent: *Function,
     instructions: ArrayList(*Instruction),
     use_count: u32,
 };
@@ -822,7 +850,7 @@ const InstructionBuffer = BucketArrayList(Instruction, 64);
 const Builder = struct
 {
     context: *Context,
-    current: ?*BasicBlock,
+    current: *BasicBlock,
     function: *Function,
 
     basic_block_buffer: *BlockBuffer,
@@ -842,8 +870,8 @@ const Builder = struct
             .base = Value {
                 .type = self.context.get_label_type(),
                 .id = Value.ID.BasicBlock,
+                .parent = @ptrCast(*Value, self.function),
             },
-            .parent = undefined,
             .instructions = ArrayList(*Instruction).init(allocator),
             .use_count = 0,
         };
@@ -859,27 +887,28 @@ const Builder = struct
         self.function.basic_blocks.append(basic_block) catch |err|{
             panic("Couldn't allocate memory for basic block reference in function\n", .{});
         };
-        basic_block.parent = self.function;
+        basic_block.base.parent = @ptrCast(*Value, self.function);
     }
 
     fn set_block(self: *Builder, block: *BasicBlock) void
     {
-        assert(self.current != block);
         const previous = self.current;
+        assert(@ptrToInt(previous) != @ptrToInt(block));
         self.current = block;
     }
 
     fn create_alloca(self: *Builder, alloca_type: *Type, array_size: ?*Value) *Instruction
     {
         assert(array_size == null);
+        var entry_block = self.function.basic_blocks.items[0];
 
         const instruction = Instruction {
             .base = Value {
                 .type = self.context.get_pointer_type(alloca_type),
                 .id = Value.ID.Instruction,
+                .parent = @ptrCast(*Value, entry_block),
             },
             .id = Instruction.ID.Alloca,
-            .parent = undefined,
             .operands = undefined,
             //.operands = ArrayList(*Value).init(allocator),
             .value = Instruction.InstructionValue
@@ -894,12 +923,10 @@ const Builder = struct
             panic("Failed to allocate memory for instruction\n", .{});
         };
 
-        var entry_block = self.function.basic_blocks.items[0];
         entry_block.instructions.insert(self.next_alloca_index, result) catch |err| {
             panic("Failed to insert alloca instruction reference inside the entry block\n", .{});
         };
         self.next_alloca_index += 1;
-        result.parent = entry_block;
 
         return result;
     }
@@ -911,12 +938,12 @@ const Builder = struct
             .base = Value {
                 .type = self.context.get_void_type(),
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.Store,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
                 panic("Can't allocate memory for ret operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
 
@@ -937,12 +964,12 @@ const Builder = struct
             .base = Value {
                 .type = load_type,
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.Load,
             .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                 panic("Can't allocate memory for ret operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
 
@@ -959,12 +986,12 @@ const Builder = struct
             .base = Value {
                 .type = self.context.get_pointer_type(gep_type),
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.GetElementPtr,
             .operands = ArrayList(*Value).initCapacity(allocator, indices.len) catch |err| {
                 panic("Error allocating memory for GEP operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
         i.operands.append(pointer) catch |err| {
@@ -989,10 +1016,10 @@ const Builder = struct
                 .base = Value {
                     .type = undefined,
                     .id = Value.ID.Instruction,
+                    .parent = undefined,
                 },
                 .id = Instruction.ID.Ret,
                 .operands = ArrayList(*Value).init(allocator),
-                .parent = undefined,
                 .value = undefined,
             };
 
@@ -1039,12 +1066,12 @@ const Builder = struct
                 .base = Value {
                     .type = dst_basic_block.base.type,
                     .id = Value.ID.Instruction,
+                    .parent = undefined,
                 },
                 .id = Instruction.ID.Br,
                 .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                     panic("Failed to allocate memory for br operand\n", .{});
                 },
-                .parent = undefined,
                 .value = undefined,
             };
 
@@ -1072,12 +1099,12 @@ const Builder = struct
                 .base = Value {
                     .type = if_block.base.type,
                     .id = Value.ID.Instruction,
+                    .parent = undefined,
                 },
                 .id = Instruction.ID.Br,
                 .operands = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
                     panic("Failed to allocate memory for br operand\n", .{});
                 },
-                .parent = undefined,
                 .value = undefined,
             };
 
@@ -1111,12 +1138,12 @@ const Builder = struct
                 .base = Value {
                     .type = callee.type,
                     .id = Value.ID.Instruction,
+                    .parent = undefined,
                 },
                 .id = Instruction.ID.Call,
                 .operands = ArrayList(*Value).initCapacity(allocator, arguments.len + 1) catch |err| {
                     panic("Can't allocate memory for ret operands\n", .{});
                 },
-                .parent = undefined,
                 .value = undefined,
             };
 
@@ -1140,12 +1167,12 @@ const Builder = struct
                 .base = Value {
                     .type = callee.type,
                     .id = Value.ID.Instruction,
+                    .parent = undefined,
                 },
                 .id = Instruction.ID.Call,
                 .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                     panic("Can't allocate memory for ret operands\n", .{});
                 },
-                .parent = undefined,
                 .value = undefined,
             };
 
@@ -1164,12 +1191,12 @@ const Builder = struct
             .base = Value {
                 .type = self.context.get_boolean_type(),
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.ICmp,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
                 panic("Can't allocate memory for ret operands\n", .{});
             },
-            .parent = undefined,
             .value = Instruction.InstructionValue {
                 .compare_type = comparation,
             },
@@ -1192,12 +1219,12 @@ const Builder = struct
             .base = Value {
                 .type = left.type,
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.Add,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
                 panic("Can't allocate memory for add operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
 
@@ -1218,12 +1245,12 @@ const Builder = struct
             .base = Value {
                 .type = left.type,
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.Sub,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
                 panic("Can't allocate memory for sub operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
 
@@ -1244,12 +1271,12 @@ const Builder = struct
             .base = Value {
                 .type = left.type,
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.Mul,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
                 panic("Can't allocate memory for mul operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
 
@@ -1270,12 +1297,12 @@ const Builder = struct
             .base = Value {
                 .type = cast_type,
                 .id = Value.ID.Instruction,
+                .parent = undefined,
             },
             .id = Instruction.ID.BitCast,
             .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
                 panic("Can't allocate memory for mul operands\n", .{});
             },
-            .parent = undefined,
             .value = undefined,
         };
         i.operands.append(value) catch |err| {
@@ -1292,6 +1319,7 @@ const Builder = struct
             .base = Value {
                 .type = cast_type,
                 .id = Value.ID.OperatorBitCast,
+                .parent = undefined,
             },
             .cast_value = value,
         };
@@ -1329,6 +1357,8 @@ const Builder = struct
                 .base = Value {
                     .type = self.context.get_void_type(),
                     .id = Value.ID.Intrinsic,
+                    // not used
+                    .parent = undefined,
                 },
                 .id = Intrinsic.ID.memcpy,
             };
@@ -1345,66 +1375,41 @@ const Builder = struct
 
     fn is_terminated(self: *Builder) bool
     {
-        if (self.current) |current|
+        if (self.current.instructions.items.len > 0)
         {
-            if (current.instructions.items.len > 0)
-            {
-                const last_instruction = current.instructions.items[current.instructions.items.len - 1];
+            const last_instruction = self.current.instructions.items[self.current.instructions.items.len - 1];
 
-                switch (last_instruction.id)
-                {
-                    Instruction.ID.Br, Instruction.ID.Ret => 
-                    {
-                        return true;
-                    },
-                    else => 
-                    {
-                        return false;
-                    }
-                }
-            }
-            else
+            switch (last_instruction.id)
             {
-                return false;
+                Instruction.ID.Br, Instruction.ID.Ret => 
+                {
+                    return true;
+                },
+                else => 
+                {
+                    return false;
+                }
             }
         }
         else
         {
-            panic("No basic block is bound to the builder\n", .{});
+            return false;
         }
     }
 
     fn insert_at_the_end(self: *Builder, instruction: Instruction) *Instruction
     {
-        if (self.current) |current|
-        {
-            const result = self.instruction_buffer.append(instruction) catch |err| {
-                panic("Failed to allocate memory for instruction\n", .{});
-            };
-            current.instructions.append(result) catch |err| {
-                panic("Failed to allocate memory for instruction\n", .{});
-            };
-            result.parent = current;
 
-                //("New instruction: {}\n", .{instruction.id});
-            //print("Instructions in the block: {}:\n", .{current.instructions.items.len});
-            //if (false)
-            //{
-                //for (current.instructions.items) |i|
-                //{
-                    //if (i.id != Instruction.ID.Alloca)
-                    //{
-                        //print("{}", .{i});
-                    //}
-                //}
-            //}
+        const result = self.instruction_buffer.append(instruction) catch |err| {
+            panic("Failed to allocate memory for instruction\n", .{});
+        };
+        result.base.parent = @ptrCast(*Value, self.current);
 
-            return result;
-        }
-        else
-        {
-            panic("No basic block is bound to the builder\n", .{});
-        }
+        self.current.instructions.append(result) catch |err| {
+            panic("Failed to allocate memory for instruction\n", .{});
+        };
+
+        return result;
     }
 };
 
@@ -1633,6 +1638,7 @@ const Context = struct
             .base = Value {
                 .type = int_type,
                 .id = Value.ID.ConstantInt,
+                .parent = undefined,
             }, 
             .int_value = value,
             .bit_count = bits,
@@ -1652,6 +1658,7 @@ const Context = struct
             .base = Value {
                 .type = array_type,
                 .id = Value.ID.ConstantArray,
+                .parent = undefined,
             },
             .array_type = array_type,
             .array_values = array_values,
@@ -1831,6 +1838,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                         {
                             // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
                             assert(rvalue.id == Value.ID.ConstantArray);
+                            rvalue.parent = @ptrCast(*Value, alloca_ptr);
                             const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
                             const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, alloca_ptr), pointer_to_i8_type);
                             const memcpy_size = get_size(var_type);
@@ -2464,6 +2472,12 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
     compiler.log(Compiler.LogLevel.debug, "\n==============\nIR\n==============\n\n", .{});
 
     var module = Module {
+        .base = Value {
+            .id = Value.ID.Module,
+            .type = undefined,
+            // @TODO: not used
+            .parent = undefined,
+        },
         .functions = FunctionBuffer.init(allocator) catch |err| {
             panic("Failed to allocate function bucket array\n", .{});
         },
@@ -2505,7 +2519,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
             .conditional_alloca = false,
             .emitted_return = false,
             .explicit_return = false,
-            .current = null,
+            .current = undefined,
             .return_alloca = null,
             .exit_block = null,
         };
@@ -2591,6 +2605,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
                     .base = Value {
                         .type = arg_type,
                         .id = Value.ID.Argument,
+                        .parent = @ptrCast(*Value, builder.function),
                     },
                     .arg_index = index,
                 };
@@ -2612,8 +2627,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
 
         if (builder.conditional_alloca)
         {
-            assert(builder.current != null);
-            assert(builder.current.?.instructions.items.len > 0);
+            assert(builder.current.instructions.items.len > 0);
             assert(builder.exit_block != null);
             assert(builder.return_alloca != null);
 
@@ -2629,51 +2643,45 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
             {
                 assert(builder.exit_block != null);
 
-                if (builder.current) |current_block|
+                const current_block = builder.current;
+                if (current_block.instructions.items.len == 0)
                 {
-                    if (current_block.instructions.items.len == 0)
+                    const saved_current = current_block;
+                    builder.set_block(builder.exit_block.?);
+
+                    var block_ptr : ?*BasicBlock = null;
+                    var block_index : u64 = 0;
+                    while (block_index < builder.function.basic_blocks.items.len) : (block_index += 1)
                     {
-                        const saved_current = current_block;
-                        builder.set_block(builder.exit_block.?);
-
-                        var block_ptr : ?*BasicBlock = null;
-                        var block_index : u64 = 0;
-                        while (block_index < builder.function.basic_blocks.items.len) : (block_index += 1)
+                        const block = builder.function.basic_blocks.items[block_index];
+                        if (block == saved_current)
                         {
-                            const block = builder.function.basic_blocks.items[block_index];
-                            if (block == saved_current)
-                            {
-                                block_ptr = block;
-                                break;
-                            }
+                            block_ptr = block;
+                            break;
                         }
+                    }
 
-                        if (block_ptr) |block|
+                    if (block_ptr) |block|
+                    {
+                        if (block_index == 0)
                         {
-                            if (block_index == 0)
-                            {
-                                builder.function.basic_blocks.items[block_index] = builder.current.?;
-                                builder.current.?.parent = builder.function;
-                            }
-                            else
-                            {
-                                panic("This should be the main block\n", .{});
-                            }
+                            builder.function.basic_blocks.items[block_index] = builder.current;
+                            builder.current.base.parent = @ptrCast(*Value, builder.function);
                         }
                         else
                         {
-                            panic("Block is not found in the function block list\n", .{});
+                            panic("This should be the main block\n", .{});
                         }
                     }
                     else
                     {
-                        builder.append_to_current_function(builder.exit_block.?);
-                        builder.set_block(builder.exit_block.?);
+                        panic("Block is not found in the function block list\n", .{});
                     }
                 }
                 else
                 {
-                    panic("No current basic block\n", .{});
+                    builder.append_to_current_function(builder.exit_block.?);
+                    builder.set_block(builder.exit_block.?);
                 }
             }
 
@@ -2725,7 +2733,8 @@ const BlockPrinter = struct
 
     pub fn format(self: *const BlockPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        if (self.block.parent.basic_blocks.items[0] != self.block)
+        const function = @ptrCast(*Function, self.block.base.parent);
+        if (function.basic_blocks.items[0] != self.block)
         {
             try std.fmt.format(writer, "{}:\n", .{self.id});
         }
@@ -2980,7 +2989,8 @@ fn print_function(compiler: *Compiler, allocator: *Allocator, context: *Context,
                 },
                 .id = block_id_label: {
                     var id: u64 = undefined;
-                    if (basic_block.parent.basic_blocks.items[0] != basic_block)
+                    const block_parent = @ptrCast(*Function, basic_block.base.parent);
+                    if (block_parent.basic_blocks.items[0] != basic_block)
                     {
                         id = slot_tracker.new_id(@ptrCast(*Value, basic_block));
                     }
