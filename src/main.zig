@@ -12,6 +12,8 @@ const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
 const Type = Internal.Type;
 
+const MC = @import("machine_code.zig");
+
 fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, file_content: []const u8) bool
 {
     var types : Internal.TypeBuffer = Type.init(allocator);
@@ -23,7 +25,9 @@ fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, fil
 
     var semantics_result = Semantics.analyze(compiler, allocator, &parser_result);
 
-    IR.encode(allocator, compiler, &semantics_result);
+    var module = IR.encode(allocator, compiler, &semantics_result);
+
+    MC.encode(&module);
 
     return true;
 }
@@ -57,6 +61,48 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     }
 }
 
+fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
+{
+    var arena = std.heap.ArenaAllocator.init(page_allocator);
+    defer arena.deinit();
+    const allocator = &arena.allocator;
+
+    const log_general = true;
+    const log_lexer = false;
+    const log_parser = false;
+    const log_semantics = true;
+    const log_bytecode = true;
+
+    var compiler = Compiler
+    {
+        .log_level = Compiler.LogLevel.debug,
+        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode),
+        .current_module = Compiler.Module.general,
+    };
+
+
+    var test_file_contents: [test_files.len][]const u8 = undefined;
+
+    for (test_files) |test_filename, i|
+    {
+        test_file_contents[i] = try cwd.readFileAlloc(allocator, test_filename, 0xffffffff);
+    }
+
+    const iterations : u64 = 10000;
+    var i: u64 = 0;
+    while (i < iterations) : (i += 1)
+    {
+        for (test_file_contents) |test_file_content, file_index|
+        {
+            //compiler.log(Compiler.LogLevel.info, "\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+            if (!compiler_work_on_file_content(allocator, &compiler, test_file_content))
+            {
+                compiler.report_error("Compiler workflow failed\n", .{});
+            }
+        }
+    }
+}
+
 const test_dir = "tests/";
 const test_files = [_][]const u8
 {
@@ -82,20 +128,28 @@ const test_files = [_][]const u8
 pub fn main() anyerror!void
 {
     const all_tests = true;
+    const benchmark = true;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
-    if (all_tests)
+    if (!benchmark)
     {
-        for (test_files) |test_file, i|
+        if (all_tests)
         {
-            try compiler_file_workflow(page_allocator, cwd, test_file, i);
+            for (test_files) |test_file, i|
+            {
+                try compiler_file_workflow(page_allocator, cwd, test_file, i);
+            }
+        }
+        else
+        {
+            //const index = 11;
+            const index = test_files.len - 1;
+            try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }
     else
     {
-        //const index = 11;
-        const index = test_files.len - 1;
-        try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
+        try compile_load_all_tests(page_allocator, cwd);
     }
 }

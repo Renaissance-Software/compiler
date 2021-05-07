@@ -2466,7 +2466,7 @@ fn get_size(type_: *Type) usize
     }
 }
 
-pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *SemanticsResult) void
+pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *SemanticsResult) Module
 {
     compiler.current_module = Compiler.Module.bytecode;
     compiler.log(Compiler.LogLevel.debug, "\n==============\nIR\n==============\n\n", .{});
@@ -2690,6 +2690,8 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
         }
         print_function(compiler, allocator, builder.context, function);
     }
+
+    return module;
 }
 
 const SlotTracker = struct
