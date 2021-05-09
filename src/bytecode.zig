@@ -117,7 +117,7 @@ const FunctionType = struct
     ret_type: *Type,
 };
 
-const Value = struct
+pub const Value = struct
 {
     type: *Type,
     id: ID,
@@ -734,24 +734,24 @@ const Function = struct
     }
 };
 
-const Instruction = struct
+pub const Instruction = struct
 {
     base: Value,
     id: ID,
     value: InstructionValue,
     operands: ArrayList(*Value),
 
-    const InstructionValue = extern union {
+    pub const InstructionValue = extern union {
         alloca: Alloca,
         compare_type: CompareType,
     };
 
-    const Alloca = struct 
+    pub const Alloca = struct 
     {
         type: *Type,
     };
 
-    const ID = enum {
+    pub const ID = enum {
         // Terminator
         Ret = 1,
         Br = 2,
@@ -834,10 +834,9 @@ const Instruction = struct
         InsertValue = 65,
         LandingPad = 66,
     };
-
 };
 
-const BasicBlock = struct
+pub const BasicBlock = struct
 {
     base: Value,
     instructions: ArrayList(*Instruction),

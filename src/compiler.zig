@@ -513,15 +513,16 @@ pub const Compiler = struct
         }
     }
 
-    pub fn get_log_module(log_general: bool, log_lexer: bool, log_parser: bool, log_semantics: bool, log_bytecode: bool) u8
+    pub fn get_log_module(log_general: bool, log_lexer: bool, log_parser: bool, log_semantics: bool, log_bytecode: bool, log_machine_code: bool) u8
     {
         const log_general_int: u8 = @as(u8, @boolToInt(log_general)) << @enumToInt(Module.general);
         const log_lexer_int: u8 = @as(u8, @boolToInt(log_lexer)) << @enumToInt(Module.lexer);
         const log_parser_int: u8 = @as(u8, @boolToInt(log_parser)) << @enumToInt(Module.parser);
         const log_semantics_int: u8 = @as(u8, @boolToInt(log_semantics)) << @enumToInt(Module.semantics);
         const log_bytecode_int: u8 = @as(u8, @boolToInt(log_bytecode)) << @enumToInt(Module.bytecode);
+        const log_machine_code_int: u8 = @as(u8, @boolToInt(log_machine_code)) << @enumToInt(Module.machine_code);
 
-        const module_log: u8 = log_general_int | log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int;
+        const module_log: u8 = log_general_int | log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int | log_machine_code_int;
         return module_log;
     }
 
@@ -539,5 +540,6 @@ pub const Compiler = struct
         parser,
         semantics,
         bytecode,
+        machine_code,
     };
 };

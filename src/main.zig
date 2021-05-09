@@ -12,7 +12,7 @@ const Internal = @import("compiler.zig");
 const Compiler = Internal.Compiler;
 const Type = Internal.Type;
 
-const MC = @import("machine_code.zig");
+const CG = @import("x86_64/codegen.zig");
 
 fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, file_content: []const u8) bool
 {
@@ -27,7 +27,7 @@ fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, fil
 
     var module = IR.encode(allocator, compiler, &semantics_result);
 
-    MC.encode(&module);
+    CG.encode(compiler, allocator, &module);
 
     return true;
 }
@@ -42,13 +42,14 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     const log_general = true;
     const log_lexer = false;
     const log_parser = false;
-    const log_semantics = true;
-    const log_bytecode = true;
+    const log_semantics = false;
+    const log_bytecode = false;
+    const log_machine_code = true;
 
     var compiler = Compiler
     {
         .log_level = Compiler.LogLevel.debug,
-        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode),
+        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode, log_machine_code),
         .current_module = Compiler.Module.general,
     };
 
@@ -128,7 +129,7 @@ const test_files = [_][]const u8
 pub fn main() anyerror!void
 {
     const all_tests = true;
-    const benchmark = true;
+    const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
