@@ -13,6 +13,11 @@ const Encoding = @import("encoding.zig");
 
 const encode_frame_pointer = true;
 
+const c = @cImport({
+    @cInclude("unistd.h");
+    @cInclude("sys/mman.h");
+});
+
 const CallingConvention = enum
 {
     MSVC,
@@ -115,9 +120,33 @@ fn create_instruction(instruction_id: Encoding.Instruction.ID, operands: []const
 
 const InstructionBuffer = ArrayList(Instruction);
 
+const Function = struct
+{
+    instructions: InstructionBuffer,
+    start_address: u64,
+};
+const FunctionBuffer = ArrayList(Function);
+
+const Executable = struct
+{
+    functions: FunctionBuffer,
+    code_buffer: []u8,
+    code_base_RVA: u64,
+};
+
+fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *Executable, instruction: Encoding.Instruction.ID) void
+{
+}
+
 pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) void
 {
     compiler.current_module = Compiler.Module.machine_code;
+
+    var executable = Executable
+    {
+        .functions = FunctionBuffer.init(allocator),
+        .code_base_RVA = 0,
+    };
 
     for (module.functions.list.items) |function_bucket|
     {
@@ -126,7 +155,17 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
         {
             const function = &function_bucket.items[function_index];
 
-            var instruction_buffer = InstructionBuffer.init(allocator);
+            const mc_function_value = Function
+            {
+                .instructions = InstructionBuffer.init(allocator),
+                .start_address = 0,
+            };
+
+            executable.functions.append(mc_function_value) catch |err| {
+                panic("Error allocating a new MC function\n", .{});
+            };
+
+            var mc_function = &executable.functions.items[executable.functions.items.len - 1];
 
             for (function.basic_blocks.items) |basic_block|
             {
@@ -148,15 +187,43 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                             else
                             {
                                 const mc_i = create_instruction(Encoding.Instruction.ID.ret, instruction.operands.items);
-
+                                mc_function.instructions.append(mc_i) catch |err| {
+                                    panic("Error allocating a new MC instruction\n", .{});
+                                };
                             }
                         },
                         else => panic("ni: {}\n", .{instruction.id}),
                     }
                 }
             }
-
-            // encode bytes
         }
+    }
+
+    var aprox_instruction_count: u64 = 0;
+    const max_bytes_per_instruction: u8 = 15;
+
+    for (executable.functions.items) |function|
+    {
+        compiler.log(Log.debug, "function\n", .{});
+        aprox_instruction_count += 5 * function.instructions.items.len;
+    }
+
+    const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
+    compiler.log(Log.debug, "Aproximate code size: {}\n", .{aprox_code_size});
+
+    const mmap_result = c.mmap(null, aprox_code_size, c.PROT_READ |c.PROT_WRITE | c.PROT_EXEC, c.MAP_PRIVATE | c.MAP_ANON, -1, 0);
+    executable.code_base_RVA = @ptrToInt(mmap_result);
+    executable.code_buffer = @ptrCast([*]u8, mmap_result)[0..aprox_code_size];
+
+    switch (calling_convention)
+    {
+        CallingConvention.SystemV =>
+        {
+            for (executable.functions.items) |function|
+            {
+
+            }
+        },
+        else => panic("ni: {}\n", .{calling_convention}),
     }
 }
