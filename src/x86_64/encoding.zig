@@ -1,7 +1,7 @@
 const std = @import("std");
 const panic = std.debug.panic;
 
-const Rex = enum(u8)
+pub const Rex = enum(u8)
 {
     None = 0,
     Rex = 0x40,
@@ -11,7 +11,7 @@ const Rex = enum(u8)
     W = 0x48,
 };
 
-const SIB = enum(u8)
+pub const SIB = enum(u8)
 {
     scale1 = 0b00,
     scale2 = 0b01,
@@ -19,7 +19,7 @@ const SIB = enum(u8)
     scale4 = 0b11,
 };
 
-const Mod = enum(u8)
+pub const Mod = enum(u8)
 {
     no_displacement = 0b00,
     displacement8 = 0b01,
@@ -27,7 +27,7 @@ const Mod = enum(u8)
     register = 0b11,
 };
 
-const Register = enum(u8)
+pub const Register = enum(u8)
 {
     A = 0,
     C = 1,
@@ -37,10 +37,6 @@ const Register = enum(u8)
     BP = 5,
     SI = 6,
     DI = 7,
-    AH = SP,
-    CH = BP,
-    DH = SI,
-    BH = DI,
 
     r8 = 8,
     r9 = 9,
@@ -50,6 +46,11 @@ const Register = enum(u8)
     r13 = 13,
     r14 = 14,
     r15 = 15,
+
+    const AH: u8 = 4;
+    const CH: u8 = 5;
+    const DH: u8 = 6;
+    const BH: u8 = 7;
 };
 
 

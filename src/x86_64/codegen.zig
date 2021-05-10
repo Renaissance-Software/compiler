@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const assert = std.debug.assert;
 const panic = std.debug.panic;
 
 const Internal = @import("../compiler.zig");
@@ -10,6 +11,7 @@ const Log = Compiler.LogLevel;
 const IR = @import("../bytecode.zig");
 
 const Encoding = @import("encoding.zig");
+const Mnemonic = Encoding.Instruction.ID;
 
 const encode_frame_pointer = true;
 
@@ -36,7 +38,7 @@ const Operand = struct
         none,
         immediate: Immediate,
         relative,
-        register,
+        register: Encoding.Register,
         indirect,
         rip_relative,
         import_rip_relative,
@@ -88,12 +90,12 @@ const Label = struct
 
 const Instruction = struct
 {
-    id: Encoding.Instruction.ID,
+    id: Mnemonic,
     operands: [4]Operand,
     label: Label,
 };
 
-fn create_instruction(instruction_id: Encoding.Instruction.ID, operands: []const *IR.Value) Instruction
+fn create_instruction(instruction_id: Mnemonic) Instruction
 {
     var instruction = Instruction
     {
@@ -101,19 +103,14 @@ fn create_instruction(instruction_id: Encoding.Instruction.ID, operands: []const
         .operands = undefined,
         .label = undefined,
     };
-    if (operands.len > 0)
+
+    const zero_operand = Operand
     {
-        panic("ni:\n", .{});
-    }
-    else
-    {
-        const zero_operand = Operand
-        {
-            .value = Operand.ID.none,
-            .size =  0,
-        };
-        std.mem.set(Operand, instruction.operands[0..], zero_operand);
-    }
+        .value = Operand.ID.none,
+        .size =  0,
+    };
+
+    std.mem.set(Operand, instruction.operands[0..], zero_operand);
 
     return instruction;
 }
@@ -130,13 +127,37 @@ const FunctionBuffer = ArrayList(Function);
 const Executable = struct
 {
     functions: FunctionBuffer,
-    code_buffer: []u8,
+    code_buffer: std.ArrayList(u8),
     code_base_RVA: u64,
 };
 
-fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *Executable, instruction: Encoding.Instruction.ID) void
+fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *Executable, instruction: Instruction) void
 {
+    const instruction_offset = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len; 
+    compiler.log(Log.debug, "Instruction start offset: 0x{x}\n", .{instruction_offset});
+
+    panic("Encoding not implemented\n", .{});
 }
+
+pub const ExecutionBuffer = struct
+{
+    fn allocFn(allocator: *Allocator, len: usize, ptr_align: u29, len_align: u29, ret_addr: usize) std.mem.Allocator.Error![]u8
+    {
+        const mmap_result = c.mmap(null, len, c.PROT_READ |c.PROT_WRITE | c.PROT_EXEC, c.MAP_PRIVATE | c.MAP_ANON, -1, 0);
+        if (@ptrToInt(mmap_result) != 0)
+        {
+            return @ptrCast([*]u8, mmap_result)[0..len];
+        }
+        else
+        {
+            return error.OutOfMemory;
+        }
+    }
+    fn resizeFn(allocator: *Allocator, buf: []u8, buf_align: u29, new_len: usize, len_align: u29, ret_addr: usize) std.mem.Allocator.Error!usize
+    {
+        return error.OutOfMemory;
+    }
+};
 
 pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) void
 {
@@ -146,6 +167,7 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
     {
         .functions = FunctionBuffer.init(allocator),
         .code_base_RVA = 0,
+        .code_buffer = undefined,
     };
 
     for (module.functions.list.items) |function_bucket|
@@ -186,7 +208,7 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                             }
                             else
                             {
-                                const mc_i = create_instruction(Encoding.Instruction.ID.ret, instruction.operands.items);
+                                const mc_i = create_instruction(Mnemonic.ret);
                                 mc_function.instructions.append(mc_i) catch |err| {
                                     panic("Error allocating a new MC instruction\n", .{});
                                 };
@@ -211,9 +233,17 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
     const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
     compiler.log(Log.debug, "Aproximate code size: {}\n", .{aprox_code_size});
 
-    const mmap_result = c.mmap(null, aprox_code_size, c.PROT_READ |c.PROT_WRITE | c.PROT_EXEC, c.MAP_PRIVATE | c.MAP_ANON, -1, 0);
-    executable.code_base_RVA = @ptrToInt(mmap_result);
-    executable.code_buffer = @ptrCast([*]u8, mmap_result)[0..aprox_code_size];
+    var buffer_allocator = std.mem.Allocator
+    {
+        .allocFn = ExecutionBuffer.allocFn,
+        .resizeFn = ExecutionBuffer.resizeFn,
+    };
+
+    executable.code_buffer = ArrayList(u8).initCapacity(&buffer_allocator, aprox_code_size) catch |err| {
+        panic("Error allocating memory for code section buffer\n", .{});
+    };
+
+    executable.code_base_RVA = @ptrToInt(executable.code_buffer.items.ptr);
 
     switch (calling_convention)
     {
@@ -221,7 +251,48 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
         {
             for (executable.functions.items) |function|
             {
+                if (encode_frame_pointer)
+                {
+                    var push_rbp = create_instruction(Mnemonic.push);
+                    push_rbp.operands[0] = Operand 
+                    {
+                        .value = Operand.Value {
+                            .register = Encoding.Register.BP,
+                        },
+                        .size = @enumToInt(Operand.Size.bits64),
+                    };
 
+                    var mov_rbp_rsp = create_instruction(Mnemonic.mov);
+                    push_rbp.operands[0] = Operand 
+                    {
+                        .value = Operand.Value {
+                            .register = Encoding.Register.BP,
+                        },
+                        .size = @enumToInt(Operand.Size.bits64),
+                    };
+                    push_rbp.operands[1] = Operand 
+                    {
+                        .value = Operand.Value {
+                            .register = Encoding.Register.SP,
+                        },
+                        .size = @enumToInt(Operand.Size.bits64),
+                    };
+
+                    encode_instruction(compiler, allocator, &executable, push_rbp);
+                    encode_instruction(compiler, allocator, &executable, mov_rbp_rsp);
+                }
+
+                for (function.instructions.items) |instruction, i|
+                {
+                    if (instruction.id == Mnemonic.ret)
+                    {
+                        assert(i == function.instructions.items.len - 1);
+                    }
+                    encode_instruction(compiler, allocator, &executable, instruction);
+                }
+
+                //encode_instruction(compiler, allocator, &executable, 
+                //encode_instruction(compiler, allocator, &executable, 
             }
         },
         else => panic("ni: {}\n", .{calling_convention}),
