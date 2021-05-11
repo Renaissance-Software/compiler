@@ -22,6 +22,7 @@ const SemanticsResult = Semantics.SemanticsResult;
 const Type = struct
 {
     name: []const u8,
+    size: u32,
     id: ID,
 
     const ID = enum
@@ -693,7 +694,7 @@ pub const Module = struct
     }
 };
 
-const Function = struct
+pub const Function = struct
 {
     base: Value,
     name: []const u8,
@@ -741,7 +742,8 @@ pub const Instruction = struct
     value: InstructionValue,
     operands: ArrayList(*Value),
 
-    pub const InstructionValue = extern union {
+    pub const InstructionValue = extern union
+    {
         alloca: Alloca,
         compare_type: CompareType,
     };
@@ -896,7 +898,7 @@ const Builder = struct
         self.current = block;
     }
 
-    fn create_alloca(self: *Builder, alloca_type: *Type, array_size: ?*Value) *Instruction
+    fn create_alloca(self: *Builder, allocator: *Allocator, alloca_type: *Type, array_size: ?*Value) *Instruction
     {
         assert(array_size == null);
         var entry_block = self.function.basic_blocks.items[0];
@@ -908,8 +910,7 @@ const Builder = struct
                 .parent = @ptrCast(*Value, entry_block),
             },
             .id = Instruction.ID.Alloca,
-            .operands = undefined,
-            //.operands = ArrayList(*Value).init(allocator),
+            .operands = ArrayList(*Value).init(allocator),
             .value = Instruction.InstructionValue
             {
                 .alloca = Instruction.Alloca {
@@ -1444,18 +1445,18 @@ const Context = struct
     {
         var context : Context = undefined;
 
-        context.void_type = Type { .name = "void", .id = Type.ID.@"void" };
-        context.label_type = Type { .name = "label", .id = Type.ID.@"label" };
+        context.void_type = Type { .name = "void", .id = Type.ID.@"void", .size = 0 };
+        context.label_type = Type { .name = "label", .id = Type.ID.@"label", .size = 0};
 
-        context.i1_type = IntegerType { .base =  Type { .name = "i1", .id = Type.ID.@"integer" }, .bits = 1, };
+        context.i1_type = IntegerType { .base =  Type { .name = "i1", .id = Type.ID.@"integer", .size = 0 }, .bits = 1, };
 
-        context.i8_type = IntegerType { .base =  Type { .name = "i8", .id = Type.ID.@"integer" }, .bits = 8, };
-        context.i16_type = IntegerType { .base =  Type { .name = "i16", .id = Type.ID.@"integer" }, .bits = 16, };
-        context.i32_type = IntegerType { .base =  Type { .name = "i32", .id = Type.ID.@"integer" }, .bits = 32, };
-        context.i64_type = IntegerType { .base =  Type { .name = "i64", .id = Type.ID.@"integer" }, .bits = 64, };
+        context.i8_type = IntegerType { .base =  Type { .name = "i8", .id = Type.ID.@"integer", .size = 1 }, .bits = 8, };
+        context.i16_type = IntegerType { .base =  Type { .name = "i16", .id = Type.ID.@"integer", .size = 2 }, .bits = 16, };
+        context.i32_type = IntegerType { .base =  Type { .name = "i32", .id = Type.ID.@"integer", .size = 4 }, .bits = 32, };
+        context.i64_type = IntegerType { .base =  Type { .name = "i64", .id = Type.ID.@"integer", .size = 8 }, .bits = 64, };
 
-        context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float" }, .bits = 32, };
-        context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float" }, .bits = 64, };
+        context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float", .size = 4 }, .bits = 32, };
+        context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float", .size = 8 }, .bits = 64, };
 
         context.function_types  = FunctionTypeBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
@@ -1535,6 +1536,7 @@ const Context = struct
             .base = Type {
                 .name = undefined,
                 .id = Type.ID.@"array",
+                .size = @intCast(u32, array_type.size * array_length),
             },
             .type = array_type,
             .count = array_length,
@@ -1568,6 +1570,7 @@ const Context = struct
             .base = Type {
                 .name = undefined,
                 .id = Type.ID.@"pointer",
+                .size = 8,
             },
             .type = p_type,
         };
@@ -1610,10 +1613,17 @@ const Context = struct
             }
         }
 
+        var size: u32 = 0;
+        for (field_types) |field_type|
+        {
+            size += field_type.size;
+        }
+
         const new_struct = StructType {
             .base = Type {
                 .name = undefined,
                 .id = Type.ID.@"struct",
+                .size = size,
             },
             .field_types = field_types,
             .name = name,
@@ -1805,7 +1815,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const rns_type = get_type(allocator, builder.context, ast_type, ast_types);
             // @TODO: for arrays, consider creating an array alloca
             // @TODO: verify that LLVM indeed does this
-            const var_alloca = builder.create_alloca(rns_type, null);
+            const var_alloca = builder.create_alloca(allocator, rns_type, null);
             node.value.var_decl.backend_ref = @ptrToInt(var_alloca);
         },
         Node.ID.resolved_identifier =>
@@ -2363,6 +2373,8 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
                 .base = Type {
                     .name = undefined,
                     .id = Type.ID.@"function",
+                    // Functions are addresses
+                    .size = 8,
                 },
                 .arg_types = undefined,
                 .ret_type = ret_type,
@@ -2580,7 +2592,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
 
             if (builder.conditional_alloca)
             {
-                builder.return_alloca = builder.create_alloca(ret_type, null);
+                builder.return_alloca = builder.create_alloca(allocator, ret_type, null);
             }
         }
 
@@ -2609,7 +2621,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
                     .arg_index = index,
                 };
 
-                const arg_alloca = builder.create_alloca(arg_type, null);
+                const arg_alloca = builder.create_alloca(allocator, arg_type, null);
                 ast_arg.value.var_decl.backend_ref = @ptrToInt(arg_alloca);
 
                 argument_list.append(arg) catch |err| {
