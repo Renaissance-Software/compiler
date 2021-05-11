@@ -1,5 +1,6 @@
 const std = @import("std");
 const panic = std.debug.panic;
+const assert = std.debug.assert;
 
 pub const Rex = enum(u8)
 {
@@ -47,10 +48,12 @@ pub const Register = enum(u8)
     r14 = 14,
     r15 = 15,
 
-    const AH: u8 = 4;
-    const CH: u8 = 5;
-    const DH: u8 = 6;
-    const BH: u8 = 7;
+    pub const AH: u8 = 4;
+    pub const CH: u8 = 5;
+    pub const DH: u8 = 6;
+    pub const BH: u8 = 7;
+
+    pub const NFlag: u8 = 0b1000;
 };
 
 
@@ -60,7 +63,7 @@ pub const Operand = struct
     id: ID,
     size: u8,
 
-    const ID = enum
+    pub const ID = enum
     {
         none,
         register,
@@ -71,18 +74,22 @@ pub const Operand = struct
         immediate,
     };
 
-    const Combination = struct
+    pub const Combination = struct
     {
         rex: Rex,
-        encodings: [4]Operand,
+        operands: [4]Operand,
+        count: u64,
+
+        fn add_operand(self: *Combination, operand: Operand) void
+        {
+            const len = self.count;
+            assert(len < self.operands.len);
+            self.operands[len] = operand;
+            self.count += 1;
+        }
     };
 
-    const size_override: u8 = 0x66;
-};
-
-
-pub const Mnemonic = extern struct
-{
+    pub const size_override: u8 = 0x66;
 };
 
 pub const Instruction = struct
@@ -90,14 +97,73 @@ pub const Instruction = struct
     op_code: [4]u8,
     options: Options,
     operand_combinations: [4]Operand.Combination,
+    operand_combination_count: u64,
 
-    const Options = struct
+    fn NoOperandCombination(self: *Instruction) void
     {
-        id: ID,
+        self.operand_combination_count += 1;
+    }
+    fn OneOperandCombination(self: *Instruction, rex: Rex, operand: Operand.ID, size: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = operand, .size = size });
+        self.operand_combination_count += 1;
+    }
+
+    fn RegisterMemory_Register(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register_or_memory, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
+    fn Register_RegisterMemory(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register_or_memory, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
+    fn Register_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.immediate, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
+    fn RegisterMemory_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register_or_memory, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.immediate, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
+    pub const Options = struct
+    {
+        option: Option,
         digit: u8,
         explicit_byte_size: u8,
 
-        const ID = enum
+        pub const Option = enum
         {
             None,
             Digit,
@@ -378,21 +444,176 @@ pub const Instruction = struct
     };
 };
 
-const ret_encoding : [_]Instruction = blk:
+fn zero_instruction_encoding(comptime encoding_count: u64) [encoding_count]Instruction
 {
-    var instructions: [4]Instruction = std.mem.zeroes([4]Instruction);
+    var result: [encoding_count]Instruction = std.mem.zeroes([encoding_count]Instruction);
+    return result;
+}
 
-    instructions[0].op_code[0] = 0xc3;
-    instructions[1].op_code[0] = 0xcb;
-    instructions[2].op_code[0] = 0xc2;
-    instructions[2].operand_combinations[0].encodings[0] = Operand { .id = Operand.ID.immediate, .size = 16 };
-    instructions[3].op_code[0] = 0xca;
-    instructions[3].operand_combinations[0].encodings[0] = Operand { .id = Operand.ID.immediate, .size = 16 };
+const mov_encoding = blk:
+{
+    const encoding_count = 8;
+    var result = zero_instruction_encoding(encoding_count);
 
-    break :blk instructions;
+    var i = 0;
+    result[i].op_code[0] = 0x88;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 1, 1);
+    result[i].RegisterMemory_Register(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x89;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 2, 2);
+    result[i].RegisterMemory_Register(Rex.None, 4, 4);
+    result[i].RegisterMemory_Register(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x8a;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 1, 1);
+    result[i].Register_RegisterMemory(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x8b;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    i += 1;
+
+    //  @TODO: NOT CODED SEGMENT AND OFFSET INSTRUCTIONS
+
+    result[i].op_code[0] = 0xb0;
+    result[i].options.option = Instruction.Options.Option.OpCodePlusReg;
+    result[i].Register_Immediate(Rex.None, 1, 1);
+    result[i].Register_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xb8;
+    result[i].options.option = Instruction.Options.Option.OpCodePlusReg;
+    result[i].Register_Immediate(Rex.None, 2, 2);
+    result[i].Register_Immediate(Rex.None, 4, 4);
+    result[i].Register_Immediate(Rex.W, 8, 8);
+    
+    i += 1;
+
+    result[i].op_code[0] = 0xc6;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
+    result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xc7;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 4);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 8);
+    
+    i += 1;
+
+    break :blk result;
 };
 
-pub const encodings = blk:
+const pop_encoding = blk:
+{
+    const encoding_count = 3;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i: u64 = 0;
+
+    result[i].op_code[0] = 0x58;
+    result[i].options.option = Instruction.Options.Option.OpCodePlusReg;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x8f;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 6;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x6a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 1);
+
+    // @TODO: pop fs, pop gs
+
+    break :blk result;
+};
+
+const push_encoding = blk:
+{
+    const encoding_count = 4;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i: u64 = 0;
+
+    result[i].op_code[0] = 0x50;
+    result[i].options.option = Instruction.Options.Option.OpCodePlusReg;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xff;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 6;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x6a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x68;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 4);
+
+    break :blk result;
+};
+
+const ret_encoding = blk:
+{
+    const encoding_count = 4;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i: u64 = 0;
+
+    result[i].op_code[0] = 0xc3;
+    result[i].NoOperandCombination();
+
+    i += 1;
+
+    result[i].op_code[0] = 0xcb;
+    result[i].NoOperandCombination();
+
+    i += 1;
+
+    result[i].op_code[0] = 0xc2;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 2);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xca;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.immediate, 2);
+
+    break :blk result;
+};
+
+pub const instructions = blk:
 {
     @setEvalBranchQuota(10_000);
     const result = std.enums.directEnumArray(Instruction.ID, []const Instruction, 0, .
@@ -524,7 +745,7 @@ pub const encodings = blk:
         .ltr = undefined,
         .lzcnt = undefined,
         .mfence = undefined,
-        .mov = undefined,
+        .mov = mov_encoding[0..],
         .movcr = undefined,
         .movdbg = undefined,
         .movbe = undefined,
@@ -547,14 +768,14 @@ pub const encodings = blk:
         .pause = undefined,
         .pdep = undefined,
         .pext = undefined,
-        .pop = undefined,
+        .pop = pop_encoding[0..],
         .popcnt = undefined,
         .popf = undefined,
         .por = undefined,
         .prefetch = undefined,
         .prefetchw = undefined,
         .ptwrite = undefined,
-        .push = undefined,
+        .push = push_encoding[0..],
         .pushf = undefined,
         .rotate = undefined,
         .rdfsbase = undefined,

@@ -123,7 +123,7 @@ pub const Value = struct
     id: ID,
     parent: *Value,
 
-    const ID = enum
+    pub const ID = enum
     {
         Undefined,
         Module,
@@ -625,7 +625,7 @@ const Intrinsic = struct
     }
 };
 
-const ConstantInt = struct
+pub const ConstantInt = struct
 {
     base: Value,
     int_value: u64,
