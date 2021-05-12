@@ -122,28 +122,8 @@ fn create_instruction(instruction_id: Mnemonic) Instruction
         .operand_count = 0,
     };
 
-    const zero_operand = Operand
-    {
-        .value = Operand.ID.none,
-        .size =  0,
-    };
-
-    print("Instruction address: 0x{x}. It ends at: 0x{x}\n", .{@ptrToInt(&instruction), @ptrToInt(&instruction) + @sizeOf(Instruction)});
-    print("Zero operand address: 0x{x}\n", .{@ptrToInt(&zero_operand)});
-
-    var i: u64 = 0;
-    print("Operand count: {}\n", .{instruction.operands.len});
-    //while (i < instruction.operands.len) : (i += 1)
-    //{
-        //instruction.operands[i] = zero_operand;
-    //}
-
-    //std.mem.set(Operand, instruction.operands[0..], zero_operand);
-
     return instruction;
 }
-
-var debug_ptr: usize = 0;
 
 const Function = struct
 {
@@ -234,6 +214,17 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                     Operand.ID.immediate =>
                     {
                         if (operand_encoding.id == Encoding.Operand.ID.immediate and operand_encoding.size == operand.size)
+                        {
+                            continue;
+                        }
+                    },
+                    Operand.ID.indirect =>
+                    {
+                        if (operand_encoding.id == Encoding.Operand.ID.register_or_memory)
+                        {
+                            continue;
+                        }
+                        if (operand_encoding.id == Encoding.Operand.ID.memory)
                         {
                             continue;
                         }
@@ -417,7 +408,40 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                 // Displacement
                 if (need_mod_rm and mod != @enumToInt(Encoding.Mod.register))
                 {
-                    panic("not implemented\n", .{});
+                    operand_index = 0;
+                    while (operand_index < operand_count) : (operand_index += 1)
+                    {
+                        const operand = instruction.operands[operand_index];
+
+                        switch (operand.value)
+                        {
+                            Operand.ID.indirect =>
+                            {
+                                switch (@intToEnum(Encoding.Mod, mod))
+                                {
+                                    Encoding.Mod.displacement8 =>
+                                    {
+                                        //executable.code_buffer.append(operand.value.indirect.displacement);
+                                        panic("ni:\n", .{});
+                                    },
+                                    Encoding.Mod.displacement32 =>
+                                    {
+                                        panic("ni:\n", .{});
+                                    },
+                                    else => {},
+                                }
+                            },
+                            Operand.ID.import_rip_relative =>
+                            {
+                                panic("ni\n", .{});
+                            },
+                            Operand.ID.rip_relative =>
+                            {
+                                panic("ni\n", .{});
+                            },
+                            else => {},
+                        }
+                    }
                 }
 
                 operand_index = 0;
@@ -844,38 +868,11 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                                     {
                                         const constant_int = @ptrCast(*IR.ConstantInt, operand);
                                         const constant_type = constant_int.base.type;
-                                        debug_ptr = @ptrToInt(constant_type);
-                                        compiler.log(Log.debug, "Type address: 0x{x}\n", .{debug_ptr});
-                                        var it = @intToPtr(*u8, debug_ptr);
-                                        var i: u64 = 0;
-                                        print("Debugging memory before:\n", .{});
-                                        while (i < @sizeOf(IR.Type)) : (i += 1)
-                                        {
-                                            print("0x{x}: 0x{x}\n", .{@ptrToInt(it), it.*});
-                                            it = @intToPtr(*u8, @ptrToInt(it) + 1);
-                                        }
-                                        var mov_i = Instruction
-                                        {
-                                            .id = Mnemonic.mov,
-                                            .operands = undefined,
-                                            .label = undefined,
-                                            .operand_count = 0,
-                                        };
-                                        print("0x{x}\n", .{@ptrToInt(&mov_i)});
-                                        i = 0;
-                                        it = @intToPtr(*u8, debug_ptr);
-                                        print("Debugging memory after:\n", .{});
-                                        while (i < @sizeOf(IR.Type)) : (i += 1)
-                                        {
-                                            print("0x{x}: 0x{x}\n", .{@ptrToInt(it), it.*});
-                                            it = @intToPtr(*u8, @ptrToInt(it) + 1);
-                                        }
+                                        var mov_i = create_instruction(Mnemonic.mov);
 
-
-                                        //var mov_i = create_instruction(Mnemonic.mov);
                                         const constant_size = constant_type.size;
                                         assert(constant_size != 0);
-                                        compiler.log(Log.debug, "Constant size: {}\n", .{constant_size});
+                                        compiler.log(Log.debug, "Constant size: {}", .{constant_size});
                                         assert(constant_size <= 8);
                                         const ret_register = register_allocator.allocate(compiler, operand, true);
                                         mov_i.add_operand(ret_register);

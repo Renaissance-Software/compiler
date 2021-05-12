@@ -1423,15 +1423,20 @@ const IntrinsicBuffer      = BucketArrayList(Intrinsic, 64);
 
 const Context = struct
 {
-    void_type: Type,
-    label_type: Type,
-    i1_type:  IntegerType,
-    i8_type:  IntegerType,
-    i16_type: IntegerType,
-    i32_type: IntegerType,
-    i64_type: IntegerType,
-    f32_type: FloatType,
-    f64_type: FloatType,
+    const PrimitiveTypes = struct
+    {
+        void_type: Type,
+        label_type: Type,
+        i1_type:  IntegerType,
+        i8_type:  IntegerType,
+        i16_type: IntegerType,
+        i32_type: IntegerType,
+        i64_type: IntegerType,
+        f32_type: FloatType,
+        f64_type: FloatType,
+    };
+
+    primitive_types: PrimitiveTypes,
 
     function_types: FunctionTypeBuffer,
     array_types: ArrayTypeBuffer,
@@ -1441,22 +1446,24 @@ const Context = struct
     constant_ints: ConstantIntBuffer,
     intrinsics: IntrinsicBuffer,
 
-    fn create(allocator: *Allocator) Context
+    fn create(allocator: *Allocator) *Context
     {
-        var context : Context = undefined;
+        var context = allocator.create(Context) catch |err| {
+            panic("Error allocating memory for the context\n", .{});
+        };
 
-        context.void_type = Type { .name = "void", .id = Type.ID.@"void", .size = 0 };
-        context.label_type = Type { .name = "label", .id = Type.ID.@"label", .size = 0};
+        context.primitive_types.void_type = Type { .name = "void", .id = Type.ID.@"void", .size = 0 };
+        context.primitive_types.label_type = Type { .name = "label", .id = Type.ID.@"label", .size = 0};
 
-        context.i1_type = IntegerType { .base =  Type { .name = "i1", .id = Type.ID.@"integer", .size = 0 }, .bits = 1, };
+        context.primitive_types.i1_type = IntegerType { .base =  Type { .name = "i1", .id = Type.ID.@"integer", .size = 0 }, .bits = 1, };
 
-        context.i8_type = IntegerType { .base =  Type { .name = "i8", .id = Type.ID.@"integer", .size = 1 }, .bits = 8, };
-        context.i16_type = IntegerType { .base =  Type { .name = "i16", .id = Type.ID.@"integer", .size = 2 }, .bits = 16, };
-        context.i32_type = IntegerType { .base =  Type { .name = "i32", .id = Type.ID.@"integer", .size = 4 }, .bits = 32, };
-        context.i64_type = IntegerType { .base =  Type { .name = "i64", .id = Type.ID.@"integer", .size = 8 }, .bits = 64, };
+        context.primitive_types.i8_type = IntegerType { .base =  Type { .name = "i8", .id = Type.ID.@"integer", .size = 1 }, .bits = 8, };
+        context.primitive_types.i16_type = IntegerType { .base =  Type { .name = "i16", .id = Type.ID.@"integer", .size = 2 }, .bits = 16, };
+        context.primitive_types.i32_type = IntegerType { .base =  Type { .name = "i32", .id = Type.ID.@"integer", .size = 4 }, .bits = 32, };
+        context.primitive_types.i64_type = IntegerType { .base =  Type { .name = "i64", .id = Type.ID.@"integer", .size = 8 }, .bits = 64, };
 
-        context.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float", .size = 4 }, .bits = 32, };
-        context.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float", .size = 8 }, .bits = 64, };
+        context.primitive_types.f32_type = FloatType { .base =  Type { .name = "f32", .id = Type.ID.@"float", .size = 4 }, .bits = 32, };
+        context.primitive_types.f64_type = FloatType { .base =  Type { .name = "f64", .id = Type.ID.@"float", .size = 8 }, .bits = 64, };
 
         context.function_types  = FunctionTypeBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
@@ -1485,23 +1492,23 @@ const Context = struct
 
     fn get_void_type(self: *Context) *Type
     {
-        return &self.void_type;
+        return &self.primitive_types.void_type;
     }
 
     fn get_label_type(self: *Context) *Type
     {
-        return &self.label_type;
+        return &self.primitive_types.label_type;
     }
 
     fn get_integer_type(self: *Context, bits: u16) *Type
     {
         switch (bits)
         {
-            1 => return @ptrCast(*Type, &self.i1_type),
-            8 => return @ptrCast(*Type, &self.i8_type),
-            16 => return @ptrCast(*Type, &self.i16_type),
-            32 => return @ptrCast(*Type, &self.i32_type),
-            64 => return @ptrCast(*Type, &self.i64_type),
+            1 => return @ptrCast(*Type,  &self.primitive_types.i1_type),
+            8 => return @ptrCast(*Type,  &self.primitive_types.i8_type),
+            16 => return @ptrCast(*Type, &self.primitive_types.i16_type),
+            32 => return @ptrCast(*Type, &self.primitive_types.i32_type),
+            64 => return @ptrCast(*Type, &self.primitive_types.i64_type),
             else =>
             {
                 panic("Integer type with {} bits not implemented\n", .{bits});
@@ -2510,7 +2517,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
         const ast_function_type = ast_function.type;
         assert(ast_function_type.value == Internal.Type.ID.function);
         // @TODO: get RNS function type
-        const function_type = get_type(allocator, &context, ast_function_type, &semantics_result.types);
+        const function_type = get_type(allocator, context, ast_function_type, &semantics_result.types);
         Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
     }
 
@@ -2529,7 +2536,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
         var function = module.functions.get(function_index).?;
 
         var builder = Builder {
-            .context = &context,
+            .context = context,
             .function = function,
             .basic_block_buffer = &basic_block_buffer,
             .instruction_buffer = &instruction_buffer,
@@ -2617,7 +2624,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
                 assert(ast_arg.value == Node.ID.var_decl);
                 assert(ast_arg.value.var_decl.is_function_arg);
                 const ast_arg_type = ast_arg.type;
-                const arg_type = get_type(allocator, &context, ast_arg_type, &semantics_result.types);
+                const arg_type = get_type(allocator, context, ast_arg_type, &semantics_result.types);
 
                 const index = argument_list.items.len;
                 const arg = Function.Argument {
