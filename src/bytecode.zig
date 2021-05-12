@@ -19,7 +19,7 @@ const UnaryOp = Parser.UnaryExpression.ID;
 const Semantics = @import("semantics.zig");
 const SemanticsResult = Semantics.SemanticsResult;
 
-const Type = struct
+pub const Type = struct
 {
     name: []const u8,
     size: u32,
@@ -1654,6 +1654,8 @@ const Context = struct
             .is_signed = is_signed,
         };
 
+        assert(new_int.base.type.size <= 8);
+
         const result = self.constant_ints.append(new_int) catch |err| {
             panic("Failed to allocate memory for constant int\n", .{});
         };
@@ -1769,6 +1771,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
                 const function_type = @ptrCast(*FunctionType, builder.function.type);
                 const return_type = function_type.ret_type;
+                assert(return_type.size <= 8);
 
                 if (do_node(allocator, compiler, builder, ast_types, ast_return_expression, return_type, null)) |ret_value|
                 {
@@ -1781,6 +1784,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     }
                     else
                     {
+                        assert(ret_value.type.size <= 8);
                         _ = builder.create_ret(allocator, ret_value);
                     }
                 }
@@ -1807,7 +1811,11 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         Node.ID.int_lit =>
         {
             assert(node.value_type == Node.ValueType.RValue);
-            result = @ptrCast(*Value, builder.context.get_constant_int(builder.context.get_integer_type(32), node.value.int_lit.value, node.value.int_lit.signed));
+            const int_lit_type = builder.context.get_integer_type(32);
+            print("Type address: 0x{x}\n", .{@ptrToInt(int_lit_type)});
+            assert(int_lit_type.size <= 8);
+            result = @ptrCast(*Value, builder.context.get_constant_int(int_lit_type, node.value.int_lit.value, node.value.int_lit.signed));
+            assert(result.?.type.size <= 8);
         },
         Node.ID.var_decl => 
         {

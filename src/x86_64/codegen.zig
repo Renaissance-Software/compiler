@@ -3,6 +3,7 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
+const print = std.debug.print;
 
 const Internal = @import("../compiler.zig");
 const Compiler = Internal.Compiler;
@@ -127,11 +128,22 @@ fn create_instruction(instruction_id: Mnemonic) Instruction
         .size =  0,
     };
 
-    std.mem.set(Operand, instruction.operands[0..], zero_operand);
+    print("Instruction address: 0x{x}. It ends at: 0x{x}\n", .{@ptrToInt(&instruction), @ptrToInt(&instruction) + @sizeOf(Instruction)});
+    print("Zero operand address: 0x{x}\n", .{@ptrToInt(&zero_operand)});
+
+    var i: u64 = 0;
+    print("Operand count: {}\n", .{instruction.operands.len});
+    //while (i < instruction.operands.len) : (i += 1)
+    //{
+        //instruction.operands[i] = zero_operand;
+    //}
+
+    //std.mem.set(Operand, instruction.operands[0..], zero_operand);
 
     return instruction;
 }
 
+var debug_ptr: usize = 0;
 
 const Function = struct
 {
@@ -556,6 +568,148 @@ fn get_stack_offset(ir_function: *IR.Function, alloca: *IR.Instruction) i32
     return stack_offset;
 }
 
+const RegisterAllocator = struct
+{
+    registers: [16]AllocatedRegister,
+
+    fn allocate(self: *RegisterAllocator, compiler: *Compiler, value: *IR.Value, return_register: bool) Operand
+    {
+        const size = value.type.size;
+        assert(size > 0 and size <= 8);
+        if (return_register)
+        {
+            var register_ptr = &self.registers[@enumToInt(AllocatedRegister.ID.A)];
+            if (register_ptr.value != null)
+            {
+                panic("Register A is already allocated with size: {}\n", .{register_ptr.size});
+            }
+
+            register_ptr.value = value;
+            register_ptr.size = @intCast(u8, size);
+
+            return Operand {
+                .value = Operand.Value {
+                    .register = Encoding.Register.A,
+                },
+                .size = size,
+            };
+        }
+        else
+        {
+            for (self.registers) |*register, i|
+            {
+                if (i == 4 or i == 5 or i == 6 or i == 7)
+                {
+                    continue;
+                }
+
+                if (register.value == null)
+                {
+                    register.value = value;
+                    register.size = @intCast(u8, size);
+
+                    return Operand {
+                        .value = Operand.Value {
+                            .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
+                        },
+                        .size = size,
+                    };
+                }
+
+                compiler.log(Log.debug, "Register {} is busy\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+            }
+
+            panic("All registers are busy\n", .{});
+        }
+    }
+
+    fn get_allocation(self: *RegisterAllocator, value: *IR.Value) Operand
+    {
+        for (self.registers) |*register, i|
+        {
+            if (i == 4 or i == 5 or i == 6 or i == 7)
+            {
+                continue;
+            }
+
+            if (register.value) |ir_value|
+            {
+                if (ir_value == value)
+                {
+                    return Operand {
+                        .value = Operand.Value {
+                            .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
+                        },
+                        .size = ir_value.type.size,
+                    };
+                }
+            }
+
+            compiler.log(Log.debug, "Register {} is not allocated with the value\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+        }
+    }
+
+    fn free(self: *RegisterAllocator, register: Encoding.Register) void
+    {
+    }
+
+    fn create() RegisterAllocator
+    {
+        const result = RegisterAllocator
+        {
+            .registers = std.enums.directEnumArray(AllocatedRegister.ID, AllocatedRegister, 4, .
+            {
+                .A   = AllocatedRegister { .size = 0, .value = null, },
+                .C   = AllocatedRegister { .size = 0, .value = null, },
+                .D   = AllocatedRegister { .size = 0, .value = null, },
+                .B   = AllocatedRegister { .size = 0, .value = null, },
+                .r8  = AllocatedRegister { .size = 0, .value = null, },
+                .r9  = AllocatedRegister { .size = 0, .value = null, },
+                .r10 = AllocatedRegister { .size = 0, .value = null, },
+                .r11 = AllocatedRegister { .size = 0, .value = null, },
+                .r12 = AllocatedRegister { .size = 0, .value = null, },
+                .r13 = AllocatedRegister { .size = 0, .value = null, },
+                .r14 = AllocatedRegister { .size = 0, .value = null, },
+                .r15 = AllocatedRegister { .size = 0, .value = null, },
+            }),
+        };
+
+        return result;
+    }
+
+    const AllocatedRegister = struct
+    {
+        value: ?*IR.Value,
+        size: u8,
+
+        const ID = enum
+        {
+            A = 0,
+            C = 1,
+            D = 2,
+            B = 3,
+            // SP = 4,
+            // BP = 5,
+            // SI = 6,
+            // DI = 7,
+
+            r8 = 8,
+            r9 = 9,
+            r10 = 10,
+            r11 = 11,
+            r12 = 12,
+            r13 = 13,
+            r14 = 14,
+            r15 = 15,
+
+            pub const AH: u8 = 4;
+            pub const CH: u8 = 5;
+            pub const DH: u8 = 6;
+            pub const BH: u8 = 7;
+        };
+    };
+};
+
 pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) void
 {
     compiler.current_module = Compiler.Module.machine_code;
@@ -566,6 +720,7 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
         .code_base_RVA = 0,
         .code_buffer = undefined,
     };
+
 
     for (module.functions.list.items) |function_bucket|
     {
@@ -580,6 +735,7 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                 .instructions = InstructionBuffer.init(allocator),
                 .start_address = 0,
             };
+            var register_allocator = RegisterAllocator.create();
 
             executable.functions.append(mc_function_value) catch |err| {
                 panic("Error allocating a new MC function\n", .{});
@@ -664,9 +820,16 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                             const stack_offset = get_stack_offset(function, alloca);
                             compiler.log(Log.debug, "Stack offset for load: {}\n", .{stack_offset});
                             const load_size = alloca.value.alloca.type.size;
+                            assert(load_size <= 8);
                             const load_operand = stack_operand(stack_offset, load_size);
 
-                            panic("TODO: register allocator\n", .{});
+                            const loaded_register = register_allocator.allocate(compiler, @ptrCast(*IR.Value, instruction), false);
+                            var load_mov = create_instruction(Mnemonic.mov);
+                            load_mov.add_operand(loaded_register);
+                            load_mov.add_operand(load_operand);
+                            mc_function.instructions.append(load_mov) catch |err| {
+                                panic("Error allocating new instruction\n", .{});
+                            };
                         },
                         IR.Instruction.ID.Ret =>
                         {
@@ -679,26 +842,54 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                                 {
                                     IR.Value.ID.ConstantInt =>
                                     {
-                                        var mov_i = create_instruction(Mnemonic.mov);
-
                                         const constant_int = @ptrCast(*IR.ConstantInt, operand);
-                                        const constant_size = constant_int.base.type.size;
-                                        assert(constant_size != 0);
-                                        mov_i.add_operand(Operand 
-                                            {
-                                                .value = Operand.Value {
-                                                    .register = Encoding.Register.A,
-                                                },
-                                                .size = constant_size,
-                                            });
+                                        const constant_type = constant_int.base.type;
+                                        debug_ptr = @ptrToInt(constant_type);
+                                        compiler.log(Log.debug, "Type address: 0x{x}\n", .{debug_ptr});
+                                        var it = @intToPtr(*u8, debug_ptr);
+                                        var i: u64 = 0;
+                                        print("Debugging memory before:\n", .{});
+                                        while (i < @sizeOf(IR.Type)) : (i += 1)
+                                        {
+                                            print("0x{x}: 0x{x}\n", .{@ptrToInt(it), it.*});
+                                            it = @intToPtr(*u8, @ptrToInt(it) + 1);
+                                        }
+                                        var mov_i = Instruction
+                                        {
+                                            .id = Mnemonic.mov,
+                                            .operands = undefined,
+                                            .label = undefined,
+                                            .operand_count = 0,
+                                        };
+                                        print("0x{x}\n", .{@ptrToInt(&mov_i)});
+                                        i = 0;
+                                        it = @intToPtr(*u8, debug_ptr);
+                                        print("Debugging memory after:\n", .{});
+                                        while (i < @sizeOf(IR.Type)) : (i += 1)
+                                        {
+                                            print("0x{x}: 0x{x}\n", .{@ptrToInt(it), it.*});
+                                            it = @intToPtr(*u8, @ptrToInt(it) + 1);
+                                        }
 
+
+                                        //var mov_i = create_instruction(Mnemonic.mov);
+                                        const constant_size = constant_type.size;
+                                        assert(constant_size != 0);
+                                        compiler.log(Log.debug, "Constant size: {}\n", .{constant_size});
+                                        assert(constant_size <= 8);
+                                        const ret_register = register_allocator.allocate(compiler, operand, true);
+                                        mov_i.add_operand(ret_register);
                                         const constant_operand = constant_int_operand(constant_int);
                                         mov_i.add_operand(constant_operand);
-
 
                                         mc_function.instructions.append(mov_i) catch |err| {
                                             panic("Error allocating memory for a new MC instruction", .{});
                                         };
+                                    },
+                                    IR.Value.ID.Instruction =>
+                                    {
+                                        const load_instruction = @ptrCast(*IR.Instruction, operand);
+                                        assert(load_instruction.id == IR.Instruction.ID.Load);
                                     },
                                     else => panic("ni: {}\n", .{operand.id}),
                                 }
