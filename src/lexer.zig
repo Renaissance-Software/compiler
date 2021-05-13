@@ -6,13 +6,61 @@ const panic = std.debug.panic;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
-const Internal = @import("compiler.zig");
-const TypeBuffer = Internal.TypeBuffer;
-const KeywordID = Internal.KeywordID;
-const Type = Internal.Type;
-const Compiler = Internal.Compiler;
-const Log = Compiler.LogLevel;
-const Operator = Internal.Operator;
+const log = std.log.scoped(.lexer);
+
+pub const KeywordID = enum
+{
+    @"if",
+    @"else",
+    @"for",
+    @"while",
+    @"break",
+    @"continue",
+    @"return",
+    @"struct",
+};
+
+pub const Operator = enum
+{
+    Declaration,
+    LeftParenthesis,
+    RightParenthesis,
+    LeftBracket,
+    RightBracket,
+    Dot,
+    Plus,
+    Minus,
+    AddressOf,
+    Dereference,
+    Multiplication,
+    Division,
+    Modulus,
+    LeftShift,
+    RightShift,
+    LessThan,
+    LessOrEqualThan,
+    GreaterThan,
+    GreaterOrEqualThan,
+    Equal,
+    NotEqual,
+    BitwiseAnd,
+    BitwiseOr,
+    BitwiseXOR,
+    Assignment,
+    PlusAssignment,
+    MinusAssignment,
+    MultiplicationAssignment,
+    DivisionAssignment,
+    ModulusAssignment,
+    RightShiftAssignment,
+    LeftShiftAssignment,
+    BitwiseAndAssignment,
+    BitwiseOrAssignment,
+    BitwiseXORAssignment,
+    Arrow,
+    Constant,
+};
+
 
 pub const Token = struct
 {
@@ -114,7 +162,6 @@ pub const Token = struct
 const Tokenizer = struct
 {
     tokens: ArrayList(Token),
-    compiler: *Compiler,
 
     fn new_token(self: *Tokenizer, value: Token.Value, start: u64, end: u64, line: u32, column: u32) void
     {
@@ -125,7 +172,7 @@ const Tokenizer = struct
             .line = line,
             .column = column,
         };
-        self.compiler.log(Log.debug, "Added new token: {}\n", .{token});
+        log.debug("Added new token: {}\n", .{token});
         self.tokens.append(token) catch |err| {
             panic("Failed to allocate a new token\n", .{});
         };
@@ -151,15 +198,13 @@ pub const LexerResult = struct
     line_count: u32,
 };
 
-pub fn lexical_analyze(allocator: *Allocator, compiler: *Compiler, src_file: [] const u8) LexerResult
+pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
 {
-    compiler.current_module = Compiler.Module.lexer;
-    compiler.log(Compiler.LogLevel.debug, "\n==============\nLEXER\n==============\n\n", .{});
+    log.debug("\n==============\nLEXER\n==============\n\n", .{});
 
     var tokenizer = Tokenizer
     {
         .tokens = ArrayList(Token).init(allocator),
-        .compiler = compiler,
     };
 
     var current_line_start: u64 = 0;

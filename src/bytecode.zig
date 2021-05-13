@@ -7,10 +7,6 @@ const ArrayList = std.ArrayList;
 
 const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
 
-const Internal = @import("compiler.zig");
-const Compiler = Internal.Compiler;
-const Log = Compiler.LogLevel;
-
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
 const BinaryOp = Parser.BinaryExpression.ID;
@@ -18,6 +14,12 @@ const UnaryOp = Parser.UnaryExpression.ID;
 
 const Semantics = @import("semantics.zig");
 const SemanticsResult = Semantics.SemanticsResult;
+
+const log = std.log.scoped(.bytecode);
+const Root = @import("main.zig");
+const log_level = Root.log_level;
+
+const AST_Types = @import("ast_types.zig");
 
 pub const Type = struct
 {
@@ -1742,12 +1744,11 @@ pub const ValueSide = enum
     LValue,
 };
 
-fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_types: *Internal.TypeBuffer, node: *Node, expected_type: ?*Type, expected_value: ?*Value) ?*Value
+fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeBuffer, node: *Node, expected_type: ?*Type, expected_value: ?*Value) ?*Value
 {
     var result: ?*Value = null;
     var instruction_count_before : u64 = 0; 
-    const should_log = compiler.should_log(Log.debug);
-    if (should_log)
+    if (false)
     {
         instruction_count_before = count_instructions(builder);
     }
@@ -1761,7 +1762,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 if (!builder.emitted_return)
                 {
-                    _ = do_node(allocator, compiler, builder, ast_types, ast_statement, null, null);
+                    _ = do_node(allocator, builder, ast_types, ast_statement, null, null);
                 }
             }
         },
@@ -1780,7 +1781,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 const return_type = function_type.ret_type;
                 assert(return_type.size <= 8);
 
-                if (do_node(allocator, compiler, builder, ast_types, ast_return_expression, return_type, null)) |ret_value|
+                if (do_node(allocator, builder, ast_types, ast_return_expression, return_type, null)) |ret_value|
                 {
                     if (builder.conditional_alloca)
                     {
@@ -1916,17 +1917,17 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             assert(ast_loop_prefix.value.block_expr.statements.items.len == 1);
             const ast_condition = ast_loop_prefix.value.block_expr.statements.items[0];
 
-            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type(), null)) |condition|
+            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type(), null)) |condition|
             {
                 _ = builder.create_conditional_br(allocator, loop_body_block, loop_end_block, condition);
                 builder.append_to_current_function(loop_body_block);
                 builder.set_block(loop_body_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_body, null, null);
+                _ = do_node(allocator, builder, ast_types, ast_loop_body, null, null);
 
                 _ = builder.create_br(allocator, loop_postfix_block);
                 builder.append_to_current_function(loop_postfix_block);
                 builder.set_block(loop_postfix_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_loop_postfix, null, null);
+                _ = do_node(allocator, builder, ast_types, ast_loop_postfix, null, null);
 
                 if (!builder.emitted_return)
                 {
@@ -1960,9 +1961,9 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 {
                     Type.ID.integer, Type.ID.pointer, Type.ID.array =>
                     {
-                        if (do_node(allocator, compiler, builder, ast_types, ast_right, left_type, null)) |right_value|
+                        if (do_node(allocator, builder, ast_types, ast_right, left_type, null)) |right_value|
                         {
-                            _ = do_node(allocator, compiler, builder, ast_types, ast_left, null, right_value);
+                            _ = do_node(allocator, builder, ast_types, ast_left, null, right_value);
                         }
                         else
                         { 
@@ -1980,9 +1981,9 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                     const rtype = get_type(allocator, builder.context, ast_right.type, ast_types);
                     assert(ltype == rtype);
 
-                    if (do_node(allocator, compiler, builder, ast_types, ast_left, ltype, null)) |left|
+                    if (do_node(allocator, builder, ast_types, ast_left, ltype, null)) |left|
                     {
-                        if (do_node(allocator, compiler, builder, ast_types, ast_right, ltype, expected_value)) |right|
+                        if (do_node(allocator, builder, ast_types, ast_right, ltype, expected_value)) |right|
                         {
                             var binary_op_instruction: *Instruction = undefined;
 
@@ -2019,7 +2020,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                             }
 
                             result = @ptrCast(*Value, binary_op_instruction);
-                            compiler.log(Log.debug, "Left type: {} --- Right type: {} --- Result type: {}\n", .{ltype, rtype, result.?.type});
+                            log.debug("Left type: {} --- Right type: {} --- Result type: {}\n", .{ltype, rtype, result.?.type});
                             // assert(result.?.type == ltype and result.?.type == rtype);
                         }
                         else
@@ -2066,7 +2067,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
 
             var exit_block_in_use = true;
-            if (do_node(allocator, compiler, builder, ast_types, ast_condition, builder.context.get_boolean_type(), null)) |condition|
+            if (do_node(allocator, builder, ast_types, ast_condition, builder.context.get_boolean_type(), null)) |condition|
             {
                 if (if_block != else_block)
                 {
@@ -2090,7 +2091,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
             builder.append_to_current_function(if_block);
             builder.set_block(if_block);
-            _ = do_node(allocator, compiler, builder, ast_types, ast_if_block, null, null);
+            _ = do_node(allocator, builder, ast_types, ast_if_block, null, null);
             const if_block_returned = builder.emitted_return;
 
             _ = builder.create_br(allocator, exit_block);
@@ -2101,7 +2102,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             {
                 builder.append_to_current_function(else_block);
                 builder.set_block(else_block);
-                _ = do_node(allocator, compiler, builder, ast_types, ast_else_block, null, null);
+                _ = do_node(allocator, builder, ast_types, ast_else_block, null, null);
 
                 _ = builder.create_br(allocator, exit_block);
             }
@@ -2154,7 +2155,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 {
                     const arg_type = get_type(allocator, builder.context, ast_arg.type, ast_types);
                     assert(arg_type == function_type.arg_types[i]);
-                    if (do_node(allocator, compiler, builder, ast_types, ast_arg, arg_type, null)) |arg|
+                    if (do_node(allocator, builder, ast_types, ast_arg, arg_type, null)) |arg|
                     {
                         arg.type = arg_type;
                         argument_buffer[i] = arg;
@@ -2187,7 +2188,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
                 },
                 Parser.UnaryExpression.ID.Dereference =>
                 {
-                    assert(ast_type.value == Internal.Type.ID.pointer);
+                    assert(ast_type.value == AST_Types.Type.ID.pointer);
                     const pointer_type = get_type(allocator, builder.context, ast_type, ast_types);
                     const pointer_load = builder.create_load(allocator, pointer_type, var_alloca);
 
@@ -2221,7 +2222,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 
             for (node.value.array_lit.elements.items) |ast_array_lit_elem|
             {
-                if (do_node(allocator, compiler, builder, ast_types, ast_array_lit_elem, array_type.type, null)) |array_lit|
+                if (do_node(allocator, builder, ast_types, ast_array_lit_elem, array_type.type, null)) |array_lit|
                 {
                     array_values.append(array_lit) catch |err| {
                         panic("Error appending array literal element\n", .{});
@@ -2241,7 +2242,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const ast_array_subscript_expr = node.value.array_subscript_expr.expression;
             const ast_array_index_expr = node.value.array_subscript_expr.index;
 
-            const index_value = do_node(allocator, compiler, builder, ast_types, ast_array_index_expr, null, null);
+            const index_value = do_node(allocator, builder, ast_types, ast_array_index_expr, null, null);
             if (index_value) |index_const|
             {
                 assert(ast_array_subscript_expr.value == Node.ID.resolved_identifier);
@@ -2290,7 +2291,7 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
             const ast_struct_expr = node.value.field_access_expr.expression;
             const struct_type = get_type(allocator, builder.context, ast_struct_expr.type, ast_types);
             // @Info: this should emit a struct load
-            if (do_node(allocator, compiler, builder, ast_types, ast_struct_expr, struct_type, null)) |struct_expr|
+            if (do_node(allocator, builder, ast_types, ast_struct_expr, struct_type, null)) |struct_expr|
             {
                 const ast_field_expr = node.value.field_access_expr.field_expr;
                 assert(ast_field_expr.value == Node.ID.field_expr);
@@ -2323,15 +2324,15 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
         else => panic("Not implemented: {}\n", .{node.value}),
     }
 
-    if (should_log)
+    if (false)
     {
         const instruction_count_after: u64 = count_instructions(builder);
         const instruction_count = instruction_count_after - instruction_count_before;
-        compiler.log(Log.debug, "Call to do_node for {s} generated {} instructions\n===========================\n", .{@tagName(node.value), instruction_count});
+        log.debug("Call to do_node for {s} generated {} instructions\n===========================\n", .{@tagName(node.value), instruction_count});
         const expand = false;
         if (expand)
         {
-            compiler.log("Expression: {}\n===========================\n", .{node.value});
+            log.debug("Expression: {}\n===========================\n", .{node.value});
         }
     }
 
@@ -2339,11 +2340,11 @@ fn do_node(allocator: *Allocator, compiler: *Compiler, builder: *Builder, ast_ty
 }
 
 /// This function gets the compiler (AST-Lexer) type and transform it into a "LLVM" type
-fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, ast_types: *Internal.TypeBuffer) *Type
+fn get_type(allocator: *Allocator, context: *Context, ast_type: *AST_Types.Type, ast_types: *AST_Types.TypeBuffer) *Type
 {
     switch (ast_type.value)
     {
-        Internal.Type.ID.function => 
+        AST_Types.Type.ID.function => 
         {
             const ret_type = get_type(allocator, context, ast_type.value.function.ret_type, ast_types);
             const arg_count = ast_type.value.function.arg_types.items.len;
@@ -2418,25 +2419,25 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             };
             return @ptrCast(*Type, result);
         },
-        Internal.Type.ID.integer =>
+        AST_Types.Type.ID.integer =>
         {
             const bits = ast_type.value.integer.bits;
             const result = context.get_integer_type(bits);
             return result;
         },
-        Internal.Type.ID.void_type =>
+        AST_Types.Type.ID.void_type =>
         {
             const result = context.get_void_type();
             return result;
         },
-        Internal.Type.ID.pointer =>
+        AST_Types.Type.ID.pointer =>
         {
             const ast_appointee = ast_type.value.pointer.type;
             const appointee = get_type(allocator, context, ast_appointee, ast_types);
             const result = context.get_pointer_type(appointee);
             return result;
         },
-        Internal.Type.ID.array =>
+        AST_Types.Type.ID.array =>
         {
             const ast_array_type = ast_type.value.array.type;
             const ast_array_length = ast_type.value.array.count;
@@ -2444,7 +2445,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const result = context.get_array_type(array_type, ast_array_length);
             return result;
         },
-        Internal.Type.ID.structure =>
+        AST_Types.Type.ID.structure =>
         {
             const ast_struct_name = ast_type.value.structure.name;
             var field_types = ArrayList(*Type).initCapacity(allocator, ast_type.value.structure.fields.len) catch |err| {
@@ -2462,7 +2463,7 @@ fn get_type(allocator: *Allocator, context: *Context, ast_type: *Internal.Type, 
             const result = context.get_struct_type(field_types.items, ast_struct_name);
             return result;
         },
-        Internal.Type.ID.unresolved =>
+        AST_Types.Type.ID.unresolved =>
         {
             panic("Unreachable!\n", .{});
         },
@@ -2492,10 +2493,9 @@ fn get_size(type_: *Type) usize
     }
 }
 
-pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *SemanticsResult) Module
+pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
 {
-    compiler.current_module = Compiler.Module.bytecode;
-    compiler.log(Compiler.LogLevel.debug, "\n==============\nIR\n==============\n\n", .{});
+    log.debug("\n==============\nIR\n==============\n\n", .{});
 
     var module = Module {
         .base = Value {
@@ -2515,7 +2515,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
     {
         assert(ast_function.value == Node.ID.function_decl);
         const ast_function_type = ast_function.type;
-        assert(ast_function_type.value == Internal.Type.ID.function);
+        assert(ast_function_type.value == AST_Types.Type.ID.function);
         // @TODO: get RNS function type
         const function_type = get_type(allocator, context, ast_function_type, &semantics_result.types);
         Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
@@ -2649,7 +2649,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
 
         builder.function.arguments = argument_list.items;
 
-        _ = do_node(allocator, compiler, &builder, &semantics_result.types, ast_main_block, null, null);
+        _ = do_node(allocator, &builder, &semantics_result.types, ast_main_block, null, null);
 
         if (builder.conditional_alloca)
         {
@@ -2714,7 +2714,7 @@ pub fn encode(allocator: *Allocator, compiler: *Compiler, semantics_result: *Sem
             // @TODO: figure out how to return here without causing a panic
             _ = builder.create_ret_void(allocator);
         }
-        print_function(compiler, allocator, builder.context, function);
+        print_function(allocator, builder.context, function);
     }
 
     return module;
@@ -2983,9 +2983,9 @@ const InstructionPrinter = struct
     }
 };
 
-fn print_function(compiler: *Compiler, allocator: *Allocator, context: *Context, function: *Function) void
+fn print_function(allocator: *Allocator, context: *Context, function: *Function) void
 {
-    if (compiler.should_log(Compiler.LogLevel.info))
+    if (log_level == std.log.Level.debug and Root.log_bytecode)
     {
         // @TODO: change hardcoding (starting_id, next_id)
         var slot_tracker = SlotTracker {

@@ -505,12 +505,14 @@ const mov_encoding = blk:
 
     result[i].op_code[0] = 0xc6;
     result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 0;
     result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
     result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
 
     i += 1;
 
     result[i].op_code[0] = 0xc7;
+    result[i].options.digit = 0;
     result[i].options.option = Instruction.Options.Option.Digit;
     result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
     result[i].RegisterMemory_Immediate(Rex.None, 4, 4);

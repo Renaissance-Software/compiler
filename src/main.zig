@@ -8,26 +8,27 @@ const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Semantics = @import("semantics.zig");
 const IR = @import("bytecode.zig");
-const Internal = @import("compiler.zig");
-const Compiler = Internal.Compiler;
-const Type = Internal.Type;
+const Types = @import("ast_types.zig");
+const Type = Types.Type;
+const TypeBuffer = Types.TypeBuffer;
+const logger = std.log.scoped(.general);
 
 const CG = @import("x86_64/codegen.zig");
 
-fn compiler_work_on_file_content(allocator: *Allocator, compiler: *Compiler, file_content: []const u8) bool
+fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8) bool
 {
-    var types : Internal.TypeBuffer = Type.init(allocator);
+    var types: TypeBuffer = Types.init(allocator);
 
-    const lexer_result = Lexer.lexical_analyze(allocator, compiler, file_content);
+    const lexer_result = Lexer.lexical_analyze(allocator, file_content);
     // @Info: lexer_result.line_count is ignored
 
-    var parser_result = Parser.parse(allocator, compiler, lexer_result);
+    var parser_result = Parser.parse(allocator, lexer_result);
 
-    var semantics_result = Semantics.analyze(compiler, allocator, &parser_result);
+    var semantics_result = Semantics.analyze(allocator, &parser_result);
 
-    var module = IR.encode(allocator, compiler, &semantics_result);
+    var module = IR.encode(allocator, &semantics_result);
 
-    CG.encode(compiler, allocator, &module);
+    CG.encode(allocator, &module);
 
     return true;
 }
@@ -39,26 +40,12 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     const allocator = &arena.allocator;
     const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
 
-    const log_general = true;
-    const log_lexer = false;
-    const log_parser = false;
-    const log_semantics = false;
-    const log_bytecode = false;
-    const log_machine_code = true;
-
-    var compiler = Compiler
-    {
-        .log_level = Compiler.LogLevel.debug,
-        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode, log_machine_code),
-        .current_module = Compiler.Module.general,
-    };
-
-        compiler.log(Compiler.LogLevel.info, "\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+    logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
     defer allocator.free(file_content);
 
-    if (!compiler_work_on_file_content(allocator, &compiler, file_content))
+    if (!compiler_work_on_file_content(allocator, file_content))
     {
-        compiler.report_error("Compiler workflow failed\n", .{});
+        logger.err("Compiler workflow failed\n", .{});
     }
 }
 
@@ -74,14 +61,6 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     const log_semantics = true;
     const log_bytecode = true;
 
-    var compiler = Compiler
-    {
-        .log_level = Compiler.LogLevel.debug,
-        .module_log = Compiler.get_log_module(log_general, log_lexer, log_parser, log_semantics, log_bytecode),
-        .current_module = Compiler.Module.general,
-    };
-
-
     var test_file_contents: [test_files.len][]const u8 = undefined;
 
     for (test_files) |test_filename, i|
@@ -95,7 +74,7 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     {
         for (test_file_contents) |test_file_content, file_index|
         {
-            //compiler.log(Compiler.LogLevel.info, "\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+            logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
             if (!compiler_work_on_file_content(allocator, &compiler, test_file_content))
             {
                 compiler.report_error("Compiler workflow failed\n", .{});
@@ -128,7 +107,7 @@ const test_files = [_][]const u8
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
@@ -144,8 +123,8 @@ pub fn main() anyerror!void
         }
         else
         {
-            //const index = 11;
-            const index = test_files.len - 1;
+            const index = 3;
+            //const index = test_files.len - 1;
             try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }
@@ -153,4 +132,27 @@ pub fn main() anyerror!void
     {
         try compile_load_all_tests(page_allocator, cwd);
     }
+}
+
+pub const log_level: std.log.Level = .debug;
+pub const log_general = true;
+pub const log_lexer = false;
+pub const log_parser = false;
+pub const log_semantics = false;
+pub const log_bytecode = false;
+pub const log_machine_code = true;
+
+pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
+{
+    //switch (scope)
+    //{
+        //.default => print("Logging default: ", .{}),
+        //else => panic("not implemented: {}\n", .{scope}),
+    //}
+
+    // Print the message to stderr, silently ignoring any errors
+    const held = std.debug.getStderrMutex().acquire();
+    defer held.release();
+    const stderr = std.io.getStdErr().writer();
+    nosuspend stderr.print(format, args) catch return;
 }

@@ -6,8 +6,6 @@ const print = std.debug.print;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
-const Internal = @import("compiler.zig");
-
 const Parser = @import("parser.zig");
 const Node = Parser.Node;
 const NodeBuffer = Parser.NodeBuffer;
@@ -17,13 +15,20 @@ const TypeIdentifier = Parser.TypeIdentifier;
 const BinaryExpression = Parser.BinaryExpression;
 const UnaryExpression = Parser.UnaryExpression;
 
-const Compiler = Internal.Compiler;
-const Log = Compiler.LogLevel;
-const TypeBuffer = Internal.TypeBuffer;
-const Type = Internal.Type;
-const TypeRefBuffer = Internal.TypeRefBuffer;
+const Types = @import("ast_types.zig");
+const TypeBuffer = Types.TypeBuffer;
+const Type = Types.Type;
+const TypeRefBuffer = Types.TypeRefBuffer;
 
-fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_analysis: *Node, types: *TypeBuffer, node_buffer: *NodeBuffer) *Type
+const log = std.log.scoped(.semantics);
+
+pub fn semantics_error(comptime format: []const u8, args: anytype) noreturn
+{
+    log.err(format, args);
+    panic("Error in the semantics stage\n", .{});
+}
+
+fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, types: *TypeBuffer, node_buffer: *NodeBuffer) *Type
 {
     switch (type_in_analysis.value)
     {
@@ -36,12 +41,12 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                     const name = type_in_analysis.value.type_identifier.value.structure.name;
                     if (Type.get_type_by_name(types, name)) |type_found|
                     {
-                        compiler.log(Log.debug, "Type already found\n", .{});
+                        log.debug("Type already found\n", .{});
                         return type_found;
                     }
                     else
                     {
-                        compiler.log(Log.debug, "Type not found. Must create\n", .{});
+                        log.debug("Type not found. Must create\n", .{});
                     }
 
                     const struct_name = type_in_analysis.value.type_identifier.value.structure.name;
@@ -51,7 +56,7 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                     {
                         // @Info: struct fields are var decls
                         assert(ast_field.value == Node.ID.var_decl);
-                        const field_type = analyze_type_declaration(compiler, allocator, ast_field.value.var_decl.var_type, types, node_buffer);
+                        const field_type = analyze_type_declaration(allocator, ast_field.value.var_decl.var_type, types, node_buffer);
                         const field_name = ast_field.value.var_decl.name;
 
                         const new_field = Type.Struct.Field
@@ -80,7 +85,7 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
 
                     if (type_in_analysis.value.type_identifier.value.function.return_type) |return_type_node|
                     {
-                        const return_type = analyze_type_declaration(compiler, allocator, return_type_node, types, node_buffer);
+                        const return_type = analyze_type_declaration(allocator, return_type_node, types, node_buffer);
                         function_type.ret_type = return_type;
                     }
                     else
@@ -93,7 +98,7 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
 
                     for (type_in_analysis.value.type_identifier.value.function.arg_types.items) |*arg_type_node|
                     {
-                        const arg_type = analyze_type_declaration(compiler, allocator, arg_type_node.*, types, node_buffer);
+                        const arg_type = analyze_type_declaration(allocator, arg_type_node.*, types, node_buffer);
                         function_type.arg_types.append(arg_type) catch |err| {
                             panic("Error allocating argument type\n", .{});
                         };
@@ -112,13 +117,13 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                     }
                     else
                     {
-                        compiler.report_error("Type {s} not found\n", .{name});
+                        semantics_error("Type {s} not found\n", .{name});
                     }
                 },
                 TypeIdentifier.ID.pointer =>
                 {
                     const appointee_node = type_in_analysis.value.type_identifier.value.pointer.type;
-                    const appointee_type = analyze_type_declaration(compiler, allocator, appointee_node, types, node_buffer);
+                    const appointee_type = analyze_type_declaration(allocator, appointee_node, types, node_buffer);
                     const pointer_type = Type.get_pointer_type(appointee_type, types);
                     return pointer_type;
                 },
@@ -126,8 +131,8 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
                 {
                     const array_elem_type_node = type_in_analysis.value.type_identifier.value.array.type;
                     const array_length_node = type_in_analysis.value.type_identifier.value.array.len_expr;
-                    const array_elem_type = analyze_type_declaration(compiler, allocator, array_elem_type_node, types, node_buffer);
-                    const array_length_constant = resolve_compile_time_uint_constant(compiler, array_length_node);
+                    const array_elem_type = analyze_type_declaration(allocator, array_elem_type_node, types, node_buffer);
+                    const array_length_constant = resolve_compile_time_uint_constant(array_length_node);
                     const array_type = Type.get_array_type(array_elem_type, array_length_constant, types);
                     return array_type;
                 },
@@ -138,7 +143,7 @@ fn analyze_type_declaration(compiler: *Compiler, allocator: *Allocator, type_in_
     }
 }
 
-fn resolve_compile_time_uint_constant(compiler: *Compiler, node: *Node) usize
+fn resolve_compile_time_uint_constant(node: *Node) usize
 {
     switch (node.value)
     {
@@ -147,7 +152,7 @@ fn resolve_compile_time_uint_constant(compiler: *Compiler, node: *Node) usize
             const int_lit_value = node.value.int_lit.value;
             if (node.value.int_lit.signed)
             {
-                compiler.report_error("Expected unsigned element, value is signed: {}\n", .{- @intCast(i64, int_lit_value)});
+                semantics_error("Expected unsigned element, value is signed: {}\n", .{- @intCast(i64, int_lit_value)});
             }
 
             return int_lit_value;
@@ -156,9 +161,9 @@ fn resolve_compile_time_uint_constant(compiler: *Compiler, node: *Node) usize
     }
 }
 
-pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
+pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
 {
-    compiler.log(Log.debug, "Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
+    log.debug("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
 
     switch (lvalue_type.value)
     {
@@ -170,7 +175,7 @@ pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *
                 {
                     assert(right.type.value == Type.ID.unresolved);
                     right.type = lvalue_type;
-                    compiler.log(Log.debug, "Integer literal type resolved\n", .{});
+                    log.debug("Integer literal type resolved\n", .{});
                     // @TODO: make sure we have enough bytes in the lvalue type
 
                     return lvalue_type;
@@ -185,7 +190,7 @@ pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *
                 =>
                 {
                     const rvalue_type = right.type;
-                    compiler.log(Log.debug, "{}\n", .{rvalue_type});
+                    log.debug("{}\n", .{rvalue_type});
                     if (lvalue_type == rvalue_type)
                     {
                         return lvalue_type;
@@ -245,10 +250,10 @@ pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *
             {
                 Node.ID.array_lit =>
                 {
-                    const result = typecheck(compiler, lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
+                    const result = typecheck(lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
                     assert(result.value != Type.ID.unresolved);
                     // @TODO: typecheck here
-                    compiler.log(Log.debug, "Array literal resolved into {}\n", .{result});
+                    log.debug("Array literal resolved into {}\n", .{result});
                     right.type = lvalue_type;
                     return lvalue_type;
                 },
@@ -269,10 +274,10 @@ pub fn typecheck(compiler: *Compiler, lvalue_type: *Type, right: *Node, types: *
         else => panic("ni: {}\n", .{lvalue_type.value}),
     }
 
-    compiler.report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
+    semantics_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
 }
 
-pub fn find_variable(compiler: *Compiler, allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer) *Node
+pub fn find_variable(allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer) *Node
 {
     for (current_function.value.function_decl.arguments.items) |arg|
     {
@@ -290,10 +295,10 @@ pub fn find_variable(compiler: *Compiler, allocator: *Allocator, current_functio
         }
     }
 
-    compiler.report_error("Can't find variable name: {s}\n", .{name});
+    semantics_error("Can't find variable name: {s}\n", .{name});
 }
 
-pub fn find_function_decl(compiler: *Compiler, allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer, functions: *NodeRefBuffer) *Node
+pub fn find_function_decl(allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer, functions: *NodeRefBuffer) *Node
 {
     for (functions.items) |function_decl|
     {
@@ -303,10 +308,10 @@ pub fn find_function_decl(compiler: *Compiler, allocator: *Allocator, current_fu
         }
     }
 
-    compiler.report_error("Can't find function name: {s}\n", .{name});
+    semantics_error("Can't find function name: {s}\n", .{name});
 }
 
-pub fn explore_field_identifier_expression(compiler: *Compiler, allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
+pub fn explore_field_identifier_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
 {
     switch (node.value)
     {
@@ -360,7 +365,7 @@ pub fn explore_field_identifier_expression(compiler: *Compiler, allocator: *Allo
                                                             }
                                                         }
 
-                                                        compiler.report_error("Couldn't match field expression with structure\n", .{});
+                                                        semantics_error("Couldn't match field expression with structure\n", .{});
                                                     },
                                                     else => panic("ni: {}\n", .{appointee_type.value}),
                                                 }
@@ -386,25 +391,25 @@ pub fn explore_field_identifier_expression(compiler: *Compiler, allocator: *Allo
     }
 }
 
-pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
+pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
 {
     switch (node.value)
     {
         Node.ID.var_decl =>
         {
-            node.type = analyze_type_declaration(compiler, allocator, node.value.var_decl.var_type, types, node_buffer);
+            node.type = analyze_type_declaration(allocator, node.value.var_decl.var_type, types, node_buffer);
         },
         Node.ID.binary_expr =>
         {
             const binary_op = node.value.binary_expr.id;
-            node.value.binary_expr.left = explore_expression(compiler, allocator, current_function, current_block, node.value.binary_expr.left, types, functions, node_buffer);
-            node.value.binary_expr.right = explore_expression(compiler, allocator, current_function, current_block, node.value.binary_expr.right, types, functions, node_buffer);
-            node.type = typecheck(compiler, node.value.binary_expr.left.type, node.value.binary_expr.right, types);
+            node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, types, functions, node_buffer);
+            node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, types, functions, node_buffer);
+            node.type = typecheck(node.value.binary_expr.left.type, node.value.binary_expr.right, types);
         },
         Node.ID.identifier_expr =>
         {
             const name = node.value.identifier_expr.name;
-            const decl_node = find_variable(compiler, allocator, current_function, current_block, name, types);
+            const decl_node = find_variable(allocator, current_function, current_block, name, types);
             const new_node_value = Node
             {
                 .value = Node.Value {
@@ -425,7 +430,7 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
         {
             if (node.value.return_expr.expression) |return_expr|
             {
-                node.value.return_expr.expression = explore_expression(compiler, allocator, current_function, current_block, return_expr, types, functions, node_buffer);
+                node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, types, functions, node_buffer);
             }
             node.type = Type.get_void_type(types);
         },
@@ -434,24 +439,24 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
             for (node.value.block_expr.statements.items) |*statement|
             {
                 const new_current_block = node;
-                statement.* = explore_expression(compiler, allocator, current_function, new_current_block, statement.*, types, functions, node_buffer);
+                statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, types, functions, node_buffer);
             }
             node.type = Type.get_void_type(types);
         },
         Node.ID.loop_expr =>
         {
-            node.value.loop_expr.prefix = explore_expression(compiler, allocator, current_function, current_block, node.value.loop_expr.prefix, types, functions, node_buffer);
-            node.value.loop_expr.body = explore_expression(compiler, allocator, current_function, current_block, node.value.loop_expr.body, types, functions, node_buffer);
-            node.value.loop_expr.postfix = explore_expression(compiler, allocator, current_function, current_block, node.value.loop_expr.postfix, types, functions, node_buffer);
+            node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, types, functions, node_buffer);
+            node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, types, functions, node_buffer);
+            node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, types, functions, node_buffer);
             node.type = Type.get_void_type(types);
         },
         Node.ID.branch_expr =>
         {
-            node.value.branch_expr.condition = explore_expression(compiler, allocator, current_function, current_block, node.value.branch_expr.condition, types, functions, node_buffer);
-            node.value.branch_expr.if_block = explore_expression(compiler, allocator, current_function, current_block, node.value.branch_expr.if_block, types, functions, node_buffer);
+            node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, types, functions, node_buffer);
+            node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, types, functions, node_buffer);
             if (node.value.branch_expr.else_block) |else_block|
             {
-                node.value.branch_expr.else_block = explore_expression(compiler, allocator, current_function, current_block, else_block, types, functions, node_buffer);
+                node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, types, functions, node_buffer);
             }
             node.type = Type.get_void_type(types);
         },
@@ -460,20 +465,20 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
             const function_call_id_node = node.value.invoke_expr.expression;
             assert(function_call_id_node.value == Node.ID.identifier_expr);
             const function_call_name = function_call_id_node.value.identifier_expr.name;
-            compiler.log(Log.debug, "function call name: {s}\n", .{function_call_name});
-            const function_decl = find_function_decl(compiler, allocator, current_function, current_block, function_call_name, types, functions);
+            log.debug("function call name: {s}\n", .{function_call_name});
+            const function_decl = find_function_decl(allocator, current_function, current_block, function_call_name, types, functions);
             node.type = function_decl.type.value.function.ret_type;
             node.value.invoke_expr.expression = function_decl;
 
             for (node.value.invoke_expr.arguments.items) |*arg|
             {
-                arg.* = explore_expression(compiler, allocator, current_function, current_block, arg.*, types, functions, node_buffer);
+                arg.* = explore_expression(allocator, current_function, current_block, arg.*, types, functions, node_buffer);
             }
         },
         Node.ID.unary_expr =>
         {
             // @TODO: check anything more with unary expression id?
-            node.value.unary_expr.node_ref = explore_expression(compiler, allocator, current_function, current_block, node.value.unary_expr.node_ref, types, functions, node_buffer);
+            node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, types, functions, node_buffer);
             switch (node.value.unary_expr.id)
             {
                 UnaryExpression.ID.AddressOf =>
@@ -498,13 +503,13 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
         Node.ID.array_lit =>
         {
             const first_elem = node.value.array_lit.elements.items[0];
-            const first_elem_analyzed = explore_expression(compiler, allocator, current_function, current_block, first_elem, types, functions, node_buffer);
+            const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, types, functions, node_buffer);
             const first_elem_type = first_elem.type;
 
             for (node.value.array_lit.elements.items) |*array_elem|
             {
-                array_elem.* = explore_expression(compiler, allocator, current_function, current_block, array_elem.*, types, functions, node_buffer);
-                _ = typecheck(compiler, first_elem_type, array_elem.*, types);
+                array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, types, functions, node_buffer);
+                _ = typecheck(first_elem_type, array_elem.*, types);
             }
 
             // @TODO: improve
@@ -512,14 +517,14 @@ pub fn explore_expression(compiler: *Compiler, allocator: *Allocator, current_fu
         },
         Node.ID.array_subscript_expr =>
         {
-            node.value.array_subscript_expr.expression = explore_expression(compiler, allocator, current_function, current_block, node.value.array_subscript_expr.expression, types, functions, node_buffer);
-            node.value.array_subscript_expr.index = explore_expression(compiler, allocator, current_function, current_block, node.value.array_subscript_expr.index, types, functions, node_buffer);
+            node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, types, functions, node_buffer);
+            node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, types, functions, node_buffer);
             node.type = node.value.array_subscript_expr.expression.type.value.array.type;
         },
         Node.ID.field_access_expr =>
         {
-            node.value.field_access_expr.expression = explore_expression(compiler, allocator, current_function, current_block, node.value.field_access_expr.expression, types, functions, node_buffer);
-            node.value.field_access_expr.field_expr = explore_field_identifier_expression(compiler, allocator, current_function, current_block, node.value.field_access_expr.field_expr, types, functions, node_buffer);
+            node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, types, functions, node_buffer);
+            node.value.field_access_expr.field_expr = explore_field_identifier_expression(allocator, current_function, current_block, node.value.field_access_expr.field_expr, types, functions, node_buffer);
             node.type = node.value.field_access_expr.field_expr.type;
         },
         else => panic("ni: {}\n", .{node.value}),
@@ -534,22 +539,21 @@ pub const SemanticsResult = struct
     function_declarations: NodeRefBuffer,
 };
 
-pub fn analyze(compiler: *Compiler, allocator: *Allocator, parser_result: *ParserResult) SemanticsResult
+pub fn analyze(allocator: *Allocator, parser_result: *ParserResult) SemanticsResult
 {
-    compiler.current_module = Compiler.Module.semantics;
-    compiler.log(Compiler.LogLevel.debug, "\n==============\nSEMANTICS\n==============\n\n", .{});
+    log.debug("\n==============\nSEMANTICS\n==============\n\n", .{});
 
-    var types = Type.init(allocator);
+    var types = Types.init(allocator);
 
     for (parser_result.type_declarations.items) |typename|
     {
-        _ = analyze_type_declaration(compiler, allocator, typename, &types, &parser_result.node_buffer);
+        _ = analyze_type_declaration(allocator, typename, &types, &parser_result.node_buffer);
     }
 
     // Check for function types
     for (parser_result.function_declarations.items) |function_decl|
     {
-        const function_type = analyze_type_declaration(compiler, allocator, function_decl.value.function_decl.type, &types, &parser_result.node_buffer);
+        const function_type = analyze_type_declaration(allocator, function_decl.value.function_decl.type, &types, &parser_result.node_buffer);
         function_decl.type = function_type;
         for (function_decl.value.function_decl.arguments.items) |arg, i|
         {
@@ -561,7 +565,7 @@ pub fn analyze(compiler: *Compiler, allocator: *Allocator, parser_result: *Parse
     {
         const main_block = function_decl.value.function_decl.blocks.items[0];
 
-        _ = explore_expression(compiler, allocator, function_decl, main_block, main_block, &types, &parser_result.function_declarations, &parser_result.node_buffer);
+        _ = explore_expression(allocator, function_decl, main_block, main_block, &types, &parser_result.function_declarations, &parser_result.node_buffer);
     }
 
     const semantics_result = SemanticsResult

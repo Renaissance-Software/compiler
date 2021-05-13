@@ -5,10 +5,6 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
 
-const Internal = @import("../compiler.zig");
-const Compiler = Internal.Compiler;
-const Log = Compiler.LogLevel;
-
 const IR = @import("../bytecode.zig");
 
 const Encoding = @import("encoding.zig");
@@ -16,7 +12,10 @@ const Mnemonic = Encoding.Instruction.ID;
 
 const encode_frame_pointer = true;
 
-const c = @cImport({
+const log = std.log.scoped(.x86_64_codegen);
+
+const c = @cImport(
+{
     @cInclude("unistd.h");
     @cInclude("sys/mman.h");
 });
@@ -153,16 +152,16 @@ fn get_stack_register() Encoding.Register
     return register;
 }
 
-fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *Executable, instruction: Instruction) void
+fn encode_instruction(allocator: *Allocator, executable: *Executable, instruction: Instruction) void
 {
-    compiler.log(Log.debug, "\nEncoding instruction: {}...\n", .{instruction.id});
+    log.debug("\nEncoding instruction: {}...\n", .{instruction.id});
     const encodings = Encoding.instructions[@enumToInt(instruction.id)];
     if (encodings.len == 0)
     {
         panic("Instruction not implemented yet: {}\n", .{instruction.id});
     }
 
-    compiler.log(Log.debug, "Encoding count: {}\n", .{encodings.len});
+    //log.debug("Encoding count: {}\n", .{encodings.len});
     const operand_count = instruction.operand_count;
 
     for (encodings) |encoding|
@@ -178,10 +177,11 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
             const combination = encoding.operand_combinations[combination_index];
             var matched = true;
 
-            compiler.log(Log.debug, "Operand count. Required: {}. Current: {}\n", .{operand_count, combination.count});
+            //log.debug("---Combination---\n", .{});
+            //log.debug("Operand count. Required: {}. Current: {}\n", .{operand_count, combination.count});
             if (operand_count != combination.count)
             {
-                compiler.log(Log.debug, "Operand count is different. Skipping...\n", .{});
+                log.debug("Operand count is different. Skipping...\n", .{});
                 continue;
             }
 
@@ -191,8 +191,8 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
             {
                 const operand = instruction.operands[operand_index];
                 const operand_encoding = combination.operands[operand_index];
-                compiler.log(Log.debug, "Operand encoding ID: {}\n", .{operand_encoding.id});
-                compiler.log(Log.debug, "Operand size: {}. Encoding size: {}\n", .{operand.size, operand_encoding.size});
+                //log.debug("Operand ID: {s}. Operand encoding ID: {}\n", .{@tagName(operand.value), operand_encoding.id});
+                //log.debug("Operand size: {}. Encoding size: {}\n", .{operand.size, operand_encoding.size});
 
                 switch (operand.value)
                 {
@@ -238,14 +238,16 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
             
             if (matched)
             {
+                log.debug("Matched instruction\n", .{});
                 const instruction_offset = executable.code_buffer.items.len; 
                 //const instruction_offset_address = @ptrToInt(executable.code_buffer.items.ptr) + instruction_offset;
-                //compiler.log(Log.debug, "Instruction offset address: 0x{x}\n", .{instruction_offset_address});
+                //log.debug("Instruction offset address: 0x{x}\n", .{instruction_offset_address});
 
                 // @TODO: label
                 //
 
                 var rex_byte: u8 = @enumToInt(combination.rex);
+                log.debug("Initial REX byte: 0x{x}\n", .{rex_byte});
                 var memory_encoding = false;
                 var r_m_encoding = false;
 
@@ -308,14 +310,14 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
 
                 if (need_mod_rm)
                 {
-                    compiler.log(Log.debug, "It needs MOD RM. Doing operations...\n", .{});
+                    log.debug("It needs MOD RM. Doing operations...\n", .{});
 
                     operand_index = 0;
 
                     while (operand_index < operand_count) : (operand_index += 1)
                     {
                         const operand = instruction.operands[operand_index];
-                        compiler.log(Log.debug, "Operand {}. ID: {s}\n", .{operand_index, @tagName(operand.value)});
+                        log.debug("Operand {}. ID: {s}\n", .{operand_index, @tagName(operand.value)});
 
                         switch (operand.value)
                         {
@@ -373,7 +375,7 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
 
                 if (rex_byte != 0)
                 {
-                    compiler.log(Log.debug, "Writing rex byte: 0x{x}\n", .{rex_byte});
+                    log.debug("Writing rex byte: 0x{x}\n", .{rex_byte});
 
                     executable.code_buffer.append(rex_byte) catch unreachable;
                 }
@@ -386,21 +388,21 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                 {
                     if (op_code_byte != 0)
                     {
-                        compiler.log(Log.debug, "Writing op code byte {}: 0x{x}\n", .{i, op_code_byte});
+                        log.debug("Writing op code byte {}: 0x{x}\n", .{i, op_code_byte});
                         executable.code_buffer.append(op_code_byte) catch unreachable;
                     }
                 }
 
                 if (need_mod_rm)
                 {
-                    compiler.log(Log.debug, "Writing Mod RM: 0x{x}\n", .{mod_r_m});
+                    log.debug("Writing Mod RM: 0x{x}\n", .{mod_r_m});
 
                     executable.code_buffer.append(mod_r_m) catch unreachable;
                 }
 
                 if (need_sib)
                 {
-                    compiler.log(Log.debug, "Writing SIB byte: 0x{x}\n", .{sib_byte});
+                    log.debug("Writing SIB byte: 0x{x}\n", .{sib_byte});
 
                     executable.code_buffer.append(sib_byte) catch unreachable;
                 }
@@ -409,6 +411,7 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                 if (need_mod_rm and mod != @enumToInt(Encoding.Mod.register))
                 {
                     operand_index = 0;
+
                     while (operand_index < operand_count) : (operand_index += 1)
                     {
                         const operand = instruction.operands[operand_index];
@@ -426,7 +429,12 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                                     },
                                     Encoding.Mod.displacement32 =>
                                     {
-                                        panic("ni:\n", .{});
+                                        log.debug("Writing displacement: 4 bytes\nn", .{});
+                                        const displacement = operand.value.indirect.displacement;
+                                        assert(encoding_stack_operand);
+                                        executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch |err| {
+                                            panic("Error appending the displacement bytes\n", .{});
+                                        };
                                     },
                                     else => {},
                                 }
@@ -445,7 +453,7 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                 }
 
                 operand_index = 0;
-                compiler.log(Log.debug, "Operand count: {}\n", .{operand_count});
+                log.debug("Operand count: {}\n", .{operand_count});
 
                 // Immediate, relatives
                 while (operand_index < operand_count) : (operand_index += 1)
@@ -457,6 +465,7 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                         Operand.ID.immediate =>
                         {
                             const operand_size = operand.size;
+                            log.debug("Writing immediate operand of size: {}\n", .{operand_size});
                             var byte: u64 = 0;
                             while (byte < operand_size) : (byte += 1)
                             {
@@ -469,28 +478,28 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
                         {
                             panic("ni\n", .{});
                         },
-                        Operand.ID.register => {},
+                        Operand.ID.register, Operand.ID.indirect => {},
                         else => panic("ni: {}\n", .{operand.value}),
                     }
                 }
 
                 const instruction_slice = executable.code_buffer.items[instruction_offset..];
 
-                compiler.log(Log.debug, "Encoded instruction: {}:\n", .{instruction.id});
+                log.debug("Encoded instruction: {}:\n", .{instruction.id});
                 for (instruction_slice) |byte|
                 {
-                    compiler.log(Log.debug, "0x{x}|", .{byte});
+                    log.debug("0x{x}|", .{byte});
                 }
-                compiler.log(Log.debug, "\n", .{});
+                log.debug("\n", .{});
 
-                compiler.log(Log.debug, "The code buffer has so far:\n", .{});
+                log.debug("The code buffer has so far:\n", .{});
 
                 for (executable.code_buffer.items) |byte|
                 {
-                    compiler.log(Log.debug, "0x{x}|", .{byte});
+                    log.debug("0x{x}|", .{byte});
                 }
 
-                compiler.log(Log.debug, "\n", .{});
+                log.debug("\n", .{});
                 return;
             }
         }
@@ -498,6 +507,8 @@ fn encode_instruction(compiler: *Compiler, allocator: *Allocator, executable: *E
 
     panic("Unable to find a fitting instruction: {}", .{instruction.id});
 }
+
+//Fix the bad encoding on stack movs
 
 pub const ExecutionBuffer = struct
 {
@@ -540,32 +551,26 @@ fn constant_int_operand(constant_int: *IR.ConstantInt) Operand
     {
         32 =>
         {
-            if (constant_int.is_signed)
+            const value: u32 = blk: {
+                if (constant_int.is_signed)
+                {
+                    break :blk @intCast(u32, - @intCast(i32, constant_int.int_value));
+                }
+                else
+                {
+                    break :blk @intCast(u32, constant_int.int_value);
+                }
+            };
+
+            return Operand 
             {
-                const value: i32 = - @intCast(i32, constant_int.int_value);
-                return Operand 
-                    {
-                        .value = Operand.Value {
-                            .immediate = Operand.Immediate {
-                                .imm32 = @intCast(u32, value),
-                            },
-                            },
-                        .size = @enumToInt(Operand.Size.bits32),
-                    };
-            }
-            else
-            {
-                const value: u32 = @intCast(u32, constant_int.int_value);
-                return Operand 
-                    {
-                        .value = Operand.Value {
-                            .immediate = Operand.Immediate {
-                                .imm32 = value,
-                            },
-                            },
-                        .size = @enumToInt(Operand.Size.bits32),
-                    };
-            }
+                .value = Operand.Value {
+                    .immediate = Operand.Immediate {
+                        .imm32 = value,
+                    },
+                    },
+                .size = @enumToInt(Operand.Size.bits32),
+            };
         },
         else => panic("ni: {}\n", .{constant_int.bit_count}),
     }
@@ -596,7 +601,7 @@ const RegisterAllocator = struct
 {
     registers: [16]AllocatedRegister,
 
-    fn allocate(self: *RegisterAllocator, compiler: *Compiler, value: *IR.Value, return_register: bool) Operand
+    fn allocate(self: *RegisterAllocator, value: *IR.Value, return_register: bool) Operand
     {
         const size = value.type.size;
         assert(size > 0 and size <= 8);
@@ -640,7 +645,7 @@ const RegisterAllocator = struct
                     };
                 }
 
-                compiler.log(Log.debug, "Register {} is busy\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+                log.debug("Register {} is busy\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
             }
 
             panic("All registers are busy\n", .{});
@@ -669,8 +674,10 @@ const RegisterAllocator = struct
                 }
             }
 
-            compiler.log(Log.debug, "Register {} is not allocated with the value\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+            print("Register {} is not allocated with the value\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
         }
+
+        panic("Not found\n", .{});
     }
 
     fn free(self: *RegisterAllocator, register: Encoding.Register) void
@@ -734,10 +741,8 @@ const RegisterAllocator = struct
     };
 };
 
-pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) void
+pub fn encode(allocator: *Allocator, module: *IR.Module) void
 {
-    compiler.current_module = Compiler.Module.machine_code;
-
     var executable = Executable
     {
         .functions = FunctionBuffer.init(allocator),
@@ -785,15 +790,15 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                 break :blk stack_size;
             };
 
-            compiler.log(Log.debug, "Stack size for this function: {}\n", .{stack_size});
+            log.debug("Stack size for this function: {}\n", .{stack_size});
 
             for (function.basic_blocks.items) |basic_block|
             {
-                compiler.log(Log.debug, "BasicBlock\n", .{});
+                log.debug("BasicBlock\n", .{});
 
                 for (basic_block.instructions.items) |instruction|
                 {
-                    compiler.log(Log.debug, "Instruction\n", .{});
+                    log.debug("Instruction\n", .{});
 
                     switch (instruction.id)
                     {
@@ -802,20 +807,20 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                             const alloca_type = instruction.value.alloca.type;
                             assert(alloca_type.size <= 8);
 
-                            compiler.log(Log.debug, "Alloca size: {}\n", .{alloca_type.size});
+                            log.debug("Alloca size: {}\n", .{alloca_type.size});
                             // @TODO: do nothing?
                         },
                         IR.Instruction.ID.Store =>
                         {
                             const operand_count = instruction.operands.items.len;
 
-                            compiler.log(Log.debug, "Operand count: {}\n", .{operand_count});
+                            log.debug("Operand count: {}\n", .{operand_count});
 
                             const alloca_i = @ptrCast(*IR.Instruction, instruction.operands.items[1]);
                             const stack_offset = get_stack_offset(function, alloca_i);
 
                             const store_size = alloca_i.value.alloca.type.size;
-                            compiler.log(Log.debug, "Store size: {}. Stack offset: {}\n", .{store_size, stack_offset});
+                            log.debug("Store size: {}. Stack offset: {}\n", .{store_size, stack_offset});
 
                             var store_mov = create_instruction(Mnemonic.mov);
                             const store_operand = stack_operand(stack_offset, store_size);
@@ -833,21 +838,25 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                                 },
                                 else => panic("ni: {}\n", .{value_operand.id}),
                             }
+
+                            mc_function.instructions.append(store_mov) catch |err| {
+                                panic("Error appending new instruction\n", .{});
+                            };
                         },
                         IR.Instruction.ID.Load =>
                         {
                             const operand_count = instruction.operands.items.len;
 
-                            compiler.log(Log.debug, "Operand count: {}\n", .{operand_count});
+                            log.debug("Operand count: {}\n", .{operand_count});
 
                             const alloca = @ptrCast(*IR.Instruction, instruction.operands.items[0]);
                             const stack_offset = get_stack_offset(function, alloca);
-                            compiler.log(Log.debug, "Stack offset for load: {}\n", .{stack_offset});
+                            log.debug("Stack offset for load: {}\n", .{stack_offset});
                             const load_size = alloca.value.alloca.type.size;
                             assert(load_size <= 8);
                             const load_operand = stack_operand(stack_offset, load_size);
 
-                            const loaded_register = register_allocator.allocate(compiler, @ptrCast(*IR.Value, instruction), false);
+                            const loaded_register = register_allocator.allocate(@ptrCast(*IR.Value, instruction), false);
                             var load_mov = create_instruction(Mnemonic.mov);
                             load_mov.add_operand(loaded_register);
                             load_mov.add_operand(load_operand);
@@ -872,9 +881,9 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
 
                                         const constant_size = constant_type.size;
                                         assert(constant_size != 0);
-                                        compiler.log(Log.debug, "Constant size: {}", .{constant_size});
+                                        log.debug("Constant size: {}", .{constant_size});
                                         assert(constant_size <= 8);
-                                        const ret_register = register_allocator.allocate(compiler, operand, true);
+                                        const ret_register = register_allocator.allocate(operand, true);
                                         mov_i.add_operand(ret_register);
                                         const constant_operand = constant_int_operand(constant_int);
                                         mov_i.add_operand(constant_operand);
@@ -887,6 +896,16 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                                     {
                                         const load_instruction = @ptrCast(*IR.Instruction, operand);
                                         assert(load_instruction.id == IR.Instruction.ID.Load);
+
+                                        const ret_operand = register_allocator.get_allocation(@ptrCast(*IR.Value, load_instruction));
+                                        if (ret_operand.value == Operand.ID.register and ret_operand.value.register == Encoding.Register.A)
+                                        {
+                                            // do nothing
+                                        }
+                                        else
+                                        {
+                                            panic("ni\n", .{});
+                                        }
                                     },
                                     else => panic("ni: {}\n", .{operand.id}),
                                 }
@@ -909,12 +928,12 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
 
     for (executable.functions.items) |function|
     {
-        compiler.log(Log.debug, "function\n", .{});
+        log.debug("function\n", .{});
         aprox_instruction_count += 5 * function.instructions.items.len;
     }
 
     const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
-    compiler.log(Log.debug, "Aproximate code size: {}\n", .{aprox_code_size});
+    log.debug("Aproximate code size: {}\n", .{aprox_code_size});
 
     var buffer_allocator = std.mem.Allocator
     {
@@ -961,8 +980,8 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                         .size = @enumToInt(Operand.Size.bits64),
                     });
 
-                    encode_instruction(compiler, allocator, &executable, push_rbp);
-                    encode_instruction(compiler, allocator, &executable, mov_rbp_rsp);
+                    encode_instruction(allocator, &executable, push_rbp);
+                    encode_instruction(allocator, &executable, mov_rbp_rsp);
                 }
 
                 var i: u64 = 0;
@@ -970,7 +989,7 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                 {
                     const instruction = function.instructions.items[i];
                     assert(instruction.id != Mnemonic.ret);
-                    encode_instruction(compiler, allocator, &executable, instruction);
+                    encode_instruction(allocator, &executable, instruction);
                 }
 
                 if (encode_frame_pointer)
@@ -983,12 +1002,12 @@ pub fn encode(compiler: *Compiler, allocator: *Allocator, module: *IR.Module) vo
                         },
                         .size = @enumToInt(Operand.Size.bits64),
                     });
-                    encode_instruction(compiler, allocator, &executable, pop_rbp);
+                    encode_instruction(allocator, &executable, pop_rbp);
                 }
 
                 const instruction = function.instructions.items[i];
                 assert(instruction.id == Mnemonic.ret);
-                encode_instruction(compiler, allocator, &executable, instruction);
+                encode_instruction(allocator, &executable, instruction);
 
                 //const fn_type = fn() void;
                 //const fn_ptr = @ptrCast(fn_type, executable.code_buffer.items.ptr);

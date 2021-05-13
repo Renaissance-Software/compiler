@@ -1,23 +1,14 @@
 const std = @import("std");
+
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
+
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
+
 const _BucketArrayModule = @import("bucket_array.zig");
 const BucketArrayList = _BucketArrayModule.BucketArrayList;
-
-pub const KeywordID = enum
-{
-    @"if",
-    @"else",
-    @"for",
-    @"while",
-    @"break",
-    @"continue",
-    @"return",
-    @"struct",
-};
 
 pub const TypeBuffer = BucketArrayList(Type, 64);
 pub const TypeRefBuffer = ArrayList(*Type);
@@ -349,56 +340,6 @@ pub const Type = struct
         return null;
     }
 
-    pub fn init(allocator: *Allocator) TypeBuffer
-    {
-        var types = TypeBuffer.init(allocator) catch |err| {
-            panic("Failed to allocate type buffer\n", .{});
-        };
-        const int_bits = [_]u8{ 8, 16, 32, 64 };
-        const names = [8][]const u8{ "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64" };
-        var bit_index: u64 = 0;
-
-        while (bit_index < int_bits.len) : (bit_index += 1)
-        {
-            const int_type = Type.Integer{
-                .bits = int_bits[bit_index],
-                .signed = false,
-            };
-            const t_type = Type.Value{
-                .integer = int_type,
-            };
-            var integer_type = Type{
-                .value = t_type,
-            };
-            _ = types.append(integer_type) catch |err| {
-                panic("Error allocating memory for primitive type\n", .{});
-            };
-
-            integer_type.value.integer.signed = true;
-            _ = types.append(integer_type) catch |err| {
-                panic("Error allocating memory for primitive type\n", .{});
-            };
-        }
-
-        const void_type = Type
-        {
-            .value = Type.ID.void_type,
-        };
-        _ = types.append(void_type) catch |err| {
-            panic("Error allocating memory for void type\n", .{});
-        };
-
-        // @TODO: this is a placeholder for literal types, which are resolved later
-        const literal_type = Type
-        {
-            .value = Type.ID.unresolved,
-        };
-        _ = types.append(literal_type) catch |err| {
-            panic("Error allocating memory for literal type\n", .{});
-        };
-
-        return types;
-    }
 
     pub fn format(self: *const Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
@@ -430,116 +371,54 @@ pub const Type = struct
     }
 };
 
-pub const Operator = enum
+pub fn init(allocator: *Allocator) TypeBuffer
 {
-    Declaration,
-    LeftParenthesis,
-    RightParenthesis,
-    LeftBracket,
-    RightBracket,
-    Dot,
-    Plus,
-    Minus,
-    AddressOf,
-    Dereference,
-    Multiplication,
-    Division,
-    Modulus,
-    LeftShift,
-    RightShift,
-    LessThan,
-    LessOrEqualThan,
-    GreaterThan,
-    GreaterOrEqualThan,
-    Equal,
-    NotEqual,
-    BitwiseAnd,
-    BitwiseOr,
-    BitwiseXOR,
-    Assignment,
-    PlusAssignment,
-    MinusAssignment,
-    MultiplicationAssignment,
-    DivisionAssignment,
-    ModulusAssignment,
-    RightShiftAssignment,
-    LeftShiftAssignment,
-    BitwiseAndAssignment,
-    BitwiseOrAssignment,
-    BitwiseXORAssignment,
-    Arrow,
-    Constant,
-};
+    var types = TypeBuffer.init(allocator) catch |err| {
+        panic("Failed to allocate type buffer\n", .{});
+    };
+    const int_bits = [_]u8{ 8, 16, 32, 64 };
+    const names = [8][]const u8{ "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64" };
+    var bit_index: u64 = 0;
 
-pub const Compiler = struct
-{
-    log_level: LogLevel,
-    module_log: u8,
-    current_module: Module,
-
-    pub fn report_error(self: *Compiler, comptime fmt: []const u8, args: anytype) noreturn 
+    while (bit_index < int_bits.len) : (bit_index += 1)
     {
-        self.always_log(fmt, args);
-        if (true)
-        {
-            panic("panicked here\n", .{});
-        }
-        else
-        {
-            std.os.exit(1);
-        }
+        const int_type = Type.Integer{
+            .bits = int_bits[bit_index],
+            .signed = false,
+        };
+        const t_type = Type.Value{
+            .integer = int_type,
+        };
+        var integer_type = Type{
+            .value = t_type,
+        };
+        _ = types.append(integer_type) catch |err| {
+            panic("Error allocating memory for primitive type\n", .{});
+        };
+
+        integer_type.value.integer.signed = true;
+        _ = types.append(integer_type) catch |err| {
+            panic("Error allocating memory for primitive type\n", .{});
+        };
     }
 
-    pub fn always_log(self: *Compiler, comptime format: []const u8, args: anytype) void
+    const void_type = Type
     {
-        print(format, args);
-    }
-
-    pub fn should_log(self: *Compiler, log_level: Compiler.LogLevel) bool
-    {
-        const log_level_is_enough = @enumToInt(log_level) >= @enumToInt(self.log_level);
-        const shl = @as(u32, 1) << @intCast(u5, @enumToInt(self.current_module));
-        const should_log_module = self.module_log & shl != 0;
-        const result = log_level_is_enough and should_log_module;
-
-        return result;
-    }
-
-    pub fn log(self: *Compiler, level: Compiler.LogLevel, comptime format: []const u8, args: anytype) void
-    {
-        if (self.should_log(level))
-        {
-            self.always_log(format, args);
-        }
-    }
-
-    pub fn get_log_module(log_general: bool, log_lexer: bool, log_parser: bool, log_semantics: bool, log_bytecode: bool, log_machine_code: bool) u8
-    {
-        const log_general_int: u8 = @as(u8, @boolToInt(log_general)) << @enumToInt(Module.general);
-        const log_lexer_int: u8 = @as(u8, @boolToInt(log_lexer)) << @enumToInt(Module.lexer);
-        const log_parser_int: u8 = @as(u8, @boolToInt(log_parser)) << @enumToInt(Module.parser);
-        const log_semantics_int: u8 = @as(u8, @boolToInt(log_semantics)) << @enumToInt(Module.semantics);
-        const log_bytecode_int: u8 = @as(u8, @boolToInt(log_bytecode)) << @enumToInt(Module.bytecode);
-        const log_machine_code_int: u8 = @as(u8, @boolToInt(log_machine_code)) << @enumToInt(Module.machine_code);
-
-        const module_log: u8 = log_general_int | log_lexer_int | log_parser_int | log_semantics_int | log_bytecode_int | log_machine_code_int;
-        return module_log;
-    }
-
-    pub const LogLevel = enum
-    {
-        debug,
-        info,
-        critical,
+        .value = Type.ID.void_type,
+    };
+    _ = types.append(void_type) catch |err| {
+        panic("Error allocating memory for void type\n", .{});
     };
 
-    pub const Module = enum
+    // @TODO: this is a placeholder for literal types, which are resolved later
+    const literal_type = Type
     {
-        general,
-        lexer,
-        parser,
-        semantics,
-        bytecode,
-        machine_code,
+        .value = Type.ID.unresolved,
     };
-};
+    _ = types.append(literal_type) catch |err| {
+        panic("Error allocating memory for literal type\n", .{});
+    };
+
+    return types;
+}
+

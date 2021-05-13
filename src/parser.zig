@@ -5,17 +5,24 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 
-const Internal = @import("compiler.zig");
+const Types = @import("ast_types.zig");
 const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
-const Type = Internal.Type;
+const Type = Types.Type;
 
-const Operator = Internal.Operator;
-const Compiler = Internal.Compiler;
-const Log = Compiler.LogLevel;
-const KeywordID = Internal.KeywordID;
 const Lexer = @import("lexer.zig");
+const Operator = Lexer.Operator;
+const KeywordID = Lexer.KeywordID;
 const Token = Lexer.Token;
 const LexerResult = Lexer.LexerResult;
+
+const log = std.log.scoped(.parser);
+
+pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
+{
+    log.err(format, args);
+    panic("Error in the parser\n", .{});
+}
+
 pub const NodeRefBuffer = ArrayList(*Node);
 pub const NodeBuffer = BucketArrayList(Node, 64);
 
@@ -481,7 +488,6 @@ const TokenConsumer = struct
 {
     tokens: []const Token,
     next_index: usize,
-    compiler: *Compiler,
 
     fn peek(self: *TokenConsumer) Token
     {
@@ -492,14 +498,16 @@ const TokenConsumer = struct
     fn consume(self: *TokenConsumer) void 
     {
         const consumed_token = self.tokens[self.next_index];
-        self.compiler.log(Log.debug, "Consuming {}\n", .{consumed_token});
+        log.debug("Consuming {}\n", .{consumed_token});
         self.next_index += 1;
     }
 
     fn expect_and_consume(self: *TokenConsumer, id: Token.ID) ?Token
     {
         const token = self.tokens[self.next_index];
-        if (token.value == id) {
+
+        if (token.value == id)
+        {
             self.consume();
             return token;
         }
@@ -584,20 +592,18 @@ const Parser = struct
     function_declarations: NodeRefBuffer,
     type_declarations: NodeRefBuffer,
 
-    compiler: *Compiler,
-
     fn append_and_get(self: *Parser, node: Node) *Node
     {
         const result = self.nb.append(node) catch |err| {
             panic("Couldn't allocate memory for node", .{});
         };
-        self.compiler.log(Log.debug, "new node:\n\n{s}\n\n", .{@tagName(result.value)});
+        log.debug("new node:\n\n{s}\n\n", .{@tagName(result.value)});
         return result;
     }
 
     fn parse_type(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: ?*Node) *Node
     {
-        self.compiler.log(Log.debug, "Parsing type...\n", .{});
+        log.debug("Parsing type...\n", .{});
         const next_token = consumer.peek();
         consumer.consume();
 
@@ -632,7 +638,7 @@ const Parser = struct
                     {
                         if (consumer.expect_and_consume_sign('{') == null)
                         {
-                            self.compiler.report_error("Error: expected '{c}' at the beginning of the struct\n", .{'{'});
+                            parser_error("Error: expected '{c}' at the beginning of the struct\n", .{'{'});
                         }
 
                         const struct_type_node = Node
@@ -672,7 +678,7 @@ const Parser = struct
                                 }
                                 else if (token.value == Token.ID.sign and token.value.sign != ',')
                                 {
-                                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{token.value});
+                                    parser_error("Expected comma after argument. Found: {}\n", .{token.value});
                                 }
                                 else
                                 {
@@ -685,7 +691,7 @@ const Parser = struct
                         }
                         else
                         {
-                            self.compiler.report_error("Empty struct is not allowed\n", .{});
+                            parser_error("Empty struct is not allowed\n", .{});
                         }
 
                         return result;
@@ -742,7 +748,7 @@ const Parser = struct
 
                         if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
                         {
-                            self.compiler.report_error("Expected ']' in array type\n", .{});
+                            parser_error("Expected ']' in array type\n", .{});
                         }
 
                         type_node.value.type_identifier.value.array.type = self.parse_type(allocator, consumer, parent_node);
@@ -843,13 +849,13 @@ const Parser = struct
                 }
                 else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
                 {
-                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{next_token.value});
+                    parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
                 }
             }
         }
         else
         {
-            self.compiler.report_error("Empty array literal is not allowed\n", .{});
+            parser_error("Empty array literal is not allowed\n", .{});
         }
 
         return array_literal;
@@ -924,7 +930,7 @@ const Parser = struct
 
     fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
     {
-        self.compiler.log(Log.debug, "Parsing argument list\n", .{});
+        log.debug("Parsing argument list\n", .{});
         var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
         var arg_list = NodeRefBuffer.init(allocator);
         var is_function_declaration = false;
@@ -947,7 +953,7 @@ const Parser = struct
                 }
                 else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
                 {
-                    self.compiler.report_error("Expected comma after argument. Found: {}\n", .{next_token.value});
+                    parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
                 }
                 const first_arg = arg_list.items[0];
                 is_function_declaration = first_arg.value == Node.ID.var_decl;
@@ -965,12 +971,12 @@ const Parser = struct
         var result: *Node = undefined;
         if (consumer.expect_and_consume_sign('{') != null)
         {
-            self.compiler.log(Log.debug, "Parsing function declaration\n", .{});
+            log.debug("Parsing function declaration\n", .{});
             panic("not implemented yet\n", .{});
         }
         else
         {
-            self.compiler.log(Log.debug, "Parsing function call expression\n", .{});
+            log.debug("Parsing function call expression\n", .{});
             const function_call = Node
             {
                 .value = Node.Value {
@@ -1038,7 +1044,7 @@ const Parser = struct
 
         if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
         {
-            self.compiler.report_error("Expected ']' in array subscript expression", .{});
+            parser_error("Expected ']' in array subscript expression", .{});
         }
 
         return subscript_node;
@@ -1162,7 +1168,7 @@ const Parser = struct
                 else => panic("Precedence not implemented for {}\n", .{token.value}),
             };
 
-            self.compiler.log(Log.debug, "Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
+            log.debug("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
             if (@enumToInt(precedence) <= @enumToInt(new_precedence))
             {
                 consumer.consume();
@@ -1199,7 +1205,7 @@ const Parser = struct
         const binary_node = self.append_and_get(binary_node_value);
 
         const right_expr = self.parse_precedence(allocator, consumer, binary_node, precedence.increment());
-        self.compiler.log(Log.debug, "Right expr: {}\n", .{right_expr});
+        log.debug("Right expr: {}\n", .{right_expr});
         binary_node.value.binary_expr.right = right_expr;
 
         const binary_op: BinaryExpression.ID = switch (operator)
@@ -1219,7 +1225,7 @@ const Parser = struct
             left_expr.value_type = Node.ValueType.LValue;
         }
 
-        self.compiler.log(Log.debug, "New binary expression: {}\n", .{binary_node});
+        log.debug("New binary expression: {}\n", .{binary_node});
         return binary_node;
     }
 
@@ -1655,7 +1661,7 @@ const Parser = struct
 
         if (!has_braces and !allow_no_braces)
         {
-            self.compiler.report_error("Expected braces in block\n", .{});
+            parser_error("Expected braces in block\n", .{});
         }
 
         var should_keep_parsing = true;
@@ -1680,7 +1686,7 @@ const Parser = struct
                             const return_statement = self.parse_return(allocator, consumer, block_node);
                             if (consumer.expect_and_consume_sign(';') == null)
                             {
-                                self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                                parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
                             block_node.value.block_expr.statements.append(return_statement) catch |err| {
                                 panic("Failed to allocate memory for statement", .{});
@@ -1706,7 +1712,7 @@ const Parser = struct
                             const break_st = self.parse_break(allocator, consumer, block_node);
                             if (consumer.expect_and_consume_sign(';') == null)
                             {
-                                self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                                parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
                             block_node.value.block_expr.statements.append(break_st) catch |err| {
                                 panic("Failed to allocate memory for statement", .{});
@@ -1786,7 +1792,7 @@ const Parser = struct
 
                         if (consumer.expect_and_consume_sign(';') == null)
                         {
-                            self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                            parser_error("Expected semicolon at the end of the statement\n", .{});
                         }
                         block_node.value.block_expr.statements.append(var_decl_node) catch |err| {
                             panic("Failed to allocate memory for statement", .{});
@@ -1803,12 +1809,12 @@ const Parser = struct
                     }
                     else
                     {
-                        self.compiler.log(Log.debug, "Rectifying and parsing identifier expression...\n", .{});
+                        log.debug("Rectifying and parsing identifier expression...\n", .{});
                         consumer.next_index -= 1;
                         const identifier_expr = self.parse_expression(allocator, consumer, block_node);
                         if (consumer.expect_and_consume_sign(';') == null)
                         {
-                            self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                            parser_error("Expected semicolon at the end of the statement\n", .{});
                         }
                         block_node.value.block_expr.statements.append(identifier_expr) catch |err| {
                             panic("Failed to allocate memory for statement", .{});
@@ -1825,7 +1831,7 @@ const Parser = struct
                             const deref_st = self.parse_expression(allocator, consumer, block_node);
                             if (consumer.expect_and_consume_sign(';') == null)
                             {
-                                self.compiler.report_error("Expected semicolon at the end of the statement\n", .{});
+                                parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
                             block_node.value.block_expr.statements.append(deref_st) catch |err| {
                                 panic("Failed to allocate memory for statement", .{});
@@ -1849,7 +1855,7 @@ const Parser = struct
             const end = consumer.expect_and_consume_sign('}');
             if (end == null)
             {
-                self.compiler.report_error("Expected end sign at the end of the block", .{});
+                parser_error("Expected end sign at the end of the block", .{});
             }
         }
     }
@@ -1897,7 +1903,7 @@ const Parser = struct
             const arg_node = self.parse_expression(allocator, consumer, function_node);
             if (arg_node.value != Node.ID.var_decl)
             {
-                self.compiler.report_error("Error parsing argument\n", .{});
+                parser_error("Error parsing argument\n", .{});
             }
 
             arg_types.append(arg_node.value.var_decl.var_type) catch |err| {
@@ -1916,14 +1922,14 @@ const Parser = struct
                 if (comma == null)
                 {
                     // print error
-                    self.compiler.report_error("Expected comma after function argument", .{});
+                    parser_error("Expected comma after function argument", .{});
                 }
             }
         }
 
         if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
         {
-            self.compiler.report_error("Expected end of argument list\n", .{});
+            parser_error("Expected end of argument list\n", .{});
         }
 
         var return_type: ?*Node = null;
@@ -1949,7 +1955,7 @@ const Parser = struct
             .type = undefined,
         };
 
-        self.compiler.log(Log.debug, "arg type count in the parser: {}\n", .{arg_types.items.len});
+        log.debug("arg type count in the parser: {}\n", .{arg_types.items.len});
 
         function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
 
@@ -1983,7 +1989,7 @@ const Parser = struct
         const name_token = consumer.expect_and_consume(Token.ID.identifier);
         if (name_token == null)
         {
-            self.compiler.report_error("Top level declarations must start with an identifier/name\n", .{});
+            parser_error("Top level declarations must start with an identifier/name\n", .{});
         }
         const name = name_token.?.value.identifier;
 
@@ -1991,7 +1997,7 @@ const Parser = struct
 
         if (consumer.next_index + 2 >= consumer.tokens.len)
         {
-            self.compiler.report_error("End of the file while parsing top level declaration\n", .{});
+            parser_error("End of the file while parsing top level declaration\n", .{});
         }
 
         const constant = consumer.expect_and_consume_operator(Operator.Constant);
@@ -2003,7 +2009,7 @@ const Parser = struct
         if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
         {
             const function_result = self.parse_function_declaration(allocator, consumer) catch |err| {
-                self.compiler.report_error("Couldn't parse the function\n", .{});
+                parser_error("Couldn't parse the function\n", .{});
             };
             if (function_result) |function_node|
             {
@@ -2014,7 +2020,7 @@ const Parser = struct
             }
             else
             {
-                self.compiler.report_error("Couldn't parse the function\n", .{});
+                parser_error("Couldn't parse the function\n", .{});
             }
         }
         else if (consumer.expect_keyword(KeywordID.@"struct") != null)
@@ -2037,24 +2043,11 @@ pub const ParserResult = struct
     function_declarations: NodeRefBuffer,
     node_buffer: NodeBuffer,
     type_declarations: NodeRefBuffer,
-
-    fn print_tree(self: *const ParserResult, compiler: *Compiler) void
-    {
-        if (compiler.should_log(Log.info))
-        {
-            print("Printing AST:\n\n", .{});
-            for (self.function_declarations.items) |function|
-            {
-                compiler.log(Log.info, "{}", .{function});
-            }
-        }
-    }
 };
 
-pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResult) ParserResult
+pub fn parse(allocator: *Allocator, lexer_result: LexerResult) ParserResult
 {
-    compiler.current_module = Compiler.Module.parser;
-    compiler.log(Compiler.LogLevel.debug, "\n==============\nPARSER\n==============\n\n", .{});
+    log.debug("\n==============\nPARSER\n==============\n\n", .{});
 
     const token_count = lexer_result.tokens.len;
     assert(token_count > 0);
@@ -2063,7 +2056,6 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
     {
         .tokens = lexer_result.tokens,
         .next_index = 0,
-        .compiler = compiler,
     };
 
     var parser = Parser
@@ -2073,7 +2065,6 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
         },
         .current_function = undefined,
         .current_block = undefined,
-        .compiler = compiler,
         .function_declarations = NodeRefBuffer.init(allocator),
         .type_declarations = NodeRefBuffer.init(allocator),
     };
@@ -2092,7 +2083,11 @@ pub fn parse(allocator: *Allocator, compiler: *Compiler, lexer_result: LexerResu
         .node_buffer = parser.nb,
     };
 
-    result.print_tree(compiler);
+    log.debug("Printing AST:\n\n", .{});
+    for (result.function_declarations.items) |function|
+    {
+        log.info("{}", .{function});
+    }
 
     return result;
 }
