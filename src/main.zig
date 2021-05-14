@@ -105,9 +105,79 @@ const test_files = [_][]const u8
     test_dir ++ "struct_basic.rns",
 };
 
+
+pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
+{
+    switch (scope)
+    {
+        .general =>
+        {
+            if (!log_general)
+            {
+                return;
+            }
+        },
+        .lexer =>
+        {
+            if (!log_lexer)
+            {
+                return;
+            }
+        },
+        .parser =>
+        {
+            if (!log_parser)
+            {
+                return;
+            }
+        },
+        .semantics =>
+        {
+            if (!log_semantics)
+            {
+                return;
+            }
+        },
+        .bytecode =>
+        {
+            if (!log_bytecode)
+            {
+                return;
+            }
+        },
+        .x86_64_codegen =>
+        {
+            if (!log_x86_64)
+            {
+                return;
+            }
+        },
+        else => panic("ni: {}\n", .{scope}),
+    }
+    //switch (scope)
+    //{
+        //.default => print("Logging default: ", .{}),
+        //else => panic("not implemented: {}\n", .{scope}),
+    //}
+
+    // Print the message to stderr, silently ignoring any errors
+    const held = std.debug.getStderrMutex().acquire();
+    defer held.release();
+    const stderr = std.io.getStdErr().writer();
+    nosuspend stderr.print(format, args) catch return;
+}
+
+pub const log_level: std.log.Level = .debug;
+pub const log_general = true;
+pub const log_lexer = false;
+pub const log_parser = false;
+pub const log_semantics = false;
+pub const log_bytecode = true;
+pub const log_x86_64 = true;
+
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
@@ -132,27 +202,4 @@ pub fn main() anyerror!void
     {
         try compile_load_all_tests(page_allocator, cwd);
     }
-}
-
-pub const log_level: std.log.Level = .debug;
-pub const log_general = true;
-pub const log_lexer = false;
-pub const log_parser = false;
-pub const log_semantics = false;
-pub const log_bytecode = false;
-pub const log_machine_code = true;
-
-pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
-{
-    //switch (scope)
-    //{
-        //.default => print("Logging default: ", .{}),
-        //else => panic("not implemented: {}\n", .{scope}),
-    //}
-
-    // Print the message to stderr, silently ignoring any errors
-    const held = std.debug.getStderrMutex().acquire();
-    defer held.release();
-    const stderr = std.io.getStdErr().writer();
-    nosuspend stderr.print(format, args) catch return;
 }

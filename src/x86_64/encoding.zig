@@ -113,6 +113,17 @@ pub const Instruction = struct
         self.operand_combination_count += 1;
     }
 
+    fn RegisterA_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register_A, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.immediate, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
     fn RegisterMemory_Register(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
     {
         const index = self.operand_combination_count;
@@ -450,6 +461,183 @@ fn zero_instruction_encoding(comptime encoding_count: u64) [encoding_count]Instr
     return result;
 }
 
+const add_encoding = blk:
+{
+    const encoding_count = 9;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x04;
+    result[i].RegisterA_Immediate(Rex.None, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x05;
+    result[i].RegisterA_Immediate(Rex.None, 2, 2);
+    result[i].RegisterA_Immediate(Rex.None, 4, 4);
+    result[i].RegisterA_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x80;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 0;
+    result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
+    result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x81;
+    result[i].options.digit = 0;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 4);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x83;
+    result[i].options.digit = 7;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 1);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 1);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x00;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 1, 1);
+    result[i].RegisterMemory_Register(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x01;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 2, 2);
+    result[i].RegisterMemory_Register(Rex.None, 4, 4);
+    result[i].RegisterMemory_Register(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x02;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 1, 1);
+    result[i].Register_RegisterMemory(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x03;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    break :blk result;
+};
+
+const cmp_encoding = blk:
+{
+    const encoding_count = 9;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x3c;
+    result[i].RegisterA_Immediate(Rex.None, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x3d;
+    result[i].RegisterA_Immediate(Rex.None, 2, 2);
+    result[i].RegisterA_Immediate(Rex.None, 4, 4);
+    result[i].RegisterA_Immediate(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x80;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 7;
+    result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
+    result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x81;
+    result[i].options.digit = 7;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 4);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x83;
+    result[i].options.digit = 7;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 1);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 1);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x38;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 1, 1);
+    result[i].RegisterMemory_Register(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x39;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 2, 2);
+    result[i].RegisterMemory_Register(Rex.None, 4, 4);
+    result[i].RegisterMemory_Register(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x3a;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 1, 1);
+    result[i].Register_RegisterMemory(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x3b;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    break :blk result;
+};
+
+const jmp_encoding = blk:
+{
+    const encoding_count = 3;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0xeb;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xeb;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xeb;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 4;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 1);
+
+    break :blk result;
+};
+
 const mov_encoding = blk:
 {
     const encoding_count = 8;
@@ -622,7 +810,7 @@ pub const instructions = blk:
     {
         .adc = undefined,
         .adcx = undefined,
-        .add = undefined,
+        .add = add_encoding[0..],
         .adox = undefined,
         .@"and" = undefined,
         .andn = undefined,
@@ -661,7 +849,7 @@ pub const instructions = blk:
         .clwb = undefined,
         .cmc = undefined,
         .cmov = undefined,
-        .cmp = undefined,
+        .cmp = cmp_encoding[0..],
         .cmpxchg = undefined,
         .cmpxchg8 = undefined,
         .cmpxchg16 = undefined,
@@ -720,7 +908,7 @@ pub const instructions = blk:
         .jpo = undefined,
         .js = undefined,
         .jz = undefined,
-        .jmp = undefined,
+        .jmp = jmp_encoding[0..],
         .lar = undefined,
         .lds = undefined,
         .lss = undefined,

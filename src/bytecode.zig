@@ -224,7 +224,7 @@ pub const Value = struct
     }
 };
 
-const CompareType = extern enum(u32)
+pub const CompareType = extern enum(u32)
 {
     // Opcode            U L G E    Intuitive operation
     FCMP_FALSE = 0, //< 0 0 0 0    Always false (always folded)
@@ -273,6 +273,10 @@ const CompareType = extern enum(u32)
             CompareType.ICMP_SLE =>
             {
                 try writer.writeAll("sle");
+            },
+            CompareType.ICMP_SLT =>
+            {
+                try writer.writeAll("slt");
             },
             CompareType.ICMP_SGE =>
             {
@@ -1820,7 +1824,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
         {
             assert(node.value_type == Node.ValueType.RValue);
             const int_lit_type = builder.context.get_integer_type(32);
-            print("Type address: 0x{x}\n", .{@ptrToInt(int_lit_type)});
             assert(int_lit_type.size <= 8);
             result = @ptrCast(*Value, builder.context.get_constant_int(int_lit_type, node.value.int_lit.value, node.value.int_lit.signed));
             assert(result.?.type.size <= 8);
@@ -1991,7 +1994,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                             {
                                 BinaryOp.Compare_LessThan =>
                                 {
-                                    binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_SLE, left, right);
+                                    binary_op_instruction = builder.create_icmp(allocator, CompareType.ICMP_SLT, left, right);
                                 },
                                 BinaryOp.Compare_Equal =>
                                 {
@@ -2493,233 +2496,6 @@ fn get_size(type_: *Type) usize
     }
 }
 
-pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
-{
-    log.debug("\n==============\nIR\n==============\n\n", .{});
-
-    var module = Module {
-        .base = Value {
-            .id = Value.ID.Module,
-            .type = undefined,
-            // @TODO: not used
-            .parent = undefined,
-        },
-        .functions = FunctionBuffer.init(allocator) catch |err| {
-            panic("Failed to allocate function bucket array\n", .{});
-        },
-    };
-
-    var context = Context.create(allocator);
-
-    for (semantics_result.function_declarations.items) |ast_function|
-    {
-        assert(ast_function.value == Node.ID.function_decl);
-        const ast_function_type = ast_function.type;
-        assert(ast_function_type.value == AST_Types.Type.ID.function);
-        // @TODO: get RNS function type
-        const function_type = get_type(allocator, context, ast_function_type, &semantics_result.types);
-        Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
-    }
-
-    assert(semantics_result.function_declarations.items.len == module.functions.len());
-
-    var basic_block_buffer = BlockBuffer.init(allocator) catch |block_err| {
-        panic("Couldn't allocate big block buffer\n", .{});
-    };
-    var instruction_buffer = InstructionBuffer.init(allocator) catch |instr_err| {
-        panic("Couldn't allocate big instruction buffer\n", .{});
-    };
-
-    for (semantics_result.function_declarations.items) |ast_function, function_index|
-    {
-        // @TODO: code this access faster
-        var function = module.functions.get(function_index).?;
-
-        var builder = Builder {
-            .context = context,
-            .function = function,
-            .basic_block_buffer = &basic_block_buffer,
-            .instruction_buffer = &instruction_buffer,
-            .module = &module,
-            .next_alloca_index = 0,
-            .conditional_alloca = false,
-            .emitted_return = false,
-            .explicit_return = false,
-            .current = undefined,
-            .return_alloca = null,
-            .exit_block = null,
-        };
-
-        // Pointer to the function main block
-        var entry_block = builder.create_block(allocator);
-        builder.append_to_current_function(entry_block);
-        builder.set_block(entry_block);
-
-        const arg_count = ast_function.value.function_decl.arguments.items.len;
-        const function_base_type = builder.function.type;
-        const function_type = @ptrCast(*FunctionType, function_base_type);
-        const ret_type = function_type.ret_type;
-
-        const returns_something = ret_type.id != Type.ID.@"void";
-
-        var ast_main_block = ast_function.*.value.function_decl.blocks.items[0];
-
-        for (ast_main_block.value.block_expr.statements.items) |ast_statement|
-        {
-            switch (ast_statement.value)
-            {
-                Node.ID.branch_expr =>
-                {
-                    if (introspect_for_allocas(&builder, ast_statement.value.branch_expr.if_block))
-                    {
-                        builder.explicit_return = true;
-                        break;
-                    }
-                    if (ast_statement.value.branch_expr.else_block) |ast_else_block|
-                    {
-                        if (introspect_for_allocas(&builder, ast_else_block))
-                        {
-                            builder.explicit_return = true;
-                            break;
-                        }
-                    }
-                },
-                Node.ID.loop_expr =>
-                {
-                    if (introspect_for_allocas(&builder, ast_statement.value.loop_expr.body))
-                    {
-                        builder.explicit_return = true;
-                        break;
-                    }
-                },
-                else =>
-                {
-                    // @Warning: here we need to contemplate other cases which imply new blocks
-                }
-            }
-        }
-
-        builder.conditional_alloca = returns_something and builder.explicit_return;
-
-        if (builder.explicit_return)
-        {
-            builder.exit_block = builder.create_block(allocator);
-
-            if (builder.conditional_alloca)
-            {
-                builder.return_alloca = builder.create_alloca(allocator, ret_type, null);
-            }
-        }
-
-        var argument_list = ArrayList(Function.Argument).init(allocator);
-        if (arg_count > 0)
-        {
-            argument_list.ensureCapacity(arg_count) catch |err| {
-                panic("Error resizing argument buffer\n", .{});
-            };
-            var arg_index: u64 = 0;
-
-            for (ast_function.*.value.function_decl.arguments.items) |ast_arg|
-            {
-                assert(ast_arg.value == Node.ID.var_decl);
-                assert(ast_arg.value.var_decl.is_function_arg);
-                const ast_arg_type = ast_arg.type;
-                const arg_type = get_type(allocator, context, ast_arg_type, &semantics_result.types);
-
-                const index = argument_list.items.len;
-                const arg = Function.Argument {
-                    .base = Value {
-                        .type = arg_type,
-                        .id = Value.ID.Argument,
-                        .parent = @ptrCast(*Value, builder.function),
-                    },
-                    .arg_index = index,
-                };
-
-                const arg_alloca = builder.create_alloca(allocator, arg_type, null);
-                ast_arg.value.var_decl.backend_ref = @ptrToInt(arg_alloca);
-
-                argument_list.append(arg) catch |err| {
-                    panic("Error allocating argument in function\n", .{});
-                };
-                const arg_ref = &argument_list.items[index];
-                _ = builder.create_store(allocator, @ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
-            }
-        }
-
-        builder.function.arguments = argument_list.items;
-
-        _ = do_node(allocator, &builder, &semantics_result.types, ast_main_block, null, null);
-
-        if (builder.conditional_alloca)
-        {
-            assert(builder.current.instructions.items.len > 0);
-            assert(builder.exit_block != null);
-            assert(builder.return_alloca != null);
-
-            builder.append_to_current_function(builder.exit_block.?);
-            builder.set_block(builder.exit_block.?);
-
-            const loaded_return = builder.create_load(allocator, builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
-            _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
-        }
-        else if (!returns_something)
-        {
-            if (builder.explicit_return)
-            {
-                assert(builder.exit_block != null);
-
-                const current_block = builder.current;
-                if (current_block.instructions.items.len == 0)
-                {
-                    const saved_current = current_block;
-                    builder.set_block(builder.exit_block.?);
-
-                    var block_ptr : ?*BasicBlock = null;
-                    var block_index : u64 = 0;
-                    while (block_index < builder.function.basic_blocks.items.len) : (block_index += 1)
-                    {
-                        const block = builder.function.basic_blocks.items[block_index];
-                        if (block == saved_current)
-                        {
-                            block_ptr = block;
-                            break;
-                        }
-                    }
-
-                    if (block_ptr) |block|
-                    {
-                        if (block_index == 0)
-                        {
-                            builder.function.basic_blocks.items[block_index] = builder.current;
-                            builder.current.base.parent = @ptrCast(*Value, builder.function);
-                        }
-                        else
-                        {
-                            panic("This should be the main block\n", .{});
-                        }
-                    }
-                    else
-                    {
-                        panic("Block is not found in the function block list\n", .{});
-                    }
-                }
-                else
-                {
-                    builder.append_to_current_function(builder.exit_block.?);
-                    builder.set_block(builder.exit_block.?);
-                }
-            }
-
-            // @TODO: figure out how to return here without causing a panic
-            _ = builder.create_ret_void(allocator);
-        }
-        print_function(allocator, builder.context, function);
-    }
-
-    return module;
-}
-
 const SlotTracker = struct
 {
     next_id : u64,
@@ -3083,7 +2859,7 @@ fn print_function(allocator: *Allocator, context: *Context, function: *Function)
 
         const function_type = @ptrCast(*FunctionType, function.type);
         const ret_type = function_type.ret_type;
-        compiler.log(Compiler.LogLevel.info, "\ndefine dso_local {} @{s}(", .{ret_type, function.name});
+        log.info("\ndefine dso_local {} @{s}(", .{ret_type, function.name});
 
         const arg_count = function.arguments.len;
         if (arg_count > 0)
@@ -3091,18 +2867,245 @@ fn print_function(allocator: *Allocator, context: *Context, function: *Function)
             var arg_i : u64 = 0;
             while (arg_i < arg_count - 1) : (arg_i += 1)
             {
-                compiler.log(Compiler.LogLevel.info, "{}, ", .{function.arguments[arg_i]});
+                log.info("{}, ", .{function.arguments[arg_i]});
             }
-            compiler.log(Compiler.LogLevel.info, "{}", .{function.arguments[arg_i]});
+            log.info("{}", .{function.arguments[arg_i]});
         }
 
-        compiler.log(Compiler.LogLevel.info, ")\n{c}\n", .{'{'});
+        log.info(")\n{c}\n", .{'{'});
 
         for (block_printers.items) |*block_printer|
         {
-            compiler.log(Compiler.LogLevel.info, "{}", .{block_printer});
+            log.info("{}", .{block_printer});
         }
 
-        compiler.log(Compiler.LogLevel.info, "{c}\n", .{'}'});
+        log.info("{c}\n", .{'}'});
     }
+}
+
+pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
+{
+    log.debug("\n==============\nIR\n==============\n\n", .{});
+
+    var module = Module {
+        .base = Value {
+            .id = Value.ID.Module,
+            .type = undefined,
+            // @TODO: not used
+            .parent = undefined,
+        },
+        .functions = FunctionBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate function bucket array\n", .{});
+        },
+    };
+
+    var context = Context.create(allocator);
+
+    for (semantics_result.function_declarations.items) |ast_function|
+    {
+        assert(ast_function.value == Node.ID.function_decl);
+        const ast_function_type = ast_function.type;
+        assert(ast_function_type.value == AST_Types.Type.ID.function);
+        // @TODO: get RNS function type
+        const function_type = get_type(allocator, context, ast_function_type, &semantics_result.types);
+        Function.create(allocator, &module, function_type, ast_function.value.function_decl.name);
+    }
+
+    assert(semantics_result.function_declarations.items.len == module.functions.len());
+
+    var basic_block_buffer = BlockBuffer.init(allocator) catch |block_err| {
+        panic("Couldn't allocate big block buffer\n", .{});
+    };
+    var instruction_buffer = InstructionBuffer.init(allocator) catch |instr_err| {
+        panic("Couldn't allocate big instruction buffer\n", .{});
+    };
+
+    for (semantics_result.function_declarations.items) |ast_function, function_index|
+    {
+        // @TODO: code this access faster
+        var function = module.functions.get(function_index).?;
+
+        var builder = Builder {
+            .context = context,
+            .function = function,
+            .basic_block_buffer = &basic_block_buffer,
+            .instruction_buffer = &instruction_buffer,
+            .module = &module,
+            .next_alloca_index = 0,
+            .conditional_alloca = false,
+            .emitted_return = false,
+            .explicit_return = false,
+            .current = undefined,
+            .return_alloca = null,
+            .exit_block = null,
+        };
+
+        // Pointer to the function main block
+        var entry_block = builder.create_block(allocator);
+        builder.append_to_current_function(entry_block);
+        builder.set_block(entry_block);
+
+        const arg_count = ast_function.value.function_decl.arguments.items.len;
+        const function_base_type = builder.function.type;
+        const function_type = @ptrCast(*FunctionType, function_base_type);
+        const ret_type = function_type.ret_type;
+
+        const returns_something = ret_type.id != Type.ID.@"void";
+
+        var ast_main_block = ast_function.*.value.function_decl.blocks.items[0];
+
+        for (ast_main_block.value.block_expr.statements.items) |ast_statement|
+        {
+            switch (ast_statement.value)
+            {
+                Node.ID.branch_expr =>
+                {
+                    if (introspect_for_allocas(&builder, ast_statement.value.branch_expr.if_block))
+                    {
+                        builder.explicit_return = true;
+                        break;
+                    }
+                    if (ast_statement.value.branch_expr.else_block) |ast_else_block|
+                    {
+                        if (introspect_for_allocas(&builder, ast_else_block))
+                        {
+                            builder.explicit_return = true;
+                            break;
+                        }
+                    }
+                },
+                Node.ID.loop_expr =>
+                {
+                    if (introspect_for_allocas(&builder, ast_statement.value.loop_expr.body))
+                    {
+                        builder.explicit_return = true;
+                        break;
+                    }
+                },
+                else =>
+                {
+                    // @Warning: here we need to contemplate other cases which imply new blocks
+                }
+            }
+        }
+
+        builder.conditional_alloca = returns_something and builder.explicit_return;
+
+        if (builder.explicit_return)
+        {
+            builder.exit_block = builder.create_block(allocator);
+
+            if (builder.conditional_alloca)
+            {
+                builder.return_alloca = builder.create_alloca(allocator, ret_type, null);
+            }
+        }
+
+        var argument_list = ArrayList(Function.Argument).init(allocator);
+        if (arg_count > 0)
+        {
+            argument_list.ensureCapacity(arg_count) catch |err| {
+                panic("Error resizing argument buffer\n", .{});
+            };
+            var arg_index: u64 = 0;
+
+            for (ast_function.*.value.function_decl.arguments.items) |ast_arg|
+            {
+                assert(ast_arg.value == Node.ID.var_decl);
+                assert(ast_arg.value.var_decl.is_function_arg);
+                const ast_arg_type = ast_arg.type;
+                const arg_type = get_type(allocator, context, ast_arg_type, &semantics_result.types);
+
+                const index = argument_list.items.len;
+                const arg = Function.Argument {
+                    .base = Value {
+                        .type = arg_type,
+                        .id = Value.ID.Argument,
+                        .parent = @ptrCast(*Value, builder.function),
+                    },
+                    .arg_index = index,
+                };
+
+                const arg_alloca = builder.create_alloca(allocator, arg_type, null);
+                ast_arg.value.var_decl.backend_ref = @ptrToInt(arg_alloca);
+
+                argument_list.append(arg) catch |err| {
+                    panic("Error allocating argument in function\n", .{});
+                };
+                const arg_ref = &argument_list.items[index];
+                _ = builder.create_store(allocator, @ptrCast(*Value, arg_ref), @ptrCast(*Value, arg_alloca));
+            }
+        }
+
+        builder.function.arguments = argument_list.items;
+
+        _ = do_node(allocator, &builder, &semantics_result.types, ast_main_block, null, null);
+
+        if (builder.conditional_alloca)
+        {
+            assert(builder.current.instructions.items.len > 0);
+            assert(builder.exit_block != null);
+            assert(builder.return_alloca != null);
+
+            builder.append_to_current_function(builder.exit_block.?);
+            builder.set_block(builder.exit_block.?);
+
+            const loaded_return = builder.create_load(allocator, builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
+            _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
+        }
+        else if (!returns_something)
+        {
+            if (builder.explicit_return)
+            {
+                assert(builder.exit_block != null);
+
+                const current_block = builder.current;
+                if (current_block.instructions.items.len == 0)
+                {
+                    const saved_current = current_block;
+                    builder.set_block(builder.exit_block.?);
+
+                    var block_ptr : ?*BasicBlock = null;
+                    var block_index : u64 = 0;
+                    while (block_index < builder.function.basic_blocks.items.len) : (block_index += 1)
+                    {
+                        const block = builder.function.basic_blocks.items[block_index];
+                        if (block == saved_current)
+                        {
+                            block_ptr = block;
+                            break;
+                        }
+                    }
+
+                    if (block_ptr) |block|
+                    {
+                        if (block_index == 0)
+                        {
+                            builder.function.basic_blocks.items[block_index] = builder.current;
+                            builder.current.base.parent = @ptrCast(*Value, builder.function);
+                        }
+                        else
+                        {
+                            panic("This should be the main block\n", .{});
+                        }
+                    }
+                    else
+                    {
+                        panic("Block is not found in the function block list\n", .{});
+                    }
+                }
+                else
+                {
+                    builder.append_to_current_function(builder.exit_block.?);
+                    builder.set_block(builder.exit_block.?);
+                }
+            }
+
+            // @TODO: figure out how to return here without causing a panic
+            _ = builder.create_ret_void(allocator);
+        }
+        print_function(allocator, builder.context, function);
+    }
+
+    return module;
 }

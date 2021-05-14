@@ -13,6 +13,7 @@ pub fn build(b: *std.build.Builder) void
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("compiler", "src/main.zig");
+    //exe.emit_asm = true;
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.linkLibC();
