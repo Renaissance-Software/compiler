@@ -439,7 +439,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                     Operand.ID.relative =>
                     {
                         // @TODO: size is 0 here, so it's unimportant to compare them to the encoding sizes
-                        if (operand_encoding.id == Encoding.Operand.ID.relative)
+                        if (operand_encoding.id == Encoding.Operand.ID.relative and operand_encoding.size == 4)
                         {
                             continue;
                         }
@@ -647,6 +647,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                             Operand.ID.indirect =>
                             {
                                 const displacement = operand.value.indirect.displacement;
+
                                 switch (@intToEnum(Encoding.Mod, mod))
                                 {
                                     Encoding.Mod.displacement8 =>
@@ -707,11 +708,23 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                             const label = operand.value.relative.label;
                             if (label.target != 0xcccccccccccccccc)
                             {
-                                // @Info: resolved label
-                                panic("resolved not implemented\n", .{});
+                                log.debug("Label is resolved: 0x{x}\n", .{label.target});
+                                const patch_target = @intToPtr(*align(1) i32, @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len);
+                                const instruction_after_address = @ptrToInt(patch_target) + jump_size;
+                                const target = @intCast(i64, label.target); 
+                                const address_after_instruction = @intCast(i64, instruction_after_address);
+                                const sub_result = target - address_after_instruction;
+                                assert(sub_result >= std.math.minInt(i32) and sub_result <= std.math.maxInt(i32));
+                                const difference = @intCast(i32, sub_result);
+                                log.debug("Difference: {}\n", .{difference});
+                                log.debug("To be patch content: {}\n", .{patch_target.*});
+                                executable.code_buffer.appendSlice(std.mem.asBytes(&difference)) catch |err| {
+                                    panic("Error appending relative operand bytes\n", .{});
+                                };
                             }
                             else
                             {
+                                log.debug("Label is not resolved, adding a patch location to the label\n", .{});
                                 const patch_target = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len;
                                 const unresolved_jump_value: u32 = 0xcccccccc;
                                 assert(@sizeOf(@TypeOf(unresolved_jump_value)) == jump_size);
@@ -932,6 +945,9 @@ const RegisterAllocator = struct
 
     fn free(self: *RegisterAllocator, register: Encoding.Register) void
     {
+        const register_index = @enumToInt(register);
+        self.registers[register_index].size = 0;
+        self.registers[register_index].value = null;
     }
 
     fn create() RegisterAllocator
@@ -1209,7 +1225,7 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, regis
 
     const second_operand = get_mc_value_from_ir_value(function, register_allocator, second_value);
     const operands = [2]Operand { first_operand, second_operand };
-    const new_instruction = create_instruction(Mnemonic.add, operands[0..]);
+    const new_instruction = create_instruction(mnemonic, operands[0..]);
     mc_function.append(new_instruction);
 }
 
@@ -1294,6 +1310,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
             {
                 log.debug("BasicBlock\n", .{});
                 const first_instruction_index = mc_function.instructions.items.len;
+                mc_function.labels.items[block_index].instruction_index = first_instruction_index;
 
                 for (basic_block.instructions.items) |instruction, instruction_index|
                 {
@@ -1326,6 +1343,11 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const operands = [2]Operand {store_operand, value_operand};
                             const store_mov = create_instruction(Mnemonic.mov, operands[0..]);
                             mc_function.append(store_mov);
+
+                            if (value_operand.value == Operand.ID.register)
+                            {
+                                register_allocator.free(value_operand.value.register);
+                            }
                         },
                         IR.Instruction.ID.Load =>
                         {
@@ -1434,8 +1456,22 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         {
             for (executable.functions.items) |function|
             {
+                {
+                    var label = &function.labels.items[0];
+                    label.target = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len;
+
+                    for (label.locations.items) |location|
+                    {
+                        log.debug("Location\n", .{});
+                        panic("Location not patched.\n", .{});
+                    }
+
+                    log.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
+                }
+
                 if (encode_frame_pointer)
                 {
+                    log.debug("\nEncoding prologue\n", .{});
                     const rbp = Operand 
                     {
                         .value = Operand.Value {
@@ -1460,20 +1496,59 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                     encode_instruction(allocator, &executable, mov_rbp_rsp);
                 }
 
-                var i: u64 = 0;
-                while (i < function.instructions.items.len - 1) : (i += 1)
+                var instruction_index: u64 = 0;
+                var label_index: u64 = 1;
+
+                const instruction_count = function.instructions.items.len;
+                const label_count = function.labels.items.len;
+
+                log.debug("\nLabel count: {}. Instruction count: {}\n", .{label_count, instruction_count});
+
+                while (label_index < label_count) : (label_index += 1)
                 {
-                    if (true)
+                    var label = &function.labels.items[label_index];
+                    const label_instruction_index = label.instruction_index;
+
+                    while (instruction_index < label_instruction_index) : (instruction_index += 1)
                     {
-                        panic("Implement labels\n", .{});
+                        const instruction = function.instructions.items[instruction_index];
+                        assert(instruction.id != Mnemonic.ret);
+                        log.debug("Encoding instruction {}\n", .{instruction_index});
+                        encode_instruction(allocator, &executable, instruction);
                     }
-                    const instruction = function.instructions.items[i];
+
+                    label.target = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len;
+
+                    for (label.locations.items) |location|
+                    {
+                        log.debug("Location\n", .{});
+                        // @TODO: this can cause problems
+                        const target = @intCast(i64, label.target); 
+                        const address_after_instruction = @intCast(i64, location.address_after_instruction);
+                        const difference = target - address_after_instruction;
+                        assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
+                        // ???
+                        assert(difference >= 0);
+                        const relative_to_be_written = @intCast(i32, difference);
+                        log.debug("Address of relative to be written: 0x{x}\n", .{location.relative_to_be_written_address});
+                        var patch_target = @intToPtr(*align(1) i32, location.relative_to_be_written_address);
+                        patch_target.* = relative_to_be_written;
+                        log.debug("\n\n\nWrote relative: {}\n\n\n", .{relative_to_be_written});
+                    }
+
+                    log.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
+                }
+
+                while (instruction_index < instruction_count - 1) : (instruction_index += 1)
+                {
+                    const instruction = function.instructions.items[instruction_index];
                     assert(instruction.id != Mnemonic.ret);
                     encode_instruction(allocator, &executable, instruction);
                 }
 
                 if (encode_frame_pointer)
                 {
+                    log.debug("Encoding epilogue\n", .{});
                     const rbp = Operand 
                     {
                         .value = Operand.Value {
@@ -1486,13 +1561,10 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                     encode_instruction(allocator, &executable, pop_rbp);
                 }
 
-                const instruction = function.instructions.items[i];
+                assert(instruction_index == instruction_count - 1);
+                const instruction = function.instructions.items[instruction_index];
                 assert(instruction.id == Mnemonic.ret);
                 encode_instruction(allocator, &executable, instruction);
-
-                //const fn_type = fn() void;
-                //const fn_ptr = @ptrCast(fn_type, executable.code_buffer.items.ptr);
-                //fn_ptr();
             }
         },
         else => panic("ni: {}\n", .{calling_convention}),

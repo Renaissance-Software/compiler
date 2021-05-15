@@ -613,6 +613,44 @@ const cmp_encoding = blk:
     break :blk result;
 };
 
+const jge_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7d;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[0] = 0x8d;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jne_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x75;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[0] = 0x85;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
 const jmp_encoding = blk:
 {
     const encoding_count = 3;
@@ -885,7 +923,7 @@ pub const instructions = blk:
         .jrcxz = undefined,
         .je = undefined,
         .jg = undefined,
-        .jge = undefined,
+        .jge = jge_encoding[0..],
         .jl = undefined,
         .jle = undefined,
         .jna = undefined,
@@ -893,7 +931,7 @@ pub const instructions = blk:
         .jnb = undefined,
         .jnbe = undefined,
         .jnc = undefined,
-        .jne = undefined,
+        .jne = jne_encoding[0..],
         .jng = undefined,
         .jnge = undefined,
         .jnl = undefined,
