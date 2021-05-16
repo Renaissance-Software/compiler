@@ -146,6 +146,18 @@ pub const Instruction = struct
         self.operand_combination_count += 1;
     }
 
+    fn Register_RegisterMemory_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8, size3: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register_or_memory, .size = size2 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.immediate, .size = size3 });
+        self.operand_combination_count += 1;
+    }
+
     fn Register_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
     {
         const index = self.operand_combination_count;
@@ -613,6 +625,214 @@ const cmp_encoding = blk:
     break :blk result;
 };
 
+const imul_encoding = blk:
+{
+    const encoding_count = 5;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0xf6;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 5;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xf7;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 5;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 4);
+    result[i].OneOperandCombination(Rex.W, Operand.ID.register_or_memory, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0xaf;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x6b;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory_Immediate(Rex.None, 2, 2, 1);
+    result[i].Register_RegisterMemory_Immediate(Rex.None, 4, 4, 1);
+    result[i].Register_RegisterMemory_Immediate(Rex.W, 8, 8, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x69;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory_Immediate(Rex.None, 2, 2, 2);
+    result[i].Register_RegisterMemory_Immediate(Rex.None, 4, 4, 4);
+    result[i].Register_RegisterMemory_Immediate(Rex.W, 8, 8, 4);
+
+    break :blk result;
+};
+
+const ja_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x77;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x87;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jae_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x73;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x83;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jb_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x72;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x82;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jbe_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x76;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x86;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jc_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x72;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x82;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jecxz_encoding = blk:
+{
+    const encoding_count = 1;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0xe3;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    break :blk result;
+};
+
+const jrcxz_encoding = blk:
+{
+    const encoding_count = 1;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0xe3;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    break :blk result;
+};
+
+const je_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x74;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x84;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jg_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7f;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8f;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
 const jge_encoding = blk:
 {
     const encoding_count = 2;
@@ -626,7 +846,140 @@ const jge_encoding = blk:
     i += 1;
 
     result[i].op_code[0] = 0x0f;
-    result[i].op_code[0] = 0x8d;
+    result[i].op_code[1] = 0x8d;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jl_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7c;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8c;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jle_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7e;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8e;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jna_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x76;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x86;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnae_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x72;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x82;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnb_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x73;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x83;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnbe_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x77;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x87;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnc_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x73;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x83;
     result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
 
     break :blk result;
@@ -639,13 +992,279 @@ const jne_encoding = blk:
 
     var i = 0;
 
+    result[i].op_code[0] = 0x77;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x87;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jng_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7e;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8e;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnge_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7c;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8c;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnl_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7d;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8d;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnle_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7f;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8f;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jno_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x71;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x81;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnp_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7b;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8b;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jns_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x79;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x89;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jnz_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
     result[i].op_code[0] = 0x75;
     result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
 
     i += 1;
 
     result[i].op_code[0] = 0x0f;
-    result[i].op_code[0] = 0x85;
+    result[i].op_code[1] = 0x85;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jo_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x70;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x80;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jp_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jpe_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8a;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jpo_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x7b;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x8b;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const js_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x78;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x88;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    break :blk result;
+};
+
+const jz_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x74;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x84;
     result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
 
     break :blk result;
@@ -841,6 +1460,82 @@ const ret_encoding = blk:
     break :blk result;
 };
 
+const sub_encoding = blk:
+{
+    const encoding_count = 9;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x2c;
+    result[i].RegisterA_Immediate(Rex.None, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x2d;
+    result[i].RegisterA_Immediate(Rex.None, 2, 2);
+    result[i].RegisterA_Immediate(Rex.None, 4, 4);
+    result[i].RegisterA_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x80;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 5;
+    result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
+    result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x81;
+    result[i].options.digit = 5;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 4);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x83;
+    result[i].options.digit = 5;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 1);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 1);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x28;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 1, 1);
+    result[i].RegisterMemory_Register(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x29;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 2, 2);
+    result[i].RegisterMemory_Register(Rex.None, 4, 4);
+    result[i].RegisterMemory_Register(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x2a;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 1, 1);
+    result[i].Register_RegisterMemory(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x2b;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    break :blk result;
+};
+
 pub const instructions = blk:
 {
     @setEvalBranchQuota(10_000);
@@ -903,7 +1598,7 @@ pub const instructions = blk:
         .enter = undefined,
         .hlt = undefined,
         .idiv = undefined,
-        .imul = undefined,
+        .imul = imul_encoding[0..],
         .in = undefined,
         .inc = undefined,
         .incssp = undefined,
@@ -914,38 +1609,38 @@ pub const instructions = blk:
         .invlpg = undefined,
         .invpcid = undefined,
         .iret = undefined,
-        .ja = undefined,
-        .jae = undefined,
-        .jb = undefined,
-        .jbe = undefined,
-        .jc = undefined,
-        .jecxz = undefined,
-        .jrcxz = undefined,
-        .je = undefined,
-        .jg = undefined,
+        .ja = ja_encoding[0..],
+        .jae = jae_encoding[0..],
+        .jb = jb_encoding[0..],
+        .jbe = jbe_encoding[0..],
+        .jc = jc_encoding[0..],
+        .jecxz = jecxz_encoding[0..],
+        .jrcxz = jrcxz_encoding[0..],
+        .je = je_encoding[0..],
+        .jg = jg_encoding[0..],
         .jge = jge_encoding[0..],
-        .jl = undefined,
-        .jle = undefined,
-        .jna = undefined,
-        .jnae = undefined,
-        .jnb = undefined,
-        .jnbe = undefined,
-        .jnc = undefined,
+        .jl = jl_encoding[0..],
+        .jle = jle_encoding[0..],
+        .jna = jna_encoding[0..],
+        .jnae = jnae_encoding[0..],
+        .jnb = jnb_encoding[0..],
+        .jnbe = jnbe_encoding[0..],
+        .jnc = jnc_encoding[0..],
         .jne = jne_encoding[0..],
-        .jng = undefined,
-        .jnge = undefined,
-        .jnl = undefined,
-        .jnle = undefined,
-        .jno = undefined,
-        .jnp = undefined,
-        .jns = undefined,
-        .jnz = undefined,
-        .jo = undefined,
-        .jp = undefined,
-        .jpe = undefined,
-        .jpo = undefined,
-        .js = undefined,
-        .jz = undefined,
+        .jng = jng_encoding[0..],
+        .jnge = jnge_encoding[0..],
+        .jnl = jnl_encoding[0..],
+        .jnle = jnle_encoding[0..],
+        .jno = jno_encoding[0..],
+        .jnp = jnp_encoding[0..],
+        .jns = jns_encoding[0..],
+        .jnz = jnz_encoding[0..],
+        .jo = jo_encoding[0..],
+        .jp = jp_encoding[0..],
+        .jpe = jpe_encoding[0..],
+        .jpo = jpo_encoding[0..],
+        .js = js_encoding[0..],
+        .jz = jz_encoding[0..],
         .jmp = jmp_encoding[0..],
         .lar = undefined,
         .lds = undefined,
@@ -1074,7 +1769,7 @@ pub const instructions = blk:
         .sti = undefined,
         .stos = undefined,
         .str = undefined,
-        .sub = undefined,
+        .sub = sub_encoding[0..],
         .swapgs = undefined,
         .syscall = undefined,
         .sysenter = undefined,
