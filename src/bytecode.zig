@@ -120,11 +120,13 @@ const FunctionType = struct
     ret_type: *Type,
 };
 
+pub const ValueList = ArrayList(*Value);
 pub const Value = struct
 {
     type: *Type,
     id: ID,
     parent: *Value,
+    uses: ValueList,
 
     pub const ID = enum
     {
@@ -729,6 +731,7 @@ pub const Function = struct
                 .type = ret_type,
                 .id = Value.ID.GlobalFunction,
                 .parent = @ptrCast(*Value, module),
+                .uses = ValueList.init(allocator),
             },
             .basic_blocks = ArrayList(*BasicBlock).init(allocator),
             .arguments = undefined, // @Info: this is defined later as the arguments are collected, and not in the function declaration
@@ -878,6 +881,7 @@ const Builder = struct
                 .type = self.context.get_label_type(),
                 .id = Value.ID.BasicBlock,
                 .parent = @ptrCast(*Value, self.function),
+                .uses = ValueList.init(allocator),
             },
             .instructions = ArrayList(*Instruction).init(allocator),
             .use_count = 0,
@@ -914,6 +918,7 @@ const Builder = struct
                 .type = self.context.get_pointer_type(alloca_type),
                 .id = Value.ID.Instruction,
                 .parent = @ptrCast(*Value, entry_block),
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Alloca,
             .operands = ArrayList(*Value).init(allocator),
@@ -945,6 +950,7 @@ const Builder = struct
                 .type = self.context.get_void_type(),
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Store,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
@@ -971,6 +977,7 @@ const Builder = struct
                 .type = load_type,
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Load,
             .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
@@ -993,6 +1000,7 @@ const Builder = struct
                 .type = self.context.get_pointer_type(gep_type),
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.GetElementPtr,
             .operands = ArrayList(*Value).initCapacity(allocator, indices.len) catch |err| {
@@ -1023,6 +1031,7 @@ const Builder = struct
                     .type = undefined,
                     .id = Value.ID.Instruction,
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Instruction.ID.Ret,
                 .operands = ArrayList(*Value).init(allocator),
@@ -1073,6 +1082,7 @@ const Builder = struct
                     .type = dst_basic_block.base.type,
                     .id = Value.ID.Instruction,
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Instruction.ID.Br,
                 .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
@@ -1106,6 +1116,7 @@ const Builder = struct
                     .type = if_block.base.type,
                     .id = Value.ID.Instruction,
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Instruction.ID.Br,
                 .operands = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
@@ -1145,6 +1156,7 @@ const Builder = struct
                     .type = callee.type,
                     .id = Value.ID.Instruction,
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Instruction.ID.Call,
                 .operands = ArrayList(*Value).initCapacity(allocator, arguments.len + 1) catch |err| {
@@ -1174,6 +1186,7 @@ const Builder = struct
                     .type = callee.type,
                     .id = Value.ID.Instruction,
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Instruction.ID.Call,
                 .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
@@ -1198,6 +1211,7 @@ const Builder = struct
                 .type = self.context.get_boolean_type(),
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.ICmp,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
@@ -1226,6 +1240,7 @@ const Builder = struct
                 .type = left.type,
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Add,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
@@ -1252,6 +1267,7 @@ const Builder = struct
                 .type = left.type,
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Sub,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
@@ -1278,6 +1294,7 @@ const Builder = struct
                 .type = left.type,
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.Mul,
             .operands = ArrayList(*Value).initCapacity(allocator, 2) catch |err| {
@@ -1304,6 +1321,7 @@ const Builder = struct
                 .type = cast_type,
                 .id = Value.ID.Instruction,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .id = Instruction.ID.BitCast,
             .operands = ArrayList(*Value).initCapacity(allocator, 1) catch |err| {
@@ -1326,6 +1344,7 @@ const Builder = struct
                 .type = cast_type,
                 .id = Value.ID.OperatorBitCast,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .cast_value = value,
         };
@@ -1365,6 +1384,7 @@ const Builder = struct
                     .id = Value.ID.Intrinsic,
                     // not used
                     .parent = undefined,
+                    .uses = ValueList.init(allocator),
                 },
                 .id = Intrinsic.ID.memcpy,
             };
@@ -1649,7 +1669,7 @@ const Context = struct
         return @ptrCast(*Type, result);
     }
 
-    fn get_constant_int(self: *Context, int_type: *Type, value: u64, is_signed: bool) *ConstantInt
+    fn get_constant_int(self: *Context, allocator: *Allocator, int_type: *Type, value: u64, is_signed: bool) *ConstantInt
     {
         const integer_type = @ptrCast(*IntegerType, int_type);
         const bits = integer_type.bits;
@@ -1661,6 +1681,7 @@ const Context = struct
                 .type = int_type,
                 .id = Value.ID.ConstantInt,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             }, 
             .int_value = value,
             .bit_count = bits,
@@ -1675,7 +1696,7 @@ const Context = struct
         return result;
     }
 
-    fn get_constant_array(self: *Context, array_values: []*Value, array_type: *Type) *ConstantArray
+    fn get_constant_array(self: *Context, allocator: *Allocator, array_values: []*Value, array_type: *Type) *ConstantArray
     {
         const new_array = ConstantArray 
         {
@@ -1683,6 +1704,7 @@ const Context = struct
                 .type = array_type,
                 .id = Value.ID.ConstantArray,
                 .parent = undefined,
+                .uses = ValueList.init(allocator),
             },
             .array_type = array_type,
             .array_values = array_values,
@@ -1825,7 +1847,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
             assert(node.value_type == Node.ValueType.RValue);
             const int_lit_type = builder.context.get_integer_type(32);
             assert(int_lit_type.size <= 8);
-            result = @ptrCast(*Value, builder.context.get_constant_int(int_lit_type, node.value.int_lit.value, node.value.int_lit.signed));
+            result = @ptrCast(*Value, builder.context.get_constant_int(allocator, int_lit_type, node.value.int_lit.value, node.value.int_lit.signed));
             assert(result.?.type.size <= 8);
         },
         Node.ID.var_decl => 
@@ -1870,7 +1892,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                             const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
                             const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, alloca_ptr), pointer_to_i8_type);
                             const memcpy_size = get_size(var_type);
-                            const memcpy_size_value = builder.context.get_constant_int(builder.context.get_integer_type(64), memcpy_size, false);
+                            const memcpy_size_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(64), memcpy_size, false);
                             // @Info: We need to bitcast **as operator** the constant array
                             assert(rvalue.id == Value.ID.ConstantArray);
                             const bitcast_constant_array = builder.create_bitcast_operator(allocator, rvalue, pointer_to_i8_type);
@@ -2237,7 +2259,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                 }
             }
 
-            const constant_array = builder.context.get_constant_array(array_values.items, type_expr);
+            const constant_array = builder.context.get_constant_array(allocator, array_values.items, type_expr);
             result = @ptrCast(*Value, constant_array);
         },
         Node.ID.array_subscript_expr =>
@@ -2258,7 +2280,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                 assert(alloca_type.id == Type.ID.array);
                 const array_type = @ptrCast(*ArrayType, alloca_type);
                 const array_element_type = array_type.type;
-                const zero_value = builder.context.get_constant_int(builder.context.get_integer_type(32), 0, false);
+                const zero_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(32), 0, false);
                 var indices = [_]*Value
                 {
                     @ptrCast(*Value, zero_value),
@@ -2302,8 +2324,8 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                 const ast_field_type = ast_field.type;
                 const field_type = get_type(allocator, builder.context, ast_field_type, ast_types);
                 const index = ast_field.index;
-                const zero_value = builder.context.get_constant_int(builder.context.get_integer_type(32), 0, false);
-                const index_value = builder.context.get_constant_int(builder.context.get_integer_type(32), index, false);
+                const zero_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(32), 0, false);
+                const index_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(32), index, false);
 
                 const indices = [_]*Value {
                     @ptrCast(*Value, zero_value),
@@ -2893,6 +2915,7 @@ pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
             .type = undefined,
             // @TODO: not used
             .parent = undefined,
+            .uses = ValueList.init(allocator),
         },
         .functions = FunctionBuffer.init(allocator) catch |err| {
             panic("Failed to allocate function bucket array\n", .{});
@@ -3017,11 +3040,13 @@ pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
                 const arg_type = get_type(allocator, context, ast_arg_type, &semantics_result.types);
 
                 const index = argument_list.items.len;
-                const arg = Function.Argument {
+                const arg = Function.Argument
+                {
                     .base = Value {
                         .type = arg_type,
                         .id = Value.ID.Argument,
                         .parent = @ptrCast(*Value, builder.function),
+                        .uses = ValueList.init(allocator),
                     },
                     .arg_index = index,
                 };
