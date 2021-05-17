@@ -40,7 +40,7 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     const allocator = &arena.allocator;
     const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
 
-    logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
+    logger.info("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
     defer allocator.free(file_content);
 
     if (!compiler_work_on_file_content(allocator, file_content))
@@ -54,12 +54,6 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     var arena = std.heap.ArenaAllocator.init(page_allocator);
     defer arena.deinit();
     const allocator = &arena.allocator;
-
-    const log_general = true;
-    const log_lexer = false;
-    const log_parser = false;
-    const log_semantics = true;
-    const log_bytecode = true;
 
     var test_file_contents: [test_files.len][]const u8 = undefined;
 
@@ -152,6 +146,13 @@ pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral),
                 return;
             }
         },
+        .x86_64_codegen_enc =>
+        {
+            if (!log_x86_64_encoding)
+            {
+                return;
+            }
+        },
         else => panic("ni: {}\n", .{scope}),
     }
     //switch (scope)
@@ -172,12 +173,13 @@ pub const log_general = true;
 pub const log_lexer = false;
 pub const log_parser = false;
 pub const log_semantics = false;
-pub const log_bytecode = true;
+pub const log_bytecode = false;
 pub const log_x86_64 = true;
+pub const log_x86_64_encoding = false;
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();

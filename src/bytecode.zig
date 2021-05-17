@@ -27,7 +27,7 @@ pub const Type = struct
     size: u32,
     id: ID,
 
-    const ID = enum
+    pub const ID = enum
     {
         void,
         label,
@@ -665,6 +665,7 @@ const OperatorBitCast = struct
         {
             Value.ID.ConstantArray =>
             {
+                
                 const constant_array = @ptrCast(*ConstantArray, self.cast_value);
                 try std.fmt.format(writer, "{} bitcast ({}* {} to {})", .{self.base.type, self.cast_value.type, constant_array, self.base.type});
             },
@@ -726,8 +727,10 @@ pub const Function = struct
         const function_type = @ptrCast(*FunctionType, type_expr);
         const ret_type = function_type.ret_type;
 
-        const function_value = Function {
-            .base = Value {
+        const function_value = Function
+        {
+            .base = Value
+            {
                 .type = ret_type,
                 .id = Value.ID.GlobalFunction,
                 .parent = @ptrCast(*Value, module),
@@ -738,6 +741,7 @@ pub const Function = struct
             .name = name,
             .type = type_expr,
         };
+
         _ = module.functions.append(function_value) catch |err| {
             panic("Cannot allocate memory for bytecode function\n", .{});
         };
@@ -762,7 +766,8 @@ pub const Instruction = struct
         type: *Type,
     };
 
-    pub const ID = enum {
+    pub const ID = enum
+    {
         // Terminator
         Ret = 1,
         Br = 2,
@@ -851,7 +856,6 @@ pub const BasicBlock = struct
 {
     base: Value,
     instructions: ArrayList(*Instruction),
-    use_count: u32,
 };
 
 const BlockBuffer = BucketArrayList(BasicBlock, 64);
@@ -884,7 +888,6 @@ const Builder = struct
                 .uses = ValueList.init(allocator),
             },
             .instructions = ArrayList(*Instruction).init(allocator),
-            .use_count = 0,
         };
 
         const result = self.basic_block_buffer.append(basic_block_value) catch |err| {
@@ -937,6 +940,7 @@ const Builder = struct
         entry_block.instructions.insert(self.next_alloca_index, result) catch |err| {
             panic("Failed to insert alloca instruction reference inside the entry block\n", .{});
         };
+
         self.next_alloca_index += 1;
 
         return result;
@@ -966,7 +970,14 @@ const Builder = struct
             panic("Failed to allocate memory for store pointer operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        value.uses.append(@ptrCast(*Value, result)) catch |err| {
+            panic("Error allocating memory for value use\n", .{});
+        };
+        ptr.uses.append(@ptrCast(*Value, result)) catch |err| {
+            panic("Error allocating memory for value use\n", .{});
+        };
+        return result;
     }
 
     fn create_load(self: *Builder, allocator: *Allocator, load_type: *Type, value: *Value) *Instruction
@@ -990,7 +1001,11 @@ const Builder = struct
             panic("Failed to allocate memory for store value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        value.uses.append(@ptrCast(*Value, result)) catch |err| {
+            panic("Error allocating memory for value use\n", .{});
+        };
+        return result;
     }
 
     fn create_inbounds_GEP(self: *Builder, allocator: *Allocator, gep_type: *Type, pointer: *Value, indices: []const *Value) *Instruction
@@ -1015,7 +1030,15 @@ const Builder = struct
             panic("Error allocating memory for GEP operands\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_ret(self: *Builder, allocator: *Allocator, maybe_value: ?*Value) *Instruction
@@ -1057,7 +1080,14 @@ const Builder = struct
                 i.base.type = self.context.get_void_type();
             }
 
-            return self.insert_at_the_end(i);
+            const result = self.insert_at_the_end(i);
+            for (result.operands.items) |operand|
+            {
+                operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                    panic("Error allocating memory for value use\n", .{});
+                };
+            }
+            return result;
         }
         else
         {
@@ -1095,9 +1125,15 @@ const Builder = struct
                 panic("Failed to allocate memory for br operand\n", .{});
             };
 
-            dst_basic_block.use_count += 1;
+            const result = self.insert_at_the_end(i);
+            for (result.operands.items) |operand|
+            {
+                operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                    panic("Error allocating memory for value use\n", .{});
+                };
+            }
 
-            return self.insert_at_the_end(i);
+            return result;
         }
         else
         {
@@ -1135,10 +1171,15 @@ const Builder = struct
                 panic("Failed to allocate memory for br operand\n", .{});
             };
 
-            if_block.use_count += 1;
-            else_block.use_count += 1;
+            const result = self.insert_at_the_end(i);
+            for (result.operands.items) |operand|
+            {
+                operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                    panic("Error allocating memory for value use\n", .{});
+                };
+            }
 
-            return self.insert_at_the_end(i);
+            return result;
         }
         else
         {
@@ -1176,7 +1217,15 @@ const Builder = struct
                 };
             }
 
-            return self.insert_at_the_end(i);
+            const result = self.insert_at_the_end(i);
+            for (result.operands.items) |operand|
+            {
+                operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                    panic("Error allocating memory for value use\n", .{});
+                };
+            }
+
+            return result;
         }
         else
         {
@@ -1199,7 +1248,15 @@ const Builder = struct
                 panic("Failed to allocate memory for function call callee operand\n", .{});
             };
 
-            return self.insert_at_the_end(i);
+            const result = self.insert_at_the_end(i);
+            for (result.operands.items) |operand|
+            {
+                operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                    panic("Error allocating memory for value use\n", .{});
+                };
+            }
+
+            return result;
         }
     }
 
@@ -1229,7 +1286,15 @@ const Builder = struct
             panic("Failed to allocate memory for icmp value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_add(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
@@ -1256,7 +1321,15 @@ const Builder = struct
             panic("Failed to allocate memory for add value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_sub(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
@@ -1283,7 +1356,15 @@ const Builder = struct
             panic("Failed to allocate memory for sub value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_mul(self: *Builder, allocator: *Allocator, left: *Value, right: *Value) *Instruction
@@ -1310,7 +1391,15 @@ const Builder = struct
             panic("Failed to allocate memory for mul value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_bitcast(self: *Builder, allocator: *Allocator, value: *Value, cast_type: *Type) *Instruction
@@ -1333,7 +1422,15 @@ const Builder = struct
             panic("Failed to allocate memory for mul value operand\n", .{});
         };
 
-        return self.insert_at_the_end(i);
+        const result = self.insert_at_the_end(i);
+        for (result.operands.items) |operand|
+        {
+            operand.uses.append(@ptrCast(*Value, result)) catch |err| {
+                panic("Error allocating memory for value use\n", .{});
+            };
+        }
+
+        return result;
     }
 
     fn create_bitcast_operator(self: *Builder, allocator: *Allocator, value: *Value, cast_type: *Type) *OperatorBitCast
@@ -1350,11 +1447,16 @@ const Builder = struct
         };
 
         // @TODO: batch these
-        const result = allocator.alloc(OperatorBitCast, 1) catch |err| {
+        var alloc_result = allocator.alloc(OperatorBitCast, 1) catch |err| {
             panic("Failed to allocate memory for bitcast_operator\n", .{});
         };
-        result.ptr.* = bitcast_operator;
-        return &result[0];
+        var result = &alloc_result[0];
+        result.* = bitcast_operator;
+        value.uses.append(@ptrCast(*Value, result)) catch |err| {
+            panic("Error allocating memory for value use\n", .{});
+        };
+
+        return result;
     }
 
     fn create_memcpy_intrinsic(self: *Builder, allocator: *Allocator, arguments: []*Value) *Instruction
@@ -1394,8 +1496,10 @@ const Builder = struct
             };
             intrinsic = result;
         }
+
         const intrinsic_ptr = @ptrCast(*Value, intrinsic.?);
         const intrinsic_call = self.create_call(allocator, intrinsic_ptr, arguments);
+
         return intrinsic_call;
     }
 
@@ -1425,10 +1529,10 @@ const Builder = struct
 
     fn insert_at_the_end(self: *Builder, instruction: Instruction) *Instruction
     {
-
         const result = self.instruction_buffer.append(instruction) catch |err| {
             panic("Failed to allocate memory for instruction\n", .{});
         };
+
         result.base.parent = @ptrCast(*Value, self.current);
 
         self.current.instructions.append(result) catch |err| {
@@ -2100,7 +2204,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                 }
                 else
                 {
-                    exit_block_in_use = exit_block.use_count > 0;
+                    exit_block_in_use = exit_block.base.uses.items.len > 0;
                     if (exit_block_in_use)
                     {
                         _ = builder.create_br(allocator, exit_block);
@@ -2783,7 +2887,7 @@ const InstructionPrinter = struct
 
 fn print_function(allocator: *Allocator, context: *Context, function: *Function) void
 {
-    if (log_level == std.log.Level.debug and Root.log_bytecode)
+    if (@enumToInt(log_level) >= @enumToInt(std.log.Level.info) and Root.log_bytecode)
     {
         // @TODO: change hardcoding (starting_id, next_id)
         var slot_tracker = SlotTracker {
