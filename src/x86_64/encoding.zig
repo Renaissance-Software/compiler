@@ -549,6 +549,26 @@ const add_encoding = blk:
     break :blk result;
 };
 
+const call_encoding = blk:
+{
+    const encoding_count = 2;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+    result[i].op_code[0] = 0xe8;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 2);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0xff;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 2;
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 8);
+
+    break :blk result;
+};
+
 const cmp_encoding = blk:
 {
     const encoding_count = 9;
@@ -1566,7 +1586,7 @@ pub const instructions = blk:
         .btr = undefined,
         .bts = undefined,
         .bzhi = undefined,
-        .call = undefined,
+        .call = call_encoding[0..],
         .cbw = undefined,
         .cwde = undefined,
         .cdqe = undefined,
