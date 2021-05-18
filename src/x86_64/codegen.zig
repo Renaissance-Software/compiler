@@ -295,6 +295,7 @@ const Operand = struct
                     switch (reg)
                     {
                         Encoding.Register.BP => break :blk "rbp",
+                        Encoding.Register.A => break :blk "rax",
                         else => panic("ni: {}\n", .{reg}),
                     }
                 };
@@ -307,7 +308,7 @@ const Operand = struct
                 }
                 else
                 {
-                    panic("displacement is zero: implement\n", .{});
+                    try std.fmt.format(writer, "{s} PTR [{s}]", .{word_str, reg_str});
                 }
             },
             Operand.ID.relative =>
@@ -406,14 +407,82 @@ const Function = struct
         return stack_operand;
     }
 
-    fn spill_registers_before_call(self: *Function) void
+    fn spill_registers_before_call(self: *Function, registers: []RegisterAllocator.AllocatedRegister, stack_operands: []Operand) u32
     {
-        panic("ni\n", .{});
+        log.debug("Saving registers before call...\n", .{});
+        var saved_register_count: u32 = 0;
+
+        for (self.register_allocator.registers) |reg, i|
+        {
+            if (reg.value != null and RegisterAllocator.must_save(i))
+            {
+                registers[i] = reg;
+                saved_register_count += 1;
+            }
+        }
+
+        log.debug("Registers to be saved: {}\n", .{saved_register_count});
+
+        if (saved_register_count > 0)
+        {
+            std.mem.set(Operand, stack_operands[0..], Operand
+                {
+                    .value = Operand.Value.none,
+                    .size = 0,
+                });
+
+            for (registers) |reg, i|
+            {
+                if (reg.value != null)
+                {
+                    const size = reg.size;
+                    const register = @intToEnum(Encoding.Register, @intCast(u8, i));
+                    const register_operand = Operand
+                    {
+                        .value = Operand.Value {
+                            .register = register,
+                        },
+                        .size = size,
+                    };
+
+                    stack_operands[i] = self.spill_register(register);
+                    const operands = [2]Operand { stack_operands[i], register_operand };
+                    const mov = Instruction.create(Mnemonic.mov, operands[0..]);
+                    self.append(mov);
+                }
+            }
+        }
+
+        return saved_register_count;
     }
 
-    fn restore_registers_after_call(self: *Function) void
+    fn restore_registers_after_call(self: *Function, saved_registers: []RegisterAllocator.AllocatedRegister, stack_operands: []Operand) void
     {
-        panic("ni\n", .{});
+        log.debug("Restoring registers...\n", .{});
+
+        for (saved_registers) |reg, i|
+        {
+            if (reg.value != null)
+            // @Info: this register has been saved
+            {
+                log.debug("Restoring register: {}\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+                const register = @intToEnum(Encoding.Register, @intCast(u8, i));
+                const reg_operand = Operand
+                {
+                    .value = Operand.Value{
+                        .register = register,
+                    },
+                    .size = reg.size,
+                };
+
+                const operands = [2]Operand { reg_operand, stack_operands[i] };
+                const mov = Instruction.create(Mnemonic.mov, operands[0..]);
+                self.append(mov);
+
+                self.register_allocator.registers[i].value = reg.value.?;
+                self.register_allocator.registers[i].size = reg.size;
+            }
+        }
     }
 };
 
@@ -954,6 +1023,73 @@ const RegisterAllocator = struct
         };
     };
 
+    fn create() RegisterAllocator
+    {
+        const result = RegisterAllocator
+        {
+            .registers = std.enums.directEnumArray(AllocatedRegister.ID, AllocatedRegister, 4, .
+            {
+                .A   = AllocatedRegister { .size = 0, .value = null, },
+                .C   = AllocatedRegister { .size = 0, .value = null, },
+                .D   = AllocatedRegister { .size = 0, .value = null, },
+                .B   = AllocatedRegister { .size = 0, .value = null, },
+                .r8  = AllocatedRegister { .size = 0, .value = null, },
+                .r9  = AllocatedRegister { .size = 0, .value = null, },
+                .r10 = AllocatedRegister { .size = 0, .value = null, },
+                .r11 = AllocatedRegister { .size = 0, .value = null, },
+                .r12 = AllocatedRegister { .size = 0, .value = null, },
+                .r13 = AllocatedRegister { .size = 0, .value = null, },
+                .r14 = AllocatedRegister { .size = 0, .value = null, },
+                .r15 = AllocatedRegister { .size = 0, .value = null, },
+            }),
+        };
+
+        return result;
+    }
+
+    fn reset(self: *RegisterAllocator) void
+    {
+        std.mem.set(AllocatedRegister, self.registers[0..], AllocatedRegister { .value = null, .size = 0 });
+    }
+
+    fn free(self: *RegisterAllocator, register: Encoding.Register) AllocatedRegister
+    {
+        const register_index = @enumToInt(register);
+        const freed_register = self.registers[register_index];
+        self.registers[register_index].size = 0;
+        self.registers[register_index].value = null;
+
+        return freed_register;
+    }
+
+    fn get_allocation(self: *RegisterAllocator, value: *IR.Value) ?Operand
+    {
+        for (self.registers) |*register, i|
+        {
+            if (i == 4 or i == 5 or i == 6 or i == 7)
+            {
+                continue;
+            }
+
+            if (register.value) |ir_value|
+            {
+                log.debug("There's a value in register {s}: {}\n", .{@tagName(@intToEnum(Encoding.Register, @intCast(u8, i))), ir_value.id});
+                if (ir_value == value)
+                {
+                    return Operand {
+                        .value = Operand.Value {
+                            .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
+                        },
+                        .size = ir_value.type.size,
+                    };
+                }
+            }
+        }
+
+        log.debug("Value is not register allocated\n", .{});
+        return null;
+    }
+
     fn allocate(self: *RegisterAllocator, value: *IR.Value, return_register: bool) Operand
     {
         const size = value.type.size;
@@ -1005,32 +1141,6 @@ const RegisterAllocator = struct
         }
     }
 
-    fn restore_registers(self: *RegisterAllocator, function: *Function, saved_registers: []AllocatedRegister, stack_operands: []Operand) void
-    {
-        log.debug("Restoring registers\n", .{});
-        for (saved_registers) |reg, i|
-        {
-            if (reg.value != null)
-            // @Info: this register has been saved
-            {
-                log.debug("Restoring register: {}\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
-                const reg_operand = Operand
-                {
-                    .value = Operand.Value{
-                        .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
-                    },
-                    .size = reg.size,
-                };
-                const operands = [2]Operand { reg_operand, stack_operands[i] };
-                const mov = create_instruction(Mnemonic.mov, operands[0..]);
-                function.append(mov);
-
-                self.registers[i].value = reg.value.?;
-                self.registers[i].size = reg.size;
-            }
-        }
-    }
-
     fn copy_register(self: *RegisterAllocator, function: *Function, dst: Encoding.Register, src: Encoding.Register) Operand
     {
         const register_index = @enumToInt(src);
@@ -1048,43 +1158,13 @@ const RegisterAllocator = struct
         };
 
         const new_register_operand = self.allocate(value, false);
-        self.free(src);
+        _ = self.free(src);
 
         const operands = [2]Operand { new_register_operand, register_to_copy };
-        const mov = create_instruction(Mnemonic.mov, operands[0..]);
+        const mov = Instruction.create(Mnemonic.mov, operands[0..]);
         function.append(mov);
 
         return new_register_operand;
-    }
-
-    fn get_allocation(self: *RegisterAllocator, value: *IR.Value) ?Operand
-    {
-        for (self.registers) |*register, i|
-        {
-            if (i == 4 or i == 5 or i == 6 or i == 7)
-            {
-                continue;
-            }
-
-            if (register.value) |ir_value|
-            {
-                log.debug("There's a value in register {s}: {}\n", .{@tagName(@intToEnum(Encoding.Register, @intCast(u8, i))), ir_value.id});
-                if (ir_value == value)
-                {
-                    return Operand {
-                        .value = Operand.Value {
-                            .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
-                        },
-                        .size = ir_value.type.size,
-                    };
-                }
-            }
-
-            //log.debug("Register {} is not allocated with the value\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
-        }
-
-        log.debug("Value is not register allocated\n", .{});
-        return null;
     }
 
     fn must_save(r: u64) bool
@@ -1095,100 +1175,6 @@ const RegisterAllocator = struct
             Encoding.Register.A => return true,
             else => panic("ni: {}\n", .{register}),
         }
-    }
-
-    fn free_registers_before_call(self: *RegisterAllocator, function: *Function, registers: []AllocatedRegister, stack_operands: []Operand) u32
-    {
-        log.debug("Saving registers before call...\n", .{});
-        var saved_register_count: u32 = 0;
-        for (self.registers) |reg, i|
-        {
-            if (reg.value != null and RegisterAllocator.must_save(i))
-            
-                registers[i] = reg;
-                saved_register_count += 1;
-            }
-        }
-
-        log.debug("Registers to be saved: {}\n", .{saved_register_count});
-
-        if (saved_register_count > 0)
-        {
-            std.mem.set(Operand, stack_operands[0..], Operand
-                {
-                    .value = Operand.Value.none,
-                    .size = 0,
-                });
-
-            for (registers) |reg, i|
-            {
-                if (reg.value != null)
-                {
-                    const size = reg.size;
-                    const register_operand = Operand
-                    {
-                        .value = Operand.Value {
-                            .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
-                        },
-                        .size = size,
-                    };
-
-                    stack_operands[i] = make_unforeseen_stack_operand(function, size);
-                    const operands = [2]Operand { stack_operands[i], register_operand };
-                    const mov = create_instruction(Mnemonic.mov, operands[0..]);
-                    function.append(mov);
-                }
-            }
-
-            for (self.registers) |reg, i|
-            {
-                if (reg.value != null and RegisterAllocator.must_save(i))
-                {
-                    self.free(@intToEnum(Encoding.Register, @intCast(u8, i)));
-                }
-            }
-        }
-
-        return saved_register_count;
-    }
-
-    fn free(self: *RegisterAllocator, register: Encoding.Register) AllocatedRegister
-    {
-        const register_index = @enumToInt(register);
-        const freed_register = self.registers[register_index];
-        self.registers[register_index].size = 0;
-        self.registers[register_index].value = null;
-
-        return freed_register;
-    }
-
-    fn reset(self: *RegisterAllocator) void
-    {
-        std.mem.set(AllocatedRegister, self.registers[0..], AllocatedRegister { .value = null, .size = 0 });
-    }
-
-    fn create() RegisterAllocator
-    {
-        const result = RegisterAllocator
-        {
-            .registers = std.enums.directEnumArray(AllocatedRegister.ID, AllocatedRegister, 4, .
-            {
-                .A   = AllocatedRegister { .size = 0, .value = null, },
-                .C   = AllocatedRegister { .size = 0, .value = null, },
-                .D   = AllocatedRegister { .size = 0, .value = null, },
-                .B   = AllocatedRegister { .size = 0, .value = null, },
-                .r8  = AllocatedRegister { .size = 0, .value = null, },
-                .r9  = AllocatedRegister { .size = 0, .value = null, },
-                .r10 = AllocatedRegister { .size = 0, .value = null, },
-                .r11 = AllocatedRegister { .size = 0, .value = null, },
-                .r12 = AllocatedRegister { .size = 0, .value = null, },
-                .r13 = AllocatedRegister { .size = 0, .value = null, },
-                .r14 = AllocatedRegister { .size = 0, .value = null, },
-                .r15 = AllocatedRegister { .size = 0, .value = null, },
-            }),
-        };
-
-        return result;
     }
 };
 
@@ -1233,23 +1219,37 @@ const StackAllocator = struct
                     .register = get_stack_register(),
                 },
             },
+            .size = @intCast(u32, size),
         };
     }
 
     fn get_operand_from_alloca(self: *StackAllocator, ir_function: *IR.Function, alloca: *IR.Instruction) Operand
     {
+        assert(alloca.id == IR.Instruction.ID.Alloca);
+        var alloca_count: u64 = 0;
+
         const alloca_index = blk:
         {
             for (ir_function.basic_blocks.items[0].instructions.items) |instruction, i|
             {
+                alloca_count += 1;
+
+                if (instruction.id != IR.Instruction.ID.Alloca)
+                {
+                    panic("Internal error: alloca not found. Index: {}\n", .{i});
+                }
                 if (instruction == alloca)
                 {
+                    log.debug("Alloca found\n", .{});
                     break :blk i;
                 }
             }
 
             panic("Alloca not found in the function\n", .{});
         };
+
+        log.debug("Alloca count: {}\n", .{alloca_count});
+        log.debug("Alloca index: {}\n", .{alloca_index});
 
         const allocation = self.allocations.items[alloca_index];
 
@@ -1258,7 +1258,7 @@ const StackAllocator = struct
             .value = Operand.Value {
                 .indirect = Operand.Indirect
                 {
-                    .displacement = @intCast(i32, allocation.offset),
+                    .displacement = -@intCast(i32, allocation.offset),
                     .register = get_stack_register(),
                 },
             },
@@ -1291,10 +1291,38 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
 
                         const first_operand = instruction.operands.items[0];
                         assert(first_operand.id == IR.Value.ID.Instruction);
-                        const alloca_instruction = @ptrCast(*IR.Instruction, first_operand);
-                        assert(alloca_instruction.id == IR.Instruction.ID.Alloca);
-                        const operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca_instruction);
-                        return operand;
+                        const first_op_instruction = @ptrCast(*IR.Instruction, first_operand);
+                        switch (first_op_instruction.id)
+                        {
+                            IR.Instruction.ID.Alloca =>
+                            {
+                                const operand = mc_function.stack_allocator.get_operand_from_alloca(function, instruction);
+                                return operand;
+                            },
+                            IR.Instruction.ID.Load =>
+                            {
+                                if (mc_function.register_allocator.get_allocation(first_operand)) |operand|
+                                {
+                                    return Operand
+                                    {
+                                        .value = Operand.Value
+                                        {
+                                            .indirect = Operand.Indirect
+                                            {
+                                                .displacement = 0,
+                                                .register = operand.value.register,
+                                            },
+                                        },
+                                        .size = instruction.base.type.size,
+                                    };
+                                }
+                                else
+                                {
+                                    panic("Value not in register\n", .{});
+                                }
+                            },
+                            else => panic("ni:{}\n", .{first_op_instruction.id}),
+                        }
                     }
                 },
                 IR.Instruction.ID.Add, IR.Instruction.ID.Sub, IR.Instruction.ID.Mul, IR.Instruction.ID.Call =>
@@ -1308,6 +1336,27 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
                     {
                         // @Info: this is because the instruction allows an stack operand
                         panic("wtf\n", .{});
+                    }
+                },
+                IR.Instruction.ID.Alloca =>
+                {
+                    const alloca_size = instruction.base.type.size;
+                    log.debug("Alloca size: {}\n", .{alloca_size});
+
+                    if (mc_function.register_allocator.get_allocation(ir_value)) |operand|
+                    {
+                        log.debug("Value is already in a register\n", .{});
+                        return operand;
+                    }
+                    else
+                    {
+                        // @Info: always emit lea
+                        const stack_operand = mc_function.stack_allocator.get_operand_from_alloca(function, instruction);
+                        const r = mc_function.register_allocator.allocate(ir_value, false);
+                        const operands = [2]Operand { r, stack_operand };
+                        const lea = Instruction.create(Mnemonic.lea, operands[0..]);
+                        mc_function.append(lea);
+                        return r;
                     }
                 },
                 else => panic("ni: {}\n", .{instruction.id}),
@@ -1361,7 +1410,7 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
             first_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, first_value), false);
         }
         const operands = [2]Operand { first_operand, stack_op };
-        const mov_operation = create_instruction(Mnemonic.mov, operands[0..]);
+        const mov_operation = Instruction.create(Mnemonic.mov, operands[0..]);
         mc_function.append(mov_operation);
     }
     else if (first_operand.value == Operand.ID.register and result_stored_in_register)
@@ -1378,12 +1427,12 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
         const stack_op = first_operand;
         first_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, first_value), false);
         const operands = [2]Operand { first_operand, stack_op };
-        const mov_operation = create_instruction(Mnemonic.mov, operands[0..]);
+        const mov_operation = Instruction.create(Mnemonic.mov, operands[0..]);
         mc_function.append(mov_operation);
     }
 
     const operands = [2]Operand { first_operand, second_operand };
-    const new_instruction = create_instruction(mnemonic, operands[0..]);
+    const new_instruction = Instruction.create(mnemonic, operands[0..]);
     mc_function.append(new_instruction);
 }
 
@@ -1398,6 +1447,10 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
     //return result;
 //}
 
+pub fn get_alloca_size(alloca: *IR.Instruction) u64
+{
+    return alloca.value.alloca.type.size;
+}
 
 pub fn encode(allocator: *Allocator, module: *IR.Module) void
 {
@@ -1438,8 +1491,8 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                     break;
                 }
 
-                const size = instruction.base.type.size;
-                mc_function_value.stack_allocator.allocate(size);
+                const alloca_size = get_alloca_size(instruction);
+                _ = mc_function_value.stack_allocator.allocate(alloca_size);
             }
 
             mc_function_value.labels.resize(mc_function_value.labels.capacity) catch |err| {
@@ -1491,10 +1544,10 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                     {
                         IR.Instruction.ID.Alloca =>
                         {
-                            const alloca_type = instruction.value.alloca.type;
-                            assert(alloca_type.size <= 8);
+                            const alloca_size = get_alloca_size(instruction);
+                            assert(alloca_size <= 8);
 
-                            log.debug("Alloca size: {}\n", .{alloca_type.size});
+                            log.debug("Alloca size: {}\n", .{alloca_size});
                         },
                         IR.Instruction.ID.Store =>
                         {
@@ -1504,15 +1557,21 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
 
                             const alloca_i = @ptrCast(*IR.Instruction, instruction.operands.items[1]);
                             const ir_value_operand = instruction.operands.items[0];
+                            const alloca_size = get_alloca_size(alloca_i);
+                            if (alloca_size != ir_value_operand.type.size)
+                            {
+                                panic("Alloca size: {}. Value to be stored size: {}\n", .{alloca_i.base.type.size, ir_value_operand.type.size});
+                            }
+
                             const value_operand = get_mc_value_from_ir_value(function, mc_function, ir_value_operand);
                             if (value_operand.value == Operand.ID.register)
                             {
-                                mc_function.register_allocator.free(value_operand.value.register);
+                                _ = mc_function.register_allocator.free(value_operand.value.register);
                             }
 
                             const store_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca_i);
                             const operands = [2]Operand {store_operand, value_operand};
-                            const store_mov = create_instruction(Mnemonic.mov, operands[0..]);
+                            const store_mov = Instruction.create(Mnemonic.mov, operands[0..]);
                             mc_function.append(store_mov);
 
                         },
@@ -1524,7 +1583,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             }
 
                             const use_count = instruction.base.uses.items.len;
-                            log.debug("Use count: {}\n", .{use_count});
+                            log.debug("Load use count: {}\n", .{use_count});
                             assert(use_count == 1);
 
                             const use = instruction.base.uses.items[0];
@@ -1568,6 +1627,21 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                                 continue;
                                             }
                                         },
+                                        IR.Instruction.ID.Load =>
+                                        {
+                                            log.debug("Loading a load. Do nothing special\n", .{});
+                                            //if (mc_function.register_allocator.get_allocation(@ptrCast(*IR.Value, use_i))) |load_instruction|
+                                            //{
+                                                //panic("Value is already in a register\n", .{});
+                                            //}
+                                            //else
+                                            //{
+                                                //const load_o = instruction.operands.items[0];
+                                                //const alloca = @ptrCast(*IR.Instruction, load_o);
+                                                //const operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
+                                                //panic("Operand: {}\n", .{operand});
+                                            //}
+                                        },
                                         else => panic("ni: {}\n", .{use_i.id}),
                                     }
                                 },
@@ -1580,7 +1654,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const load_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
                             const register_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, instruction), true);
                             const operands = [2]Operand { register_operand, load_operand };
-                            const mov_i = create_instruction(Mnemonic.mov, operands[0..]);
+                            const mov_i = Instruction.create(Mnemonic.mov, operands[0..]);
                             mc_function.append(mov_i);
                         },
                         IR.Instruction.ID.Ret =>
@@ -1606,7 +1680,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         };
 
                                         const operands = [2]Operand { register_a, operand };
-                                        const mov = create_instruction(Mnemonic.mov, operands[0..]);
+                                        const mov = Instruction.create(Mnemonic.mov, operands[0..]);
                                         mc_function.append(mov);
                                     },
                                     IR.Value.ID.Instruction =>
@@ -1622,7 +1696,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                 }
                             }
 
-                            const ret_i = create_instruction(Mnemonic.ret, null);
+                            const ret_i = Instruction.create(Mnemonic.ret, null);
                             mc_function.append(ret_i);
                         },
                         IR.Instruction.ID.Br =>
@@ -1652,7 +1726,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                 const ir_else_target = instruction.operands.items[2];
                                 const jump_target = Operand.Relative.create(ir_else_target, module, function, function_index, &executable);
                                 const operands = [1]Operand { jump_target };
-                                const conditional_else_jump = create_instruction(jmp_mnemonic, operands[0..]);
+                                const conditional_else_jump = Instruction.create(jmp_mnemonic, operands[0..]);
                                 mc_function.append(conditional_else_jump);
                             }
                             else
@@ -1666,7 +1740,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                 {
                                     const operands = [1]Operand { Operand.Relative.create(operand, module, function, function_index, &executable) };
 
-                                    const jmp = create_instruction(Mnemonic.jmp, operands[0..]);
+                                    const jmp = Instruction.create(Mnemonic.jmp, operands[0..]);
                                     mc_function.append(jmp);
                                 }
                             }
@@ -1707,7 +1781,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
 
                             var allocated_registers: [16]RegisterAllocator.AllocatedRegister = std.mem.zeroes([16]RegisterAllocator.AllocatedRegister);
                             var saved_register_stack_operands: [16]Operand = undefined;
-                            const saved_register_count = mc_function.register_allocator.free_registers_before_call(mc_function, allocated_registers[0..], saved_register_stack_operands[0..]);
+                            const saved_register_count = mc_function.spill_registers_before_call(allocated_registers[0..], saved_register_stack_operands[0..]);
 
                             const arg_count = instruction.operands.items.len - 1;
                             if (arg_count != 0)
@@ -1721,7 +1795,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             }
 
                             const operands = [1]Operand { Operand.Relative.create(callee, module, function, function_index, &executable) };
-                            const call_i = create_instruction(Mnemonic.call, operands[0..]);
+                            const call_i = Instruction.create(Mnemonic.call, operands[0..]);
                             mc_function.append(call_i);
 
                             const use_count = instruction.base.uses.items.len;
@@ -1788,7 +1862,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
 
                                 const new_register_operand = mc_function.register_allocator.copy_register(mc_function, new_register, Encoding.Register.A);
                                 log.debug("New register operand: {}\n", .{new_register_operand.value.register});
-                                mc_function.register_allocator.restore_registers(mc_function, allocated_registers[0..], saved_register_stack_operands[0..]);
+                                mc_function.restore_registers_after_call(allocated_registers[0..], saved_register_stack_operands[0..]);
                             }
                         },
                         else => panic("ni: {}\n", .{instruction.id}),
@@ -1871,9 +1945,9 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                     };
 
                     const rbp_arr = [1]Operand { rbp }; 
-                    const push_rbp = create_instruction(Mnemonic.push, rbp_arr[0..]);
+                    const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
                     const operands = [2]Operand { rbp, rsp };
-                    const mov_rbp_rsp = create_instruction(Mnemonic.mov, operands[0..]);
+                    const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
                     encode_instruction(allocator, &executable, push_rbp);
                     encode_instruction(allocator, &executable, mov_rbp_rsp);
                 }
@@ -1892,7 +1966,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                         Operand.Immediate.get_minimum(function.rsp),
                     };
 
-                    const sub_rsp = create_instruction(Mnemonic.sub, operands[0..]);
+                    const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
                     encode_instruction(allocator, &executable, sub_rsp);
                 }
 
@@ -1960,7 +2034,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                         Operand.Immediate.get_minimum(function.rsp),
                     };
 
-                    const add_rsp = create_instruction(Mnemonic.add, operands[0..]);
+                    const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
                     encode_instruction(allocator, &executable, add_rsp);
                 }
 
@@ -1975,7 +2049,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                         .size = @enumToInt(Operand.Size.bits64),
                     };
                     const rbp_arr = [1]Operand { rbp };
-                    const pop_rbp = create_instruction(Mnemonic.pop, rbp_arr[0..]);
+                    const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
                     encode_instruction(allocator, &executable, pop_rbp);
                 }
 

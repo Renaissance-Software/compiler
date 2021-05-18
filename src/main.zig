@@ -173,7 +173,7 @@ pub const log_general = true;
 pub const log_lexer = false;
 pub const log_parser = false;
 pub const log_semantics = false;
-pub const log_bytecode = false;
+pub const log_bytecode = true;
 pub const log_x86_64 = true;
 pub const log_x86_64_encoding = false;
 

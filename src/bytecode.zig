@@ -1878,7 +1878,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
 {
     var result: ?*Value = null;
     var instruction_count_before : u64 = 0; 
-    if (false)
+    if (true)
     {
         instruction_count_before = count_instructions(builder);
     }
@@ -1917,7 +1917,12 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                     {
                         assert(builder.return_alloca != null);
                         assert(builder.exit_block != null);
-                        _ = builder.create_store(allocator, ret_value, @ptrCast(*Value, builder.return_alloca));
+                        const i = builder.create_store(allocator, ret_value, @ptrCast(*Value, builder.return_alloca));
+                        for (i.operands.items) |o|
+                        {
+                            assert(o.uses.items.len == 1);
+                        }
+
                         _ = builder.create_br(allocator, builder.exit_block.?);
                     }
                     else
@@ -1973,7 +1978,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
 
             if (node.value_type == Node.ValueType.RValue)
             {
-
                 const var_load = builder.create_load(allocator, var_type, alloca_ptr);
                 result = @ptrCast(*Value, var_load);
             }
@@ -2069,8 +2073,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
             {
                 panic("Couldn't find condition for loop expression\n", .{});
             }
-
-
         },
         Node.ID.binary_expr =>
         {
@@ -2330,7 +2332,15 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                     }
                     else
                     {
-                        result = @ptrCast(*Value, pointer_load);
+                        const lvalue_ptr_deref = @ptrCast(*Value, pointer_load);
+                        if (expected_value) |rvalue|
+                        {
+                            _ = builder.create_store(allocator, rvalue, lvalue_ptr_deref);
+                        }
+                        else
+                        {
+                            panic("Expected a rvalue\n", .{});
+                        }
                     }
                 },
             }
@@ -2402,6 +2412,10 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                     if (expected_value) |rvalue|
                     {
                         const store = builder.create_store(allocator, rvalue, @ptrCast(*Value, gep));
+                        for (store.operands.items) |o|
+                        {
+                            assert(o.uses.items.len == 1);
+                        }
                     }
                     else
                     {
@@ -2453,7 +2467,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
         else => panic("Not implemented: {}\n", .{node.value}),
     }
 
-    if (false)
+    if (true)
     {
         const instruction_count_after: u64 = count_instructions(builder);
         const instruction_count = instruction_count_after - instruction_count_before;
@@ -2687,6 +2701,12 @@ const InstructionPrinter = struct
     // @TODO: add align
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        const use_count = self.ref.base.uses.items.len;
+        if (use_count == 0 and self.ref.id != Instruction.ID.Store and self.ref.id != Instruction.ID.Br)
+        {
+            try std.fmt.format(writer, "Instruction: {}\n", .{self.ref.id});
+            //panic("foooo\n", .{});
+        }
         switch (self.ref.id)
         {
             Instruction.ID.Ret =>
@@ -2887,7 +2907,8 @@ const InstructionPrinter = struct
 
 fn print_function(allocator: *Allocator, context: *Context, function: *Function) void
 {
-    if (@enumToInt(log_level) >= @enumToInt(std.log.Level.info) and Root.log_bytecode)
+    const should_print = @enumToInt(log_level) >= @enumToInt(std.log.Level.info) and Root.log_bytecode;
+    if (should_print)
     {
         // @TODO: change hardcoding (starting_id, next_id)
         var slot_tracker = SlotTracker {
@@ -3180,6 +3201,7 @@ pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
             builder.set_block(builder.exit_block.?);
 
             const loaded_return = builder.create_load(allocator, builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
+            assert(loaded_return.base.uses.items.len != 0);
             _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
         }
         else if (!returns_something)
