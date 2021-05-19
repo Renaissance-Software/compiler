@@ -314,7 +314,7 @@ const Operand = struct
             Operand.ID.relative =>
             {
                 const label = self.value.relative.label;
-                try std.fmt.format(writer, "relative(unresolved)", .{});
+                try std.fmt.format(writer, "0x{x}", .{label.target});
             },
             else => panic("ni: {}\n", .{self.value}),
         }
@@ -904,21 +904,13 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
 
                 const instruction_slice = executable.code_buffer.items[instruction_offset..];
 
-                log.debug("Encoded instruction: {}:\n", .{instruction.id});
+                log.debug("0x{x}: ================================================\n", .{@ptrToInt(executable.code_buffer.items.ptr) + instruction_offset});
                 for (instruction_slice) |byte|
                 {
-                    log.debug("0x{x}|", .{byte});
+                    log.debug("0x{x}  ", .{byte});
                 }
-                log.debug("\n", .{});
+                log.debug("\n{}\n", .{instruction});
 
-                log.debug("The code buffer has so far:\n", .{});
-
-                for (executable.code_buffer.items) |byte|
-                {
-                    log.debug("0x{x}|", .{byte});
-                }
-
-                log.debug("\n", .{});
                 return;
             }
         }
