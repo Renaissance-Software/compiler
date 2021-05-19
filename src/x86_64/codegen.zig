@@ -1368,6 +1368,11 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
             const constant_operand = constant_int_operand(constant_int);
             return constant_operand;
         },
+        IR.Value.ID.Argument =>
+        {
+            const argument = @ptrCast(*IR.Function.Argument, ir_value);
+            panic("Argument: {}\n", .{argument});
+        },
         else => panic("ni: {}\n", .{ir_value.id}),
     }
 }

@@ -711,7 +711,7 @@ pub const Function = struct
     basic_blocks: ArrayList(*BasicBlock),
     arguments: []Argument,
 
-    const Argument = struct
+    pub const Argument = struct
     {
         base: Value,
         arg_index: usize,
