@@ -56,16 +56,16 @@ fn get_argument_register(index: u64) ?Encoding.Register
     return null;
 }
 
-fn get_argument_operand(ir_arg: *IR.Function.Argument) Operand
+fn get_argument_operand(index: u64, size: u32) Operand
 {
-    if (get_argument_register(ir_arg.arg_index)) |arg_register|
+    if (get_argument_register(index)) |arg_register|
     {
         return Operand
         {
             .value = Operand.Value {
                 .register = arg_register,
             },
-            .size = ir_arg.base.type.size,
+            .size = size,
         };
     }
     else
@@ -1415,7 +1415,7 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
         IR.Value.ID.Argument =>
         {
             const argument = @ptrCast(*IR.Function.Argument, ir_value);
-            const arg_operand = get_argument_operand(argument);
+            const arg_operand = get_argument_operand(argument.arg_index, argument.base.type.size);
             return arg_operand;
         },
         else => panic("ni: {}\n", .{ir_value.id}),
@@ -1711,6 +1711,12 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         {
                                             log.debug("Loading something that is going to be stored. The store is probably the return value\n", .{});
                                         },
+                                        IR.Instruction.ID.Call =>
+                                        {
+                                            // @Info: seems better to do them on demand
+                                            log.debug("Arguments are loaded on demand\n", .{});
+                                            continue;
+                                        },
                                         else => panic("ni: {}\n", .{use_i.id}),
                                     }
                                 },
@@ -1762,7 +1768,9 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         const ret_instruction = @ptrCast(*IR.Instruction, ir_operand);
                                         switch (ret_instruction.id)
                                         {
-                                            IR.Instruction.ID.Load, IR.Instruction.ID.Add => {},
+                                            IR.Instruction.ID.Load, IR.Instruction.ID.Add,
+                                            IR.Instruction.ID.Call // calls should already be filling the A register
+                                            => {},
                                             else => panic("ni: {}\n", .{ret_instruction.id}),
                                         }
                                     },
@@ -1860,7 +1868,22 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const arg_count = instruction.operands.items.len - 1;
                             if (arg_count != 0)
                             {
-                                panic("Arguments are not implemented yet\n", .{});
+                                var arg_index: u64 = 0;
+                                while (arg_index < arg_count) : (arg_index += 1)
+                                {
+                                    // @Info: here we are loading the operands into registers if possible. If not, they are in the stack
+                                    const arg = instruction.operands.items[arg_index + 1];
+                                    assert(arg.id == IR.Value.ID.Instruction);
+                                    const arg_i = @ptrCast(*IR.Instruction, arg);
+                                    assert(arg_i.id == IR.Instruction.ID.Load);
+                                    const arg_alloca = arg_i.operands.items[0];
+                                    const arg_store = mc_function.stack_allocator.get_operand_from_alloca(function, @ptrCast(*IR.Instruction, arg_alloca));
+                                    const arg_operand = get_argument_operand(arg_index, arg_store.size);
+
+                                    const operands = [2]Operand { arg_operand, arg_store };
+                                    const mov = Instruction.create(Mnemonic.mov, operands[0..]);
+                                    mc_function.append(mov);
+                                }
                             }
 
                             if (mc_function.rsp == 0)
@@ -1902,6 +1925,10 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                             {
                                                 //panic("there could be some problem over here\n", .{});
                                             }
+                                        },
+                                        IR.Instruction.ID.Ret =>
+                                        {
+                                            log.debug("The value returned from the call is also the return value of the current function\n", .{});
                                         },
                                         else => panic("ni: {}\n", .{use_i.id}),
                                     }
