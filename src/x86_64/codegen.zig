@@ -30,6 +30,50 @@ const CallingConvention = enum
 
 const calling_convention = CallingConvention.SystemV;
 
+const system_v_argument_registers = [_]Encoding.Register
+{
+    Encoding.Register.DI,
+    Encoding.Register.SI,
+    Encoding.Register.C,
+    Encoding.Register.r8,
+    Encoding.Register.r9,
+};
+
+fn get_argument_register(index: u64) ?Encoding.Register
+{
+    switch (calling_convention)
+    {
+        CallingConvention.SystemV =>
+        {
+            if (index < system_v_argument_registers.len)
+            {
+                return system_v_argument_registers[index];
+            }
+        },
+        else => panic("ni: {}\n", .{calling_convention}),
+    }
+
+    return null;
+}
+
+fn get_argument_operand(ir_arg: *IR.Function.Argument) Operand
+{
+    if (get_argument_register(ir_arg.arg_index)) |arg_register|
+    {
+        return Operand
+        {
+            .value = Operand.Value {
+                .register = arg_register,
+            },
+            .size = ir_arg.base.type.size,
+        };
+    }
+    else
+    {
+        panic("not implemented: argument in the stack\n", .{});
+    }
+}
+
 const Operand = struct
 {
     value: Value,
@@ -1317,7 +1361,7 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
                         const first_op_instruction = @ptrCast(*IR.Instruction, first_operand);
                         const operand = switch (first_op_instruction.id)
                         {
-                            IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, instruction),
+                            IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, first_op_instruction),
                             IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(first_op_instruction),
                             else => panic("ni:{}\n", .{first_op_instruction.id}),
                         };
@@ -1371,7 +1415,8 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
         IR.Value.ID.Argument =>
         {
             const argument = @ptrCast(*IR.Function.Argument, ir_value);
-            panic("Argument: {}\n", .{argument});
+            const arg_operand = get_argument_operand(argument);
+            return arg_operand;
         },
         else => panic("ni: {}\n", .{ir_value.id}),
     }
