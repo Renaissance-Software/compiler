@@ -195,7 +195,7 @@ pub fn main() anyerror!void
         }
         else
         {
-            const index = 11;
+            const index = 12;
             //const index = test_files.len - 1;
             try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
