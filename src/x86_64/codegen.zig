@@ -304,7 +304,7 @@ const Operand = struct
                 {
                     const displacement_abs = std.math.absCast(displacement);
 
-                    try std.fmt.format(writer, "{s} PTR [{s}{c}0x{x}]", .{word_str, reg_str, sign, displacement_abs});
+                    try std.fmt.format(writer, "{s} PTR [{s} {c} {}]", .{word_str, reg_str, sign, displacement_abs});
                 }
                 else
                 {
@@ -1090,6 +1090,37 @@ const RegisterAllocator = struct
         return null;
     }
 
+    fn get_indirect(self: *RegisterAllocator, load: *IR.Instruction) Operand
+    {
+        log.debug("Getting indirect operand from the register allocator, being the pointer stored in a register\n", .{});
+
+        if (self.get_allocation(@ptrCast(*IR.Value, load))) |ptr_loaded|
+        {
+            const indirect_size = get_indirect_size(load);
+            log.debug("Indirect size: {}\n", .{indirect_size});
+
+            assert(ptr_loaded.value == Operand.ID.register);
+            const indirect = Operand
+            {
+                .value = Operand.Value
+                {
+                    .indirect = Operand.Indirect 
+                    {
+                        .displacement = 0,
+                        .register = ptr_loaded.value.register,
+                    },
+                    },
+                .size = @intCast(u32, indirect_size),
+            };
+
+            return indirect;
+        }
+        else
+        {
+            panic("Pointer is not loaded\n", .{});
+        }
+    }
+
     fn allocate(self: *RegisterAllocator, value: *IR.Value, return_register: bool) Operand
     {
         const size = value.type.size;
@@ -1097,7 +1128,7 @@ const RegisterAllocator = struct
         if (return_register)
         {
             var register_ptr = &self.registers[@enumToInt(AllocatedRegister.ID.A)];
-            if (register_ptr.value != null)
+            if (register_ptr.value != null and !return_register)
             {
                 panic("Register A is already allocated with size: {}\n", .{register_ptr.size});
             }
@@ -1292,37 +1323,13 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
                         const first_operand = instruction.operands.items[0];
                         assert(first_operand.id == IR.Value.ID.Instruction);
                         const first_op_instruction = @ptrCast(*IR.Instruction, first_operand);
-                        switch (first_op_instruction.id)
+                        const operand = switch (first_op_instruction.id)
                         {
-                            IR.Instruction.ID.Alloca =>
-                            {
-                                const operand = mc_function.stack_allocator.get_operand_from_alloca(function, instruction);
-                                return operand;
-                            },
-                            IR.Instruction.ID.Load =>
-                            {
-                                if (mc_function.register_allocator.get_allocation(first_operand)) |operand|
-                                {
-                                    return Operand
-                                    {
-                                        .value = Operand.Value
-                                        {
-                                            .indirect = Operand.Indirect
-                                            {
-                                                .displacement = 0,
-                                                .register = operand.value.register,
-                                            },
-                                        },
-                                        .size = instruction.base.type.size,
-                                    };
-                                }
-                                else
-                                {
-                                    panic("Value not in register\n", .{});
-                                }
-                            },
+                            IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, instruction),
+                            IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(first_op_instruction),
                             else => panic("ni:{}\n", .{first_op_instruction.id}),
-                        }
+                        };
+                        return operand;
                     }
                 },
                 IR.Instruction.ID.Add, IR.Instruction.ID.Sub, IR.Instruction.ID.Mul, IR.Instruction.ID.Call =>
@@ -1449,7 +1456,18 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
 
 pub fn get_alloca_size(alloca: *IR.Instruction) u64
 {
+    assert(alloca.id == IR.Instruction.ID.Alloca);
     return alloca.value.alloca.type.size;
+}
+
+pub fn get_indirect_size(load: *IR.Instruction) u64
+{
+    assert(load.id == IR.Instruction.ID.Load);
+    const load_type = load.base.type;
+    assert(load_type.id == IR.Type.ID.pointer);
+    const pointer_type = @ptrCast(*IR.PointerType, load_type);
+    const deref_size = pointer_type.type.size;
+    return deref_size;
 }
 
 pub fn encode(allocator: *Allocator, module: *IR.Module) void
@@ -1554,14 +1572,8 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const operand_count = instruction.operands.items.len;
 
                             log.debug("Operand count: {}\n", .{operand_count});
-
-                            const alloca_i = @ptrCast(*IR.Instruction, instruction.operands.items[1]);
                             const ir_value_operand = instruction.operands.items[0];
-                            const alloca_size = get_alloca_size(alloca_i);
-                            if (alloca_size != ir_value_operand.type.size)
-                            {
-                                panic("Alloca size: {}. Value to be stored size: {}\n", .{alloca_i.base.type.size, ir_value_operand.type.size});
-                            }
+
 
                             const value_operand = get_mc_value_from_ir_value(function, mc_function, ir_value_operand);
                             if (value_operand.value == Operand.ID.register)
@@ -1569,11 +1581,31 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                 _ = mc_function.register_allocator.free(value_operand.value.register);
                             }
 
-                            const store_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca_i);
-                            const operands = [2]Operand {store_operand, value_operand};
+                            const ir_ptr_operand = instruction.operands.items[1];
+                            assert(ir_ptr_operand.id == IR.Value.ID.Instruction);
+                            const ptr_instruction = @ptrCast(*IR.Instruction, ir_ptr_operand);
+
+                            const store_operand = switch (ptr_instruction.id)
+                            {
+                                IR.Instruction.ID.Alloca => blk:
+                                {
+                                    const alloca_i = ptr_instruction;
+                                    const alloca_size = get_alloca_size(alloca_i);
+                                    const value_size = ir_value_operand.type.size;
+                                    if (alloca_size != value_size)
+                                    {
+                                        panic("Alloca size: {}. Value to be stored size: {}\n", .{alloca_size, value_size});
+                                    }
+
+                                    break :blk mc_function.stack_allocator.get_operand_from_alloca(function, alloca_i);
+                                },
+                                IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(ptr_instruction),
+                                else => panic("ni: {}\n", .{ptr_instruction.id}),
+                            };
+
+                            const operands = [2]Operand { store_operand, value_operand };
                             const store_mov = Instruction.create(Mnemonic.mov, operands[0..]);
                             mc_function.append(store_mov);
-
                         },
                         IR.Instruction.ID.Load =>
                         {
@@ -1607,6 +1639,8 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         panic("not found\n", .{});
                                     };
 
+                                    log.debug("Load use: {}. Index: {}\n", .{use_i.id, operand_index});
+
                                     switch (use_i.id)
                                     {
                                         IR.Instruction.ID.Ret =>
@@ -1630,17 +1664,10 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         IR.Instruction.ID.Load =>
                                         {
                                             log.debug("Loading a load. Do nothing special\n", .{});
-                                            //if (mc_function.register_allocator.get_allocation(@ptrCast(*IR.Value, use_i))) |load_instruction|
-                                            //{
-                                                //panic("Value is already in a register\n", .{});
-                                            //}
-                                            //else
-                                            //{
-                                                //const load_o = instruction.operands.items[0];
-                                                //const alloca = @ptrCast(*IR.Instruction, load_o);
-                                                //const operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
-                                                //panic("Operand: {}\n", .{operand});
-                                            //}
+                                        },
+                                        IR.Instruction.ID.Store =>
+                                        {
+                                            log.debug("Loading something that is going to be stored. The store is probably the return value\n", .{});
                                         },
                                         else => panic("ni: {}\n", .{use_i.id}),
                                     }
@@ -1649,9 +1676,14 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             }
 
                             // @Info: this is because the instruction allows an stack operand
-                            log.debug("Getting stack operand. The value is not in a register\n", .{});
-                            const alloca = @ptrCast(*IR.Instruction, instruction.operands.items[0]);
-                            const load_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
+                            const load_ir_operand = @ptrCast(*IR.Instruction, instruction.operands.items[0]);
+                            const load_operand = switch (load_ir_operand.id)
+                            {
+                                IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, load_ir_operand),
+                                IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(load_ir_operand),
+                                else => panic("ni: {}\n", .{load_ir_operand.id}),
+                            };
+
                             const register_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, instruction), true);
                             const operands = [2]Operand { register_operand, load_operand };
                             const mov_i = Instruction.create(Mnemonic.mov, operands[0..]);

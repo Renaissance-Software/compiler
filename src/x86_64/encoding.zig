@@ -146,6 +146,17 @@ pub const Instruction = struct
         self.operand_combination_count += 1;
     }
 
+    fn Register_Memory(self: *Instruction, rex: Rex, size1: u8, size2: u8) void
+    {
+        const index = self.operand_combination_count;
+
+        self.operand_combinations[index].rex = rex;
+
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.register, .size = size1 });
+        self.operand_combinations[index].add_operand(Operand { .id = Operand.ID.memory, .size = size2 });
+        self.operand_combination_count += 1;
+    }
+
     fn Register_RegisterMemory_Immediate(self: *Instruction, rex: Rex, size1: u8, size2: u8, size3: u8) void
     {
         const index = self.operand_combination_count;
@@ -1315,6 +1326,22 @@ const jmp_encoding = blk:
     break :blk result;
 };
 
+const lea_encoding = blk:
+{
+    const encoding_count = 3;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x8d;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_Memory(Rex.None, 2, 8);
+    result[i].Register_Memory(Rex.None, 4, 8);
+    result[i].Register_Memory(Rex.W, 8, 8);
+
+    break :blk result;
+};
+
 const mov_encoding = blk:
 {
     const encoding_count = 8;
@@ -1668,7 +1695,7 @@ pub const instructions = blk:
         .les = undefined,
         .lfs = undefined,
         .lgs = undefined,
-        .lea = undefined,
+        .lea = lea_encoding[0..],
         .leave = undefined,
         .lfence = undefined,
         .lgdt = undefined,

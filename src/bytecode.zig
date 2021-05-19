@@ -81,39 +81,39 @@ pub const Type = struct
     }
 };
 
-const FloatType = struct
+pub const FloatType = struct
 {
     base: Type,
     bits: u16,
 };
 
-const IntegerType = struct
+pub const IntegerType = struct
 {
     base: Type,
     bits: u16,
 };
 
-const PointerType = struct
+pub const PointerType = struct
 {
     base: Type,
     type: *Type,
 };
 
-const StructType = struct
+pub const StructType = struct
 {
     base: Type,
     field_types: []*Type,
     name: []const u8,
 };
 
-const ArrayType = struct
+pub const ArrayType = struct
 {
     base: Type,
     type: *Type,
     count: usize,
 };
 
-const FunctionType = struct
+pub const FunctionType = struct
 {
     base: Type,
     arg_types: []*Type,
@@ -2701,12 +2701,6 @@ const InstructionPrinter = struct
     // @TODO: add align
     pub fn format(self: *const InstructionPrinter, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
-        const use_count = self.ref.base.uses.items.len;
-        if (use_count == 0 and self.ref.id != Instruction.ID.Store and self.ref.id != Instruction.ID.Br)
-        {
-            try std.fmt.format(writer, "Instruction: {}\n", .{self.ref.id});
-            //panic("foooo\n", .{});
-        }
         switch (self.ref.id)
         {
             Instruction.ID.Ret =>
