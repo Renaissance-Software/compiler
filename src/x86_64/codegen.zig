@@ -993,12 +993,12 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
 
                 const instruction_slice = executable.code_buffer.items[instruction_offset..];
 
-                log.debug("0x{x}: ================================================\n", .{@ptrToInt(executable.code_buffer.items.ptr) + instruction_offset});
+                log.debug("0x{x}: ================================================\n\t", .{@ptrToInt(executable.code_buffer.items.ptr) + instruction_offset});
                 for (instruction_slice) |byte|
                 {
-                    log.debug("0x{x}  ", .{byte});
+                    log.debug("{x:0>2}|", .{byte});
                 }
-                log.debug("\n{}\n", .{instruction});
+                log.debug("\n\t{}\n", .{instruction});
 
                 return;
             }

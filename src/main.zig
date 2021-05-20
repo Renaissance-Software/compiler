@@ -178,7 +178,7 @@ pub const log_x86_64_encoding = false;
 
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
@@ -194,8 +194,8 @@ pub fn main() anyerror!void
         }
         else
         {
-            const index = 16;
-            //const index = test_files.len - 1;
+            //const index = 16;
+            const index = test_files.len - 1;
             try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }
