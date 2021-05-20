@@ -296,7 +296,7 @@ pub const CompareType = extern enum(u32)
     }
 };
 
-const ConstantArray = struct
+pub const ConstantArray = struct
 {
     base: Value,
     array_type: *Type,
@@ -325,12 +325,12 @@ const ConstantArray = struct
     }
 };
 
-const Intrinsic = struct
+pub const Intrinsic = struct
 {
     base: Value,
     id: ID,
 
-    const ID = enum(u16)
+    pub const ID = enum(u16)
     {
         addressofreturnaddress = 1, // llvm.addressofreturnaddress
         adjust_trampoline, // llvm.adjust.trampoline
@@ -655,10 +655,11 @@ pub const ConstantInt = struct
     }
 };
 
-const OperatorBitCast = struct
+pub const OperatorBitCast = struct
 {
     base: Value,
     cast_value: *Value,
+
     pub fn format(self: *const OperatorBitCast, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         switch (self.cast_value.id)
@@ -1918,9 +1919,12 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                         assert(builder.return_alloca != null);
                         assert(builder.exit_block != null);
                         const i = builder.create_store(allocator, ret_value, @ptrCast(*Value, builder.return_alloca));
-                        for (i.operands.items) |o|
+                        for (i.operands.items) |o, oi|
                         {
-                            assert(o.uses.items.len == 1);
+                            if (o.uses.items.len < 1)
+                            {
+                                panic("Use count for {}, idx {}: {}\n", .{o.id, oi, o.uses.items.len});
+                            }
                         }
 
                         _ = builder.create_br(allocator, builder.exit_block.?);
@@ -3195,8 +3199,8 @@ pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
             builder.set_block(builder.exit_block.?);
 
             const loaded_return = builder.create_load(allocator, builder.return_alloca.?.value.alloca.type, @ptrCast(*Value, builder.return_alloca));
-            assert(loaded_return.base.uses.items.len != 0);
             _ = builder.create_ret(allocator, @ptrCast(*Value, loaded_return));
+            assert(loaded_return.base.uses.items.len != 0);
         }
         else if (!returns_something)
         {

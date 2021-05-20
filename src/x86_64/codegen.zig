@@ -87,7 +87,7 @@ const Operand = struct
         relative: Relative,
         register: Encoding.Register,
         indirect: Indirect,
-        rip_relative,
+        rip_relative: RIPRelative,
         import_rip_relative,
     };
 
@@ -111,6 +111,11 @@ const Operand = struct
         bits48 = 6,
         bits64 = 8,
         bits80 = 10,
+    };
+
+    const RIPRelative = struct
+    {
+        offset: u64,
     };
 
     const Relative = struct
@@ -362,6 +367,10 @@ const Operand = struct
                 const label = self.value.relative.label;
                 try std.fmt.format(writer, "0x{x}", .{label.target});
             },
+            Operand.ID.rip_relative =>
+            {
+                try std.fmt.format(writer, "ds:0x{x}", .{self.value.rip_relative.offset});
+            },
             else => panic("ni: {}\n", .{self.value}),
         }
     }
@@ -539,8 +548,17 @@ const LabelBuffer = ArrayList(Label);
 const Executable = struct
 {
     functions: FunctionBuffer,
-    code_buffer: std.ArrayList(u8),
+    code_buffer: ArrayList(u8),
+    data_buffer: ArrayList(u8),
+    constant_data_list: ArrayList(ConstantData),
     code_base_RVA: u64,
+    data_base_RVA: u64,
+
+    const ConstantData = struct
+    {
+        value: *IR.Value,
+        offset: u64,
+    };
 };
 
 fn get_stack_register() Encoding.Register
@@ -636,6 +654,17 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                     {
                         // @TODO: size is 0 here, so it's unimportant to compare them to the encoding sizes
                         if (operand_encoding.id == Encoding.Operand.ID.relative and operand_encoding.size == 4)
+                        {
+                            continue;
+                        }
+                        if (operand_encoding.id == Encoding.Operand.ID.memory)
+                        {
+                            continue;
+                        }
+                    },
+                    Operand.ID.rip_relative =>
+                    {
+                        if (operand_encoding.id == Encoding.Operand.ID.register_or_memory)
                         {
                             continue;
                         }
@@ -783,6 +812,11 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                     sib_byte = (@enumToInt(Encoding.SIB.scale1) << 6) | (r_m << 3) | r_m;
                                 }
                             },
+                            Operand.ID.rip_relative =>
+                            {
+                                r_m = 0b101;
+                                mod = 0;
+                            },
                             Operand.ID.immediate => { },
                             else => panic("ni: {}\n", .{operand.value}),
                         }
@@ -871,11 +905,20 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                     else => {},
                                 }
                             },
-                            Operand.ID.import_rip_relative =>
-                            {
-                                panic("ni\n", .{});
-                            },
                             Operand.ID.rip_relative =>
+                            {
+                                const next_instruction_RVA = executable.code_base_RVA + executable.code_buffer.items.len;
+                                assert(next_instruction_RVA <= std.math.maxInt(i64));
+                                const operand_RVA = executable.data_base_RVA + operand.value.rip_relative.offset;
+                                assert(operand_RVA <= std.math.maxInt(i64));
+                                const difference = @intCast(i64, operand_RVA) - @intCast(i64, next_instruction_RVA);
+                                assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
+                                const displacement = @intCast(i32, difference);
+                                executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch |err| {
+                                    panic("Error allocating RIP-relative displacement\n", .{});
+                                };
+                            },
+                            Operand.ID.import_rip_relative =>
                             {
                                 panic("ni\n", .{});
                             },
@@ -943,7 +986,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                 };
                             }
                         },
-                        Operand.ID.register, Operand.ID.indirect => {},
+                        Operand.ID.register, Operand.ID.indirect, Operand.ID.rip_relative => {},
                         else => panic("ni: {}\n", .{operand.value}),
                     }
                 }
@@ -1159,6 +1202,34 @@ const RegisterAllocator = struct
         }
     }
 
+    fn allocate_temporary(self: *RegisterAllocator, size: u32) Operand
+    {
+        for (self.registers) |*register, i|
+        {
+            if (i == 4 or i == 5 or i == 6 or i == 7)
+            {
+                continue;
+            }
+
+            if (register.value == null)
+            {
+                register.value = null;
+                register.size = @intCast(u8, size);
+
+                return Operand {
+                    .value = Operand.Value {
+                        .register = @intToEnum(Encoding.Register, @intCast(u8, i)),
+                    },
+                    .size = size,
+                };
+            }
+
+            log.debug("Register {} is busy\n", .{@intToEnum(Encoding.Register, @intCast(u8, i))});
+        }
+
+        panic("All registers are busy\n", .{});
+    }
+
     fn allocate(self: *RegisterAllocator, value: *IR.Value, return_register: bool) Operand
     {
         const size = value.type.size;
@@ -1247,6 +1318,13 @@ const RegisterAllocator = struct
     }
 };
 
+fn align_number(n: u64, alignment: u64) u64
+{
+    const mask = alignment - 1;
+    assert(alignment & mask == 0);
+    return (n + mask) & ~mask;
+}
+
 const StackAllocator = struct
 {
     allocations: ArrayList(Allocation),
@@ -1259,16 +1337,10 @@ const StackAllocator = struct
         offset: u64,
     };
 
-    fn align_n(n: u64, alignment: u64) u64
-    {
-        const mask = alignment - 1;
-        assert(alignment & mask == 0);
-        return (n + mask) & ~mask;
-    }
 
     fn allocate(self: *StackAllocator, size: u64) Operand
     {
-        self.stack_offset = StackAllocator.align_n(self.stack_offset + size, size);
+        self.stack_offset = align_number(self.stack_offset + size, size);
 
         self.allocations.append(Allocation
             {
@@ -1336,7 +1408,7 @@ const StackAllocator = struct
     }
 };
 
-pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function, ir_value: *IR.Value) Operand
+pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executable, mc_function: *Function, ir_value: *IR.Value) Operand
 {
     log.debug("Getting value of {s}\n", .{@tagName(ir_value.id)});
     switch (ir_value.id)
@@ -1404,6 +1476,41 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
                         return r;
                     }
                 },
+                IR.Instruction.ID.GetElementPtr =>
+                {
+                    const operand_count = instruction.operands.items.len;
+                    assert(operand_count >= 3);
+                    assert(operand_count == 3);
+                    const alloca_value = instruction.operands.items[0];
+                    assert(is_instruction(alloca_value, IR.Instruction.ID.Alloca));
+                    const alloca = @ptrCast(*IR.Instruction, alloca_value);
+                    const zero_const = instruction.operands.items[1];
+                    assert(const_int_eq(zero_const, 0));
+                    const index = instruction.operands.items[2];
+                    const index_value = const_int_val(index);
+
+                    const alloca_type = alloca.value.alloca.type;
+                    var stack_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
+                    switch (alloca_type.id)
+                    {
+                        IR.Type.ID.array =>
+                        {
+                            const array_type = @ptrCast(*IR.ArrayType, alloca_type);
+                            const elem_type_size = array_type.type.size;
+                            const offset = elem_type_size * index_value;
+
+                            stack_operand.size = elem_type_size;
+                            assert(offset < std.math.maxInt(i32));
+                            stack_operand.value.indirect.displacement -= @intCast(i32, offset);
+                        },
+                        else => panic("ni: {}\n", .{alloca_type.id}),
+                    }
+
+                    log.debug("Stack operand: {}\n", .{stack_operand});
+                    log.debug("stack operand displacement: {}\n", .{stack_operand.value.indirect.displacement});
+
+                    return stack_operand;
+                },
                 else => panic("ni: {}\n", .{instruction.id}),
             }
         },
@@ -1414,11 +1521,112 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, mc_function: *Function
             const constant_operand = constant_int_operand(constant_int);
             return constant_operand;
         },
+        IR.Value.ID.ConstantArray =>
+        {
+            log.debug("Getting constant array. The value is not in a register\n", .{});
+            for (executable.constant_data_list.items) |constant_data|
+            {
+                if (constant_data.value == ir_value)
+                {
+                    panic("ni\n", .{});
+                }
+            }
+
+            const constant_array = @ptrCast(*IR.ConstantArray, ir_value);
+            const array_size = constant_array.array_type.size;
+            const elem_size = array_size / constant_array.array_values.len;
+            const alignment = elem_size;
+
+            var address = @ptrToInt(executable.data_buffer.items.ptr) + executable.data_buffer.items.len;
+            const aligned_address = align_number(address, alignment);
+            // @TODO: alignment might not be satisfied if there are reallocations
+            log.debug("Aligned address: 0x{x}\n", .{aligned_address});
+
+            while (address < aligned_address) : (address += 1)
+            {
+                executable.data_buffer.append(0) catch |err| {
+                    panic("error writing byte to the .data buffer to achieve alignment\n", .{});
+                };
+            }
+
+            const offset = executable.data_buffer.items.len;
+            log.debug("offset: {}\n", .{offset});
+
+            // @TODO: rework constant arrays to delete this mess
+            for (constant_array.array_values) |array_value|
+            {
+                switch (array_value.id)
+                {
+                    IR.Value.ID.ConstantInt =>
+                    {
+                        const constant_int = @ptrCast(*IR.ConstantInt, array_value);
+                        const constant_value = constant_int.int_value;
+                        const signed = constant_int.is_signed;
+                        if (signed)
+                        {
+                            switch (elem_size)
+                            {
+                                else => panic("ni: {}\n", .{elem_size}),
+                            }
+                        }
+                        else
+                        {
+                            switch (elem_size)
+                            {
+                                4 =>
+                                {
+                                    const number32 = @intCast(u32, constant_value);
+                                    executable.data_buffer.appendSlice(std.mem.asBytes(&number32)) catch |err| {
+                                        panic("Error appending bytes to the .data section\n", .{});
+                                    };
+                                },
+                                else => panic("ni: {}\n", .{elem_size}),
+                            }
+                        }
+                    },
+                    else => panic("ni: {}\n", .{array_value.id}),
+                }
+            }
+
+            const new_data_constant = Executable.ConstantData
+            {
+                .value = ir_value,
+                .offset = offset,
+            };
+
+            executable.constant_data_list.append(new_data_constant) catch |err| {
+                panic("Error appending tracking information for .data constant\n", .{});
+            };
+
+            // @TODO: the array must be an operand which points to the data segment
+            //check if that constant exist (data_constant_list)
+            //if not create and write bytes to .data section
+            // return an rip_relative operand from that
+            
+            const constant_operand = Operand
+            {
+                .value = Operand.Value {
+                    .rip_relative = Operand.RIPRelative {
+                        .offset = offset,
+                    },
+                },
+                .size = array_size,
+            };
+
+            return constant_operand;
+        },
         IR.Value.ID.Argument =>
         {
             const argument = @ptrCast(*IR.Function.Argument, ir_value);
             const arg_operand = get_argument_operand(argument.arg_index, argument.base.type.size);
             return arg_operand;
+        },
+        IR.Value.ID.OperatorBitCast =>
+        {
+            const bitcast = @ptrCast(*IR.OperatorBitCast, ir_value);
+            const cast_value = get_mc_value_from_ir_value(function, executable, mc_function, bitcast.cast_value);
+            // @TODO: can we return this value safely?
+            return cast_value;
         },
         else => panic("ni: {}\n", .{ir_value.id}),
     }
@@ -1437,14 +1645,14 @@ pub fn direct_ir_mc_translator(ir: IR.Instruction.ID) Mnemonic
     return mnemonic;
 }
 
-pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instruction: *IR.Instruction, mnemonic: Mnemonic, first_operand_must_be_register: bool, result_stored_in_register: bool) void
+pub fn do_binary_operation(executable: *Executable, mc_function: *Function, function: *IR.Function, instruction: *IR.Instruction, mnemonic: Mnemonic, first_operand_must_be_register: bool, result_stored_in_register: bool) void
 {
     assert(instruction.operands.items.len == 2);
 
     const first_value = instruction.operands.items[0];
     const second_value = instruction.operands.items[1];
     log.debug("Fetching first operand\n", .{});
-    var first_operand = get_mc_value_from_ir_value(function, mc_function, first_value);
+    var first_operand = get_mc_value_from_ir_value(function, executable, mc_function, first_value);
 
     if (first_operand_must_be_register and first_operand.value != Operand.ID.register)
     {
@@ -1470,7 +1678,7 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
         mc_function.register_allocator.registers[@enumToInt(first_operand.value.register)].value = @ptrCast(*IR.Value, instruction);
     }
 
-    const second_operand = get_mc_value_from_ir_value(function, mc_function, second_value);
+    const second_operand = get_mc_value_from_ir_value(function, executable, mc_function, second_value);
     log.debug("After second operand fetching\n", .{});
     if (first_operand.value == Operand.ID.indirect and second_operand.value == Operand.ID.indirect)
     {
@@ -1486,17 +1694,6 @@ pub fn do_binary_operation(mc_function: *Function, function: *IR.Function, instr
     const new_instruction = Instruction.create(mnemonic, operands[0..]);
     mc_function.append(new_instruction);
 }
-
-//fn make_stack_operand(function: *IR.Function, alloca: *IR.Instruction) Operand
-//{
-    //const stack_offset = get_stack_offset(function, alloca);
-
-    //const store_size = alloca.value.alloca.type.size;
-    //log.debug("Store size: {}. Stack offset: {}\n", .{store_size, stack_offset});
-
-    //const result = stack_operand(stack_offset, store_size);
-    //return result;
-//}
 
 pub fn get_alloca_size(alloca: *IR.Instruction) u64
 {
@@ -1514,16 +1711,44 @@ pub fn get_indirect_size(load: *IR.Instruction) u64
     return deref_size;
 }
 
+pub fn is_instruction(value: *IR.Value, id: IR.Instruction.ID) bool
+{
+    assert(value.id == IR.Value.ID.Instruction);
+    const instruction = @ptrCast(*IR.Instruction, value);
+    return instruction.id == id;
+}
+
+// @TODO: take into account sign
+pub fn const_int_val(value: *IR.Value) u64
+{
+    assert(value.id == IR.Value.ID.ConstantInt);
+    const constant_int = @ptrCast(*IR.ConstantInt, value);
+    return constant_int.int_value;
+}
+
+pub fn const_int_eq(value: *IR.Value, int_value: u64) bool
+{
+    const const_value = const_int_val(value);
+    return const_value == int_value;
+}
+
 pub fn encode(allocator: *Allocator, module: *IR.Module) void
 {
     log.debug("\n==============\nx86-64 CODEGEN\n==============\n\n", .{});
+
     var executable = Executable
     {
         .functions = FunctionBuffer.init(allocator),
-        .code_base_RVA = 0,
         .code_buffer = undefined,
+        // @TODO: this is a hack to avoid reallocation. Reallocation kills the addresses
+        .data_buffer = ArrayList(u8).initCapacity(allocator, 1024 * 64) catch |err| {
+            panic("Error allocating memory for .data section buffer\n", .{});
+        },
+        .constant_data_list = ArrayList(Executable.ConstantData).init(allocator),
+        .code_base_RVA = 0,
+        .data_base_RVA = 0,
     };
-
+    executable.data_base_RVA = @ptrToInt(executable.data_buffer.items.ptr);
     for (module.functions.list.items) |function_bucket|
     {
         var bucket_function_index: u64 = 0;
@@ -1619,7 +1844,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const ir_value_operand = instruction.operands.items[0];
 
 
-                            const value_operand = get_mc_value_from_ir_value(function, mc_function, ir_value_operand);
+                            const value_operand = get_mc_value_from_ir_value(function, &executable, mc_function, ir_value_operand);
                             if (value_operand.value == Operand.ID.register)
                             {
                                 _ = mc_function.register_allocator.free(value_operand.value.register);
@@ -1732,6 +1957,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             {
                                 IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, load_ir_operand),
                                 IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(load_ir_operand),
+                                IR.Instruction.ID.GetElementPtr => get_mc_value_from_ir_value(function, &executable, mc_function, @ptrCast(*IR.Value, load_ir_operand)),
                                 else => panic("ni: {}\n", .{load_ir_operand.id}),
                             };
 
@@ -1836,16 +2062,16 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                         },
                         IR.Instruction.ID.ICmp =>
                         {
-                            do_binary_operation(mc_function, function, instruction, Mnemonic.cmp, false, false);
+                            do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.cmp, false, false);
                         },
                         IR.Instruction.ID.Add =>
                         {
                             log.debug("Doing add\n", .{});
-                            do_binary_operation(mc_function, function, instruction, Mnemonic.add, true, true);
+                            do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.add, true, true);
                         },
                         IR.Instruction.ID.Sub =>
                         {
-                            do_binary_operation(mc_function, function, instruction, Mnemonic.sub, true, true);
+                            do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.sub, true, true);
                         },
                         IR.Instruction.ID.Mul =>
                         {
@@ -1855,7 +2081,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const second_value = instruction.operands.items[1];
                             if (second_value.id != IR.Value.ID.ConstantInt)
                             {
-                                do_binary_operation(mc_function, function, instruction, Mnemonic.sub, true, true);
+                                do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.sub, true, true);
                             }
                             else
                             {
@@ -1867,135 +2093,201 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             // @TODO: Encoding of relative operand is maybe buggy
                             // do arg stuff
                             const callee = instruction.operands.items[0];
-
-                            var allocated_registers: [16]RegisterAllocator.AllocatedRegister = std.mem.zeroes([16]RegisterAllocator.AllocatedRegister);
-                            var saved_register_stack_operands: [16]Operand = undefined;
-                            const saved_register_count = mc_function.spill_registers_before_call(allocated_registers[0..], saved_register_stack_operands[0..]);
-
                             const arg_count = instruction.operands.items.len - 1;
-                            if (arg_count != 0)
+
+                            switch (callee.id)
                             {
-                                var arg_index: u64 = 0;
-                                while (arg_index < arg_count) : (arg_index += 1)
+                                IR.Value.ID.Intrinsic =>
                                 {
-                                    // @Info: here we are loading the operands into registers if possible. If not, they are in the stack
-                                    const arg = instruction.operands.items[arg_index + 1];
-                                    assert(arg.id == IR.Value.ID.Instruction);
-                                    const arg_i = @ptrCast(*IR.Instruction, arg);
-                                    switch (arg_i.id)
+                                    const intrinsic = @ptrCast(*IR.Intrinsic, callee);
+                                    switch (intrinsic.id)
                                     {
-                                        IR.Instruction.ID.Load =>
+                                        IR.Intrinsic.ID.memcpy =>
                                         {
-                                            const arg_alloca = arg_i.operands.items[0];
-                                            const arg_store = mc_function.stack_allocator.get_operand_from_alloca(function, @ptrCast(*IR.Instruction, arg_alloca));
-                                            const arg_operand = get_argument_operand(arg_index, arg_store.size);
+                                            const ir_dst = instruction.operands.items[1];
+                                            const ir_src = instruction.operands.items[2];
+                                            const ir_byte_count = instruction.operands.items[3];
 
-                                            const operands = [2]Operand { arg_operand, arg_store };
-                                            const mov = Instruction.create(Mnemonic.mov, operands[0..]);
-                                            mc_function.append(mov);
-                                        },
-                                        IR.Instruction.ID.Alloca =>
-                                        {
-                                            const alloca = arg_i;
-                                            // @TODO: This is not correct
-                                            const alloca_size = 8;
-                                            assert(alloca_size == 8);
-                                            const arg_operand = get_argument_operand(arg_index, @intCast(u32, alloca_size));
-                                            const arg_store = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
-                                            const operands = [2]Operand { arg_operand, arg_store };
-                                            const lea = Instruction.create(Mnemonic.lea, operands[0..]);
-                                            mc_function.append(lea);
-                                        },
-                                        else => panic("ni: {}\n", .{arg_i.id}),
-                                    }
-                                }
-                            }
+                                            assert(ir_dst.id == IR.Value.ID.Instruction);
+                                            const ir_dst_i = @ptrCast(*IR.Instruction, ir_dst);
+                                            assert(ir_dst_i.id == IR.Instruction.ID.BitCast);
+                                            const bitcast_value = ir_dst_i.operands.items[0];
+                                            assert(bitcast_value.id == IR.Value.ID.Instruction);
+                                            const bitcast_i = @ptrCast(*IR.Instruction, bitcast_value);
+                                            assert(bitcast_i.id == IR.Instruction.ID.Alloca);
+                                            const dst = mc_function.stack_allocator.get_operand_from_alloca(function, bitcast_i);
 
-                            if (mc_function.rsp == 0)
-                            {
-                                mc_function.rsp += 16;
-                            }
+                                            const src = get_mc_value_from_ir_value(function, &executable, mc_function, ir_src);
 
-                            const operands = [1]Operand { Operand.Relative.create(callee, module, function, function_index, &executable) };
-                            const call_i = Instruction.create(Mnemonic.call, operands[0..]);
-                            mc_function.append(call_i);
-
-                            const use_count = instruction.base.uses.items.len;
-                            log.debug("Call use count: {}\n", .{use_count});
-                            if (instruction.base.type.id == IR.Type.ID.void)
-                            {
-                                assert(use_count == 0);
-                            }
-                            else
-                            {
-                                assert(use_count == 1);
-                                const call_use = instruction.base.uses.items[0];
-
-                                switch (call_use.id)
-                                {
-                                    IR.Value.ID.Instruction =>
-                                    {
-                                        const use_i = @ptrCast(*IR.Instruction, call_use);
-                                        const operand_index = blk:
-                                        {
-                                            for (use_i.operands.items) |operand, i|
+                                            switch (ir_byte_count.id)
                                             {
-                                                if (operand == @ptrCast(*IR.Value, instruction))
+                                                IR.Value.ID.ConstantInt =>
                                                 {
-                                                    break :blk i;
+                                                    const constant_int = @ptrCast(*IR.ConstantInt, ir_byte_count);
+                                                    assert(!constant_int.is_signed);
+                                                    const bytes_to_copy = @intCast(u32, constant_int.int_value);
+                                                    assert(bytes_to_copy <= 8);
+
+                                                    const store_register_operand = mc_function.register_allocator.allocate_temporary(bytes_to_copy);
+                                                    var operands = [2]Operand { store_register_operand, src };
+                                                    const copy_to_register = Instruction.create(Mnemonic.mov, operands[0..]);
+                                                    mc_function.append(copy_to_register);
+
+                                                    _ = mc_function.register_allocator.free(store_register_operand.value.register);
+
+                                                    operands = [2]Operand { dst, store_register_operand };
+                                                    const copy_to_stack = Instruction.create(Mnemonic.mov, operands[0..]);
+                                                    mc_function.append(copy_to_stack);
+                                                },
+                                                else => panic("ni: {}\n", .{ir_byte_count.id}),
+                                            }
+                                        },
+                                        else => panic("ni: {}\n", .{intrinsic.id}),
+                                    }
+                                },
+                                IR.Value.ID.GlobalFunction =>
+                                {
+                                    var allocated_registers: [16]RegisterAllocator.AllocatedRegister = std.mem.zeroes([16]RegisterAllocator.AllocatedRegister);
+                                    var saved_register_stack_operands: [16]Operand = undefined;
+                                    const saved_register_count = mc_function.spill_registers_before_call(allocated_registers[0..], saved_register_stack_operands[0..]);
+
+                                    if (arg_count > 0)
+                                    {
+                                        var arg_index: u64 = 0;
+                                        while (arg_index < arg_count) : (arg_index += 1)
+                                        {
+                                            // @Info: here we are loading the operands into registers if possible. If not, they are in the stack
+                                            const arg = instruction.operands.items[arg_index + 1];
+                                            assert(arg.id == IR.Value.ID.Instruction);
+                                            const arg_i = @ptrCast(*IR.Instruction, arg);
+                                            switch (arg_i.id)
+                                            {
+                                                IR.Instruction.ID.Load =>
+                                                {
+                                                    const arg_alloca = arg_i.operands.items[0];
+                                                    const arg_store = mc_function.stack_allocator.get_operand_from_alloca(function, @ptrCast(*IR.Instruction, arg_alloca));
+                                                    const arg_operand = get_argument_operand(arg_index, arg_store.size);
+
+                                                    const operands = [2]Operand { arg_operand, arg_store };
+                                                    const mov = Instruction.create(Mnemonic.mov, operands[0..]);
+                                                    mc_function.append(mov);
+                                                },
+                                                IR.Instruction.ID.Alloca =>
+                                                {
+                                                    const alloca = arg_i;
+                                                    // @TODO: This is not correct
+                                                    const alloca_size = 8;
+                                                    assert(alloca_size == 8);
+                                                    const arg_operand = get_argument_operand(arg_index, @intCast(u32, alloca_size));
+                                                    const arg_store = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
+                                                    const operands = [2]Operand { arg_operand, arg_store };
+                                                    const lea = Instruction.create(Mnemonic.lea, operands[0..]);
+                                                    mc_function.append(lea);
+                                                },
+                                                else => panic("ni: {}\n", .{arg_i.id}),
+                                            }
+                                        }
+                                    }
+
+                                    if (mc_function.rsp == 0)
+                                    {
+                                        mc_function.rsp += 16;
+                                    }
+
+                                    const operands = [1]Operand { Operand.Relative.create(callee, module, function, function_index, &executable) };
+                                    const call_i = Instruction.create(Mnemonic.call, operands[0..]);
+                                    mc_function.append(call_i);
+
+                                    const use_count = instruction.base.uses.items.len;
+                                    log.debug("Call use count: {}\n", .{use_count});
+                                    if (instruction.base.type.id == IR.Type.ID.void)
+                                    {
+                                        assert(use_count == 0);
+                                    }
+                                    else
+                                    {
+                                        assert(use_count == 1);
+                                        const call_use = instruction.base.uses.items[0];
+
+                                        switch (call_use.id)
+                                        {
+                                            IR.Value.ID.Instruction =>
+                                            {
+                                                const use_i = @ptrCast(*IR.Instruction, call_use);
+                                                const operand_index = blk:
+                                                {
+                                                    for (use_i.operands.items) |operand, i|
+                                                    {
+                                                        if (operand == @ptrCast(*IR.Value, instruction))
+                                                        {
+                                                            break :blk i;
+                                                        }
+                                                    }
+
+                                                    panic("instruction not used\n", .{});
+                                                };
+
+                                                log.debug("Call is used for {}\n", .{use_i.id});
+
+                                                switch (use_i.id)
+                                                {
+                                                    IR.Instruction.ID.Add =>
+                                                    {
+                                                        if (operand_index != 0)
+                                                        {
+                                                            //panic("there could be some problem over here\n", .{});
+                                                        }
+                                                    },
+                                                    IR.Instruction.ID.Ret =>
+                                                    {
+                                                        log.debug("The value returned from the call is also the return value of the current function\n", .{});
+                                                    },
+                                                    IR.Instruction.ID.Store => {},
+                                                    else => panic("ni: {}\n", .{use_i.id}),
+                                                }
+                                            },
+                                            else => panic("ni: {}\n", .{call_use.id}),
+                                        }
+
+                                        var return_register_operand: Operand = undefined;
+                                        const return_type = instruction.base.type;
+                                        const ret_size = return_type.size;
+                                        assert(ret_size <= 8);
+                                        return_register_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, instruction), true);
+                                        log.debug("Return register operand: {}\n", .{return_register_operand});
+                                    }
+
+                                    if (saved_register_count > 0)
+                                    {
+                                        // @TODO: save return value
+                                        const new_register = blk:
+                                        {
+                                            for (allocated_registers) |reg, i|
+                                            {
+                                                if (reg.value == null)
+                                                {
+                                                    break :blk @intToEnum(Encoding.Register, @intCast(u8, i));
                                                 }
                                             }
 
-                                            panic("instruction not used\n", .{});
+                                            panic("registers are full\n", .{});
                                         };
 
-                                        switch (use_i.id)
-                                        {
-                                            IR.Instruction.ID.Add =>
-                                            {
-                                                if (operand_index != 0)
-                                                {
-                                                    //panic("there could be some problem over here\n", .{});
-                                                }
-                                            },
-                                            IR.Instruction.ID.Ret =>
-                                            {
-                                                log.debug("The value returned from the call is also the return value of the current function\n", .{});
-                                            },
-                                            else => panic("ni: {}\n", .{use_i.id}),
-                                        }
-                                    },
-                                    else => panic("ni: {}\n", .{call_use.id}),
-                                }
-
-                                var return_register_operand: Operand = undefined;
-                                const return_type = instruction.base.type;
-                                const ret_size = return_type.size;
-                                assert(ret_size <= 8);
-                                return_register_operand = mc_function.register_allocator.allocate(@ptrCast(*IR.Value, instruction), true);
-                                log.debug("Return register operand: {}\n", .{return_register_operand});
-                            }
-
-                            if (saved_register_count > 0)
-                            {
-                                // @TODO: save return value
-                                const new_register = blk:
-                                {
-                                    for (allocated_registers) |reg, i|
-                                    {
-                                        if (reg.value == null)
-                                        {
-                                            break :blk @intToEnum(Encoding.Register, @intCast(u8, i));
-                                        }
+                                        const new_register_operand = mc_function.register_allocator.copy_register(mc_function, new_register, Encoding.Register.A);
+                                        log.debug("New register operand: {}\n", .{new_register_operand.value.register});
+                                        mc_function.restore_registers_after_call(allocated_registers[0..], saved_register_stack_operands[0..]);
                                     }
-
-                                    panic("registers are full\n", .{});
-                                };
-
-                                const new_register_operand = mc_function.register_allocator.copy_register(mc_function, new_register, Encoding.Register.A);
-                                log.debug("New register operand: {}\n", .{new_register_operand.value.register});
-                                mc_function.restore_registers_after_call(allocated_registers[0..], saved_register_stack_operands[0..]);
+                                },
+                                else => panic("ni: {}\n", .{callee.id}),
                             }
+                        },
+                        IR.Instruction.ID.BitCast =>
+                        {
+                            log.debug("Doing bitcasts on demand?\n", .{});
+                        },
+                        IR.Instruction.ID.GetElementPtr =>
+                        {
+                            log.debug("Doing gep's on demand?\n", .{});
                         },
                         else => panic("ni: {}\n", .{instruction.id}),
                     }
@@ -2193,4 +2485,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         },
         else => panic("ni: {}\n", .{calling_convention}),
     }
+
+    const code_size = executable.code_buffer.items.len;
+    log.debug("\n\nAproximate code size: {}. Real code size: {}\n", .{aprox_code_size, code_size});
 }

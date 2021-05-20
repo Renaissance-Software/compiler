@@ -77,29 +77,6 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     }
 }
 
-const test_dir = "tests/";
-const test_files = [_][]const u8
-{
-    test_dir ++ "empty_void.rns",
-    test_dir ++ "void_return.rns",
-    test_dir ++ "lit_return.rns",
-    test_dir ++ "var_return.rns",
-    test_dir ++ "loop_if.rns",
-    test_dir ++ "loop_and_nested_if.rns",
-    test_dir ++ "more_complicated_loop_and_nested_if_and_else.rns",
-    test_dir ++ "even_more_complicated_loop_and_nested_if_and_else.rns",
-    test_dir ++ "compiler_crasher.rns",
-    test_dir ++ "function_calls.rns",
-    test_dir ++ "pointers.rns",
-    test_dir ++ "function_args.rns",
-    test_dir ++ "pointer_args.rns",
-    test_dir ++ "pointer_and_branching.rns",
-    test_dir ++ "array_basic.rns",
-    test_dir ++ "array_assign.rns",
-    test_dir ++ "struct_basic.rns",
-};
-
-
 pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
 {
     switch (scope)
@@ -168,6 +145,28 @@ pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral),
     nosuspend stderr.print(format, args) catch return;
 }
 
+const test_dir = "tests/";
+const test_files = [_][]const u8
+{
+    test_dir ++ "empty_void.rns",
+    test_dir ++ "void_return.rns",
+    test_dir ++ "lit_return.rns",
+    test_dir ++ "var_return.rns",
+    test_dir ++ "loop_if.rns",
+    test_dir ++ "loop_and_nested_if.rns",
+    test_dir ++ "more_complicated_loop_and_nested_if_and_else.rns",
+    test_dir ++ "even_more_complicated_loop_and_nested_if_and_else.rns",
+    test_dir ++ "compiler_crasher.rns",
+    test_dir ++ "function_calls.rns",
+    test_dir ++ "pointers.rns",
+    test_dir ++ "function_args.rns",
+    test_dir ++ "pointer_args.rns",
+    test_dir ++ "pointer_and_branching.rns",
+    test_dir ++ "array_basic.rns",
+    test_dir ++ "array_assign.rns",
+    test_dir ++ "struct_basic.rns",
+};
+
 pub const log_level: std.log.Level = .debug;
 pub const log_general = true;
 pub const log_lexer = false;
@@ -195,7 +194,7 @@ pub fn main() anyerror!void
         }
         else
         {
-            const index = 12;
+            const index = 14;
             //const index = test_files.len - 1;
             try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
