@@ -275,8 +275,7 @@ const Operand = struct
                             Encoding.Register.BP => try std.fmt.format(writer, "ebp", .{}),
                             Encoding.Register.SI => try std.fmt.format(writer, "esi", .{}),
                             Encoding.Register.DI => try std.fmt.format(writer, "edi", .{}),
-
-                            else => unreachable,
+                            else => panic("{}", .{self.value.register}),
                         }
                     },
                     2 =>
@@ -291,7 +290,7 @@ const Operand = struct
                             Encoding.Register.BP => try std.fmt.format(writer, "bp", .{}),
                             Encoding.Register.SI => try std.fmt.format(writer, "si", .{}),
                             Encoding.Register.DI => try std.fmt.format(writer, "di", .{}),
-                            else => unreachable,
+                            else => panic("{}", .{self.value.register}),
                         }
                     },
                     1 =>
@@ -347,6 +346,7 @@ const Operand = struct
                         Encoding.Register.A => break :blk "rax",
                         Encoding.Register.C => break :blk "rcx",
                         Encoding.Register.D => break :blk "rdx",
+                        Encoding.Register.B => break :blk "rbx",
                         else => panic("ni: {}\n", .{reg}),
                     }
                 };
@@ -355,7 +355,7 @@ const Operand = struct
                 {
                     const displacement_abs = std.math.absCast(displacement);
 
-                    try std.fmt.format(writer, "{s} PTR [{s} {c} {}]", .{word_str, reg_str, sign, displacement_abs});
+                    try std.fmt.format(writer, "{s} PTR [{s} {c} 0x{x}]", .{word_str, reg_str, sign, displacement_abs});
                 }
                 else
                 {
@@ -1437,6 +1437,7 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executabl
                         {
                             IR.Instruction.ID.Alloca => mc_function.stack_allocator.get_operand_from_alloca(function, first_op_instruction),
                             IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(first_op_instruction),
+                            IR.Instruction.ID.GetElementPtr => get_mc_value_from_ir_value(function, executable, mc_function, first_operand),
                             else => panic("ni:{}\n", .{first_op_instruction.id}),
                         };
                         return operand;
@@ -1481,35 +1482,98 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executabl
                     const operand_count = instruction.operands.items.len;
                     assert(operand_count >= 3);
                     assert(operand_count == 3);
-                    const alloca_value = instruction.operands.items[0];
-                    assert(is_instruction(alloca_value, IR.Instruction.ID.Alloca));
-                    const alloca = @ptrCast(*IR.Instruction, alloca_value);
+                    const pointer_value = instruction.operands.items[0];
+                    assert(pointer_value.id == IR.Value.ID.Instruction);
+                    const pointer_instruction = @ptrCast(*IR.Instruction, pointer_value);
                     const zero_const = instruction.operands.items[1];
                     assert(const_int_eq(zero_const, 0));
                     const index = instruction.operands.items[2];
                     const index_value = const_int_val(index);
 
-                    const alloca_type = alloca.value.alloca.type;
-                    var stack_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
-                    switch (alloca_type.id)
+                    switch (pointer_instruction.id)
                     {
-                        IR.Type.ID.array =>
+                        IR.Instruction.ID.Alloca => 
                         {
-                            const array_type = @ptrCast(*IR.ArrayType, alloca_type);
-                            const elem_type_size = array_type.type.size;
-                            const offset = elem_type_size * index_value;
+                            const alloca = pointer_instruction;
+                            const alloca_type = get_alloca_type(alloca);
+                            var stack_operand = mc_function.stack_allocator.get_operand_from_alloca(function, alloca);
+                            switch (alloca_type.id)
+                            {
+                                IR.Type.ID.array =>
+                                {
+                                    const array_type = @ptrCast(*IR.ArrayType, alloca_type);
+                                    const elem_type_size = array_type.type.size;
+                                    const offset = elem_type_size * index_value;
 
-                            stack_operand.size = elem_type_size;
-                            assert(offset < std.math.maxInt(i32));
-                            stack_operand.value.indirect.displacement -= @intCast(i32, offset);
+                                    stack_operand.size = elem_type_size;
+                                    assert(offset < std.math.maxInt(i32));
+                                    stack_operand.value.indirect.displacement += @intCast(i32, offset);
+                                },
+                                else => panic("ni: {}\n", .{alloca_type.id}),
+                            }
+
+                            log.debug("Stack operand: {}\n", .{stack_operand});
+                            log.debug("stack operand displacement: {}\n", .{stack_operand.value.indirect.displacement});
+
+                            return stack_operand;
                         },
-                        else => panic("ni: {}\n", .{alloca_type.id}),
+                        IR.Instruction.ID.Load =>
+                        {
+                            const load_operand = pointer_instruction.operands.items[0];
+                            assert(load_operand.id == IR.Value.ID.Instruction);
+                            const load_i = @ptrCast(*IR.Instruction, load_operand);
+                            assert(load_i.id == IR.Instruction.ID.Alloca);
+                            const alloca_operand = mc_function.stack_allocator.get_operand_from_alloca(function, load_i);
+                            const alloca_type = get_alloca_type(load_i);
+                            assert(alloca_type.id == IR.Type.ID.pointer);
+                            const alloca_ptr_type = @ptrCast(*IR.PointerType, alloca_type);
+                            const alloca_base_type = alloca_ptr_type.type;
+
+                            switch (alloca_base_type.id)
+                            {
+                                IR.Type.ID.@"struct" =>
+                                {
+                                    const struct_type = @ptrCast(*IR.StructType, alloca_base_type);
+                                    assert(index_value < struct_type.field_types.len);
+                                    const field = struct_type.field_types[index_value];
+
+                                    var offset: u64 = 0;
+                                    for (struct_type.field_types) |field_type|
+                                    {
+                                        if (field_type == field)
+                                        {
+                                            break;
+                                        }
+
+                                        offset += field_type.size;
+                                    }
+
+                                    log.debug("Field offset: {}\n", .{offset});
+
+                                    if (mc_function.register_allocator.get_allocation(pointer_value))|register_operand|
+                                    {
+                                        const register = register_operand.value.register;
+                                        var operand = alloca_operand;
+                                        assert(operand.value == Operand.ID.indirect);
+                                        operand.value.indirect.register = register;
+                                        assert(offset <= std.math.maxInt(i32));
+                                        operand.value.indirect.displacement = @intCast(i32, offset);
+                                        operand.size = field.size;
+                                        log.debug("\"GEP of load\" operand: {}\n", .{operand});
+                                        return operand;
+                                    }
+                                    else
+                                    {
+                                        panic("GEP load not found\n", .{});
+                                    }
+
+                                },
+                                else => panic("ni: {}\n", .{alloca_base_type.id}),
+                            }
+
+                        },
+                        else => panic("ni: {}\n", .{pointer_instruction.id}),
                     }
-
-                    log.debug("Stack operand: {}\n", .{stack_operand});
-                    log.debug("stack operand displacement: {}\n", .{stack_operand.value.indirect.displacement});
-
-                    return stack_operand;
                 },
                 else => panic("ni: {}\n", .{instruction.id}),
             }
@@ -1695,10 +1759,16 @@ pub fn do_binary_operation(executable: *Executable, mc_function: *Function, func
     mc_function.append(new_instruction);
 }
 
+pub fn get_alloca_type(alloca: *IR.Instruction) *IR.Type
+{
+    assert(alloca.id == IR.Instruction.ID.Alloca);
+    return alloca.value.alloca.type;
+}
+
 pub fn get_alloca_size(alloca: *IR.Instruction) u64
 {
     assert(alloca.id == IR.Instruction.ID.Alloca);
-    return alloca.value.alloca.type.size;
+    return get_alloca_type(alloca).size;
 }
 
 pub fn get_indirect_size(load: *IR.Instruction) u64
@@ -1869,6 +1939,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                     break :blk mc_function.stack_allocator.get_operand_from_alloca(function, alloca_i);
                                 },
                                 IR.Instruction.ID.Load => mc_function.register_allocator.get_indirect(ptr_instruction),
+                                IR.Instruction.ID.GetElementPtr => get_mc_value_from_ir_value(function, &executable, mc_function, ir_ptr_operand),
                                 else => panic("ni: {}\n", .{ptr_instruction.id}),
                             };
 
@@ -1944,6 +2015,10 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                             // @Info: seems better to do them on demand
                                             log.debug("Arguments are loaded on demand\n", .{});
                                             continue;
+                                        },
+                                        IR.Instruction.ID.GetElementPtr =>
+                                        {
+                                            log.debug("Loading a GEP...\n", .{});
                                         },
                                         else => panic("ni: {}\n", .{use_i.id}),
                                     }
@@ -2081,7 +2156,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             const second_value = instruction.operands.items[1];
                             if (second_value.id != IR.Value.ID.ConstantInt)
                             {
-                                do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.sub, true, true);
+                                do_binary_operation(&executable, mc_function, function, instruction, Mnemonic.imul, true, true);
                             }
                             else
                             {
