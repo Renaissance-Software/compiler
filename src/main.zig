@@ -183,24 +183,266 @@ pub fn main() anyerror!void
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
-    if (!benchmark)
+    //if (!benchmark)
+    //{
+        //if (all_tests)
+        //{
+            //for (test_files) |test_file, i|
+            //{
+                //try compiler_file_workflow(page_allocator, cwd, test_file, i);
+            //}
+        //}
+        //else
+        //{
+            ////const index = 16;
+            //const index = test_files.len - 1;
+            //try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
+        //}
+    //}
+    //else
+    //{
+        //try compile_load_all_tests(page_allocator, cwd);
+    //}
+    //
+
+    const minimal_elf64 = [_]u8
     {
-        if (all_tests)
+        // e_ident
+        0x7f, // magic number
+        0x45, 0x4c, 0x46, // "ELF"
+        0x02, // Bit count
+        0x01, // Endianness
+        0x01, // ELF header version
+        0x00, // ABI
+        0x00, // ABI version
+        // padding
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+        // object type
+        0x02, 0x00,
+        // machine
+        0x3e, 0x00,
+        // ELF version
+        0x01, 0x00, 0x00, 0x00,
+        // Program entry position
+        0x78, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
+
+        // Program header table position
+        0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Section header table position
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Flags
+        0x00, 0x00, 0x00, 0x00,
+        // Header size
+        0x40, 0x00,
+        // Size of an entry in the program header table
+        0x38, 0x00,
+        // Number of entries in the program header table
+        0x01, 0x00,
+        // Size of an entry in the section header table
+        0x00, 0x00,
+        // Number of entries in the section header table
+        0x00, 0x00,
+        // Index in section header table with the section names
+        0x00, 0x00,
+
+        // Program header
+        //
+        // Segment type
+        0x01, 0x00, 0x00, 0x00,
+        // Flags
+        0x05, 0x00, 0x00, 0x00,
+        // Offset of the segment in file image
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Virtual address of the segment in memory
+        0x00, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
+        // Physical address of the segment in memory
+        0x00, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
+        // File size
+        0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Memory size
+        0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        // Alignment
+        0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+
+
+        // Code
+        0x66, 0xbf, 0x2e, 0x00, 0x31, 0xc0, 0xb0, 0x3c, 0x0f, 0x05,
+    };
+
+    const Elf64 = struct
+    {
+        const Header = extern struct
         {
-            for (test_files) |test_file, i|
+            // e_ident
+            magic: u8 = 0x7f,
+            elf_id: [3]u8 = "ELF".*,
+            bit_count: u8 = @enumToInt(Bits.b64),
+            endianness: u8 = @enumToInt(Endianness.little),
+            header_version: u8 = 1,
+            os_abi: u8 = @enumToInt(ABI.SystemV),
+            abi_version: u8 = 0,
+            padding: [7]u8 = [_]u8 { 0 } ** 7,
+            object_type: u16 = @enumToInt(ObjectFileType.executable), // e_type
+            machine : u16 = @enumToInt(Machine.AMD64),
+            version: u32 = 1,
+            entry: u64,
+            program_header_offset: u64 = @enumToInt(ProgramHeaderOffset.b64),
+            section_header_offset: u64,
+            flags: u32 = 0,
+            header_size: u16 = @enumToInt(HeaderSize.b64),
+            program_header_size: u16 = @enumToInt(ProgramHeaderSize.b64),
+            program_header_entry_count: u16 = 1,
+            section_header_size: u16 = 0,
+            section_header_entry_count: u16,
+            name_section_header_index: u16,
+
+            const Bits = enum(u8)
             {
-                try compiler_file_workflow(page_allocator, cwd, test_file, i);
-            }
-        }
-        else
+                b32 = 1,
+                b64 = 2,
+            };
+
+            const Endianness = enum(u8)
+            {
+                little = 1,
+                big = 2,
+            };
+
+            const ABI = enum(u8)
+            {
+                SystemV = 0,
+            };
+
+            const ObjectFileType = enum(u16)
+            {
+                none = 0,
+                relocatable = 1,
+                executable = 2,
+                dynamic = 3,
+                core = 4,
+                lo_os = 0xfe00,
+                hi_os = 0xfeff,
+                lo_proc = 0xff00,
+                hi_proc = 0xffff,
+            };
+
+            const Machine = enum(u16)
+            {
+                AMD64 = 0x3e,
+            };
+
+            const ProgramHeaderOffset = enum(u64)
+            {
+                b32 = 52,
+                b64 = 64,
+            };
+
+            const HeaderSize = enum(u16)
+            {
+                b32 = 52,
+                b64 = 64,
+            };
+
+            const ProgramHeaderSize = enum(u16)
+            {
+                b32 = 32,
+                b64 = 56,
+            };
+
+            const SectionHeaderSize = enum(u16)
+            {
+                b32 = 40,
+                b64 = 64,
+            };
+        };
+
+        const ProgramHeader = extern struct
         {
-            //const index = 16;
-            const index = test_files.len - 1;
-            try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
-        }
-    }
-    else
+            type: ProgramHeaderType = ProgramHeaderType.load,
+            flags: u32 = @enumToInt(Flags.readable) | @enumToInt(Flags.executable),
+            offset: u64,
+            virtual_address: u64,
+            physical_address: u64,
+            size_in_file: u64,
+            size_in_memory: u64,
+            alignment: u64 = 0x100,
+
+            const ProgramHeaderType = enum(u32)
+            {
+                @"null" = 0,
+                load = 1,
+                dynamic = 2,
+                interpreter = 3,
+                note = 4,
+                shlib = 5, // reserved
+                program_header = 6,
+                tls = 7,
+                lo_os = 0x60000000,
+                hi_os = 0x6fffffff,
+                lo_proc = 0x70000000,
+                hi_proc = 0x7fffffff,
+            };
+
+            const Flags = enum(u8)
+            {
+                executable = 1,
+                writable = 2,
+                readable = 4,
+            };
+        };
+    };
+    
+
+    const program_header_base_address: u64 = 0x08048000;
+    const entry = program_header_base_address + @enumToInt(Elf64.Header.ProgramHeaderOffset.b64) + @sizeOf(Elf64.ProgramHeader);
+    const section_header_offset: u64 = 0;
+    const section_header_entry_count: u16 = 0;
+    const name_section_header_index: u16 = 0;
+
+    const code = [_]u8 { 0x66, 0xbf, 0x2e, 0x00, 0x31, 0xc0, 0xb0, 0x3c, 0x0f, 0x05 };
+
+    assert(@sizeOf(Elf64.Header) == 0x40);
+    assert(@sizeOf(Elf64.ProgramHeader) == 0x38);
+    assert(0x40 + 0x38 + code.len == 130);
+
+    const file_size = @sizeOf(Elf64.Header) + @sizeOf(Elf64.ProgramHeader) + code.len;
+    logger.debug("File size: {}\n", .{file_size});
+
+    const elf_header = Elf64.Header
     {
-        try compile_load_all_tests(page_allocator, cwd);
-    }
+        .entry = entry,
+        .section_header_offset = section_header_offset,
+        .section_header_entry_count = section_header_entry_count,
+        .name_section_header_index = name_section_header_index,
+    };
+
+    const program_header = Elf64.ProgramHeader
+    {
+        .offset = 0,
+        .virtual_address = program_header_base_address,
+        .physical_address = program_header_base_address,
+        .size_in_file = file_size,
+        .size_in_memory = file_size,
+        .alignment = 0x100,
+    };
+    const file_buffer = blk: {
+        var file_buffer = std.ArrayList(u8).initCapacity(std.heap.page_allocator, file_size) catch |err| {
+            panic("Couldn't allocate memory for file buffer\n", .{});
+        };
+
+        file_buffer.appendSlice(std.mem.asBytes(&elf_header)) catch unreachable;
+        file_buffer.appendSlice(std.mem.asBytes(&program_header)) catch unreachable;
+        file_buffer.appendSlice(code[0..]) catch unreachable;
+
+        break :blk file_buffer;
+    };
+
+    logger.debug("Size of ELF64 header: {}\n", .{@sizeOf(Elf64.Header)});
+    assert(file_size == file_buffer.items.len);
+
+    const file = try std.fs.cwd().createFile("minimal.elf64", .{ .mode = 0o777});
+    defer file.close();
+
+    try file.writeAll(file_buffer.items[0..]);
 }

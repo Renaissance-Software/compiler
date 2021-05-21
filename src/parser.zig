@@ -1416,7 +1416,6 @@ const Parser = struct
                         const literal_node_value = Node {
                             .value = Node.Value {
                                 .int_lit = IntegerLiteral {
-                                    // @TODO: stop hardcoding this
                                     .value = literal_value,
                                     .signed = false,
                                 }
@@ -1464,7 +1463,7 @@ const Parser = struct
                 };
 
                 const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
-                // @TODO: support multiple statements
+                // @Info: in other kind of loops we should support multiple statements
                 self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch |err| {
                     panic("Couldn't allocate prefix statement\n", .{});
                 };
