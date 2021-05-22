@@ -103,6 +103,7 @@ pub const Instruction = struct
     {
         self.operand_combination_count += 1;
     }
+
     fn OneOperandCombination(self: *Instruction, rex: Rex, operand: Operand.ID, size: u8) void
     {
         const index = self.operand_combination_count;
@@ -521,7 +522,7 @@ const add_encoding = blk:
     i += 1;
 
     result[i].op_code[0] = 0x83;
-    result[i].options.digit = 7;
+    result[i].options.digit = 0;
     result[i].options.option = Instruction.Options.Option.Digit;
     result[i].RegisterMemory_Immediate(Rex.None, 2, 1);
     result[i].RegisterMemory_Immediate(Rex.None, 4, 1);
@@ -1029,7 +1030,7 @@ const jne_encoding = blk:
     i += 1;
 
     result[i].op_code[0] = 0x0f;
-    result[i].op_code[1] = 0x87;
+    result[i].op_code[1] = 0x85;
     result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
 
     break :blk result;
@@ -1313,15 +1314,15 @@ const jmp_encoding = blk:
 
     i += 1;
 
-    result[i].op_code[0] = 0xeb;
+    result[i].op_code[0] = 0xe9;
     result[i].OneOperandCombination(Rex.None, Operand.ID.relative, 4);
 
     i += 1;
 
-    result[i].op_code[0] = 0xeb;
+    result[i].op_code[0] = 0xff;
     result[i].options.option = Instruction.Options.Option.Digit;
     result[i].options.digit = 4;
-    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 1);
+    result[i].OneOperandCombination(Rex.None, Operand.ID.register_or_memory, 8);
 
     break :blk result;
 };
@@ -1583,6 +1584,96 @@ const sub_encoding = blk:
     break :blk result;
 };
 
+const syscall_encoding = blk:
+{
+    const encoding_count = 9;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x0f;
+    result[i].op_code[1] = 0x05;
+    result[i].NoOperandCombination();
+
+    break :blk result;
+};
+
+const xor_encoding = blk:
+{
+    const encoding_count = 9;
+    var result = zero_instruction_encoding(encoding_count);
+
+    var i = 0;
+
+    result[i].op_code[0] = 0x34;
+    result[i].RegisterA_Immediate(Rex.None, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x35;
+    result[i].RegisterA_Immediate(Rex.None, 2, 2);
+    result[i].RegisterA_Immediate(Rex.None, 4, 4);
+    result[i].RegisterA_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x80;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].options.digit = 6;
+    result[i].RegisterMemory_Immediate(Rex.None, 1, 1);
+    result[i].RegisterMemory_Immediate(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x81;
+    result[i].options.digit = 6;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 2);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 4);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 4);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x83;
+    result[i].options.digit = 6;
+    result[i].options.option = Instruction.Options.Option.Digit;
+    result[i].RegisterMemory_Immediate(Rex.None, 2, 1);
+    result[i].RegisterMemory_Immediate(Rex.None, 4, 1);
+    result[i].RegisterMemory_Immediate(Rex.W, 8, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x30;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 1, 1);
+    result[i].RegisterMemory_Register(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x31;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].RegisterMemory_Register(Rex.None, 2, 2);
+    result[i].RegisterMemory_Register(Rex.None, 4, 4);
+    result[i].RegisterMemory_Register(Rex.W, 8, 8);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x32;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 1, 1);
+    result[i].Register_RegisterMemory(Rex.Rex, 1, 1);
+
+    i += 1;
+
+    result[i].op_code[0] = 0x33;
+    result[i].options.option = Instruction.Options.Option.Reg;
+    result[i].Register_RegisterMemory(Rex.None, 2, 2);
+    result[i].Register_RegisterMemory(Rex.None, 4, 4);
+    result[i].Register_RegisterMemory(Rex.W, 8, 8);
+
+    break :blk result;
+};
+
 pub const instructions = blk:
 {
     @setEvalBranchQuota(10_000);
@@ -1818,7 +1909,7 @@ pub const instructions = blk:
         .str = undefined,
         .sub = sub_encoding[0..],
         .swapgs = undefined,
-        .syscall = undefined,
+        .syscall = syscall_encoding[0..],
         .sysenter = undefined,
         .sysexit = undefined,
         .sysret = undefined,
@@ -1845,7 +1936,7 @@ pub const instructions = blk:
         .xend = undefined,
         .xgetbv = undefined,
         .xlat = undefined,
-        .xor = undefined,
+        .xor = xor_encoding[0..],
         .xrstor = undefined,
         .xrstors = undefined,
         .xsave = undefined,

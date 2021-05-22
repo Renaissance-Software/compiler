@@ -685,6 +685,7 @@ pub const Module = struct
 {
     base: Value,
     functions: FunctionBuffer,
+    name: []const u8,
 
     fn find_function(self: *Module, name: []const u8) *Function
     {
@@ -3028,7 +3029,7 @@ fn print_function(allocator: *Allocator, context: *Context, function: *Function)
     }
 }
 
-pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
+pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult, src_filename: []const u8) Module
 {
     log.debug("\n==============\nIR\n==============\n\n", .{});
 
@@ -3043,6 +3044,7 @@ pub fn encode(allocator: *Allocator, semantics_result: *SemanticsResult) Module
         .functions = FunctionBuffer.init(allocator) catch |err| {
             panic("Failed to allocate function bucket array\n", .{});
         },
+        .name = src_filename,
     };
 
     var context = Context.create(allocator);
