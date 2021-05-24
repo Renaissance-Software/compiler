@@ -1242,6 +1242,18 @@ const Executable = struct
         // can't be computed yet
         const section_headers = blk:
         {
+            const data_section_flags = dsf_blk:
+            {
+                const is_data = self.data_buffer.items.len != 0;
+                if (is_data)
+                {
+                    break :dsf_blk @enumToInt(Elf64.SectionHeader.Flag.alloc) | @enumToInt(Elf64.SectionHeader.Flag.writable);
+                }
+                else
+                {
+                    break :dsf_blk 0;
+                }
+            };
             var section_headers = [Section.count]Elf64.SectionHeader
             {
                 // null
@@ -1256,6 +1268,7 @@ const Executable = struct
                     .address = base_address + self.data_base_RVA,
                     .offset = self.data_base_RVA,
                     .size = data_length,
+                    .flags = data_section_flags,
                 }),
                 // text
                 std.mem.zeroInit(Elf64.SectionHeader, .{
@@ -1264,6 +1277,7 @@ const Executable = struct
                     .address = base_address + self.code_base_RVA,
                     .offset = self.code_base_RVA,
                     .size = self.code_buffer.items.len,
+                    .flags = @enumToInt(Elf64.SectionHeader.Flag.alloc) | @enumToInt(Elf64.SectionHeader.Flag.executable),
                 }),
                 // shstrtab
                 std.mem.zeroInit(Elf64.SectionHeader, .{
