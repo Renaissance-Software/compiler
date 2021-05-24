@@ -194,8 +194,8 @@ pub fn main() anyerror!void
         }
         else
         {
-            //const index = 16;
-            const index = test_files.len - 1;
+            const index = 0;
+            //const index = test_files.len - 1;
             try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }
@@ -204,4 +204,3 @@ pub fn main() anyerror!void
         try compile_load_all_tests(page_allocator, cwd);
     }
 }
-

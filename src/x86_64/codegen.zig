@@ -47,7 +47,6 @@ const system_v_argument_registers = [_]Encoding.Register
     Encoding.Register.r9,
 };
 
-
 fn get_argument_register(index: u64) ?Encoding.Register
 {
     switch (calling_convention)
@@ -131,49 +130,54 @@ const Operand = struct
     {
         label: *Label,
 
-        fn create(value: *IR.Value, module: *IR.Module, current_function: *IR.Function, function_index: u64, executable: *Executable) Operand
+        fn block_operand(value: *IR.Value, current_function: *Function) Operand
         {
-            var label: *Label = undefined;
+            assert(value.id == IR.Value.ID.BasicBlock);
+            const basic_block = @ptrCast(*IR.BasicBlock, value);
 
-            switch (value.id)
+            for (current_function.ir_ref.basic_blocks.items) |bb, i|
             {
-                IR.Value.ID.BasicBlock =>
+                if (basic_block == bb)
                 {
-                    const basic_block = @ptrCast(*IR.BasicBlock, value);
-                    for (current_function.basic_blocks.items) |bb, i|
+                    return Operand
                     {
-                        if (basic_block == bb)
-                        {
-                            label = &executable.functions.items[function_index].labels.items[i];
-                            break;
-                        }
-                    }
-                },
-                IR.Value.ID.GlobalFunction =>
-                {
-                    const ir_function = @ptrCast(*IR.Function, value);
-                    for (executable.functions.items) |*function|
-                    {
-                        if (function.ir_ref == ir_function)
-                        {
-                            label = &function.labels.items[0];
-                            break;
-                        }
-                    }
-                },
-                else => panic("ni: {}\n", .{value.id}),
+                        .value = Operand.Value {
+                            .relative = Operand.Relative {
+                                .label = &current_function.labels.items[i],
+                            },
+                        },
+                        // @Info: all relatives should be treated with  4-byte size
+                        .size = 4,
+                    };
+                }
             }
 
-            return Operand
+            panic("Basic block not found\n", .{});
+        }
+
+        fn function_operand(value: *IR.Value, executable: *Executable) Operand
+        {
+            assert(value.id == IR.Value.ID.GlobalFunction);
+            const ir_function = @ptrCast(*IR.Function, value);
+
+            for (executable.functions.items) |*function|
             {
-                .value = Operand.Value {
-                    .relative = Operand.Relative {
-                        .label = label,
-                    },
-                },
-                // @Info: all relatives should be treated with  4-byte size
-                .size = 4,
-            };
+                if (function.ir_ref == ir_function)
+                {
+                    return Operand
+                    {
+                        .value = Operand.Value {
+                            .relative = Operand.Relative {
+                                .label = &function.labels.items[0],
+                            },
+                        },
+                        // @Info: all relatives should be treated with 4-byte size
+                        .size = 4,
+                    };
+                }
+            }
+
+            panic("Function not found\n", .{});
         }
     };
 
@@ -579,6 +583,213 @@ const Function = struct
     }
 };
 
+const Elf64 = struct
+{
+    const FileHeader = extern struct
+    {
+        // e_ident
+        magic: u8 = 0x7f,
+        elf_id: [3]u8 = "ELF".*,
+        bit_count: u8 = @enumToInt(Bits.b64),
+        endianness: u8 = @enumToInt(Endianness.little),
+        header_version: u8 = 1,
+        os_abi: u8 = @enumToInt(ABI.SystemV),
+        abi_version: u8 = 0,
+        padding: [7]u8 = [_]u8 { 0 } ** 7,
+        object_type: u16 = @enumToInt(ObjectFileType.executable), // e_type
+        machine : u16 = @enumToInt(Machine.AMD64),
+        version: u32 = 1,
+        entry: u64,
+        program_header_offset: u64 = 0x40,
+        section_header_offset: u64,
+        flags: u32 = 0,
+        header_size: u16 = 0x40,
+        program_header_size: u16 = @sizeOf(ProgramHeader),
+        program_header_entry_count: u16 = 1,
+        section_header_size: u16 = @sizeOf(SectionHeader),
+        section_header_entry_count: u16,
+        name_section_header_index: u16,
+
+        const Bits = enum(u8)
+        {
+            b32 = 1,
+            b64 = 2,
+        };
+
+        const Endianness = enum(u8)
+        {
+            little = 1,
+            big = 2,
+        };
+
+        const ABI = enum(u8)
+        {
+            SystemV = 0,
+        };
+
+        const ObjectFileType = enum(u16)
+        {
+            none = 0,
+            relocatable = 1,
+            executable = 2,
+            dynamic = 3,
+            core = 4,
+            lo_os = 0xfe00,
+            hi_os = 0xfeff,
+            lo_proc = 0xff00,
+            hi_proc = 0xffff,
+        };
+
+        const Machine = enum(u16)
+        {
+            AMD64 = 0x3e,
+        };
+    };
+
+    const ProgramHeader = extern struct
+    {
+        type: u32 = @enumToInt(ProgramHeaderType.load),
+        flags: u32 = @enumToInt(Flags.readable) | @enumToInt(Flags.executable),
+        offset: u64,
+        virtual_address: u64,
+        physical_address: u64,
+        size_in_file: u64,
+        size_in_memory: u64,
+        alignment: u64 = 0,
+
+        const ProgramHeaderType = enum(u32)
+        {
+            @"null" = 0,
+            load = 1,
+            dynamic = 2,
+            interpreter = 3,
+            note = 4,
+            shlib = 5, // reserved
+            program_header = 6,
+            tls = 7,
+            lo_os = 0x60000000,
+            hi_os = 0x6fffffff,
+            lo_proc = 0x70000000,
+            hi_proc = 0x7fffffff,
+        };
+
+        const Flags = enum(u8)
+        {
+            executable = 1,
+            writable = 2,
+            readable = 4,
+        };
+    };
+
+    const SectionHeader = extern struct
+    {
+        name_offset: u32,
+        type: u32,
+        flags: u64,
+        address: u64,
+        offset: u64,
+        size: u64,
+        // section index
+        link: u32,
+        info: u32,
+        alignment: u64,
+        entry_size: u64,
+
+        // type
+        const ID = enum(u32)
+        {
+            @"null" = 0,
+            program_data = 1,
+            symbol_table = 2,
+            string_table = 3,
+            relocation_entries_addends = 4,
+            symbol_hash_table = 5,
+            dynamic_linking_info = 6,
+            notes = 7,
+            program_space_no_data = 8,
+            relocation_entries = 9,
+            reserved = 10,
+            dynamic_linker_symbol_table = 11,
+            array_of_constructors = 14,
+            array_of_destructors = 15,
+            array_of_pre_constructors = 16,
+            section_group = 17,
+            extended_section_indices = 18,
+            number_of_defined_types = 19,
+            start_os_specific = 0x60000000,
+        };
+
+        const Flag = enum(u64)
+        {
+            writable = 0x01,
+            alloc = 0x02,
+            executable = 0x04,
+            mergeable = 0x10,
+            contains_null_terminated_strings = 0x20,
+            info_link = 0x40,
+            link_order = 0x80,
+            os_non_conforming = 0x100,
+            section_group = 0x200,
+            tls = 0x400,
+            mask_os = 0x0ff00000,
+            mask_processor = 0xf0000000,
+            ordered = 0x4000000,
+            exclude = 0x8000000,
+        };
+    };
+};
+
+const Section = enum
+{
+    @"null" = 0,
+    data = 1,
+    text = 2,
+    shstrtab = 3,
+    bss = 4,
+
+    fn directEnumArrayLen(comptime E: type, comptime max_unused_slots: comptime_int) comptime_int
+    {
+        var max_value: comptime_int = -1;
+        const max_usize: comptime_int = ~@as(usize, 0);
+        const fields = std.enums.uniqueFields(E);
+
+        for (fields) |f|
+        {
+            if (f.value < 0)
+            {
+                @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ", field ." ++ f.name ++ " has a negative value.");
+            }
+            if (f.value > max_value)
+            {
+                if (f.value > max_usize)
+                {
+                    @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ", field ." ++ f.name ++ " is larger than the max value of usize.");
+                }
+                max_value = f.value;
+            }
+        }
+
+        const unused_slots = max_value + 1 - fields.len;
+
+        if (unused_slots > max_unused_slots)
+        {
+            const unused_str = std.fmt.comptimePrint("{d}", .{unused_slots});
+            const allowed_str = std.fmt.comptimePrint("{d}", .{max_unused_slots});
+            @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ". It would have " ++ unused_str ++ " unused slots, but only " ++ allowed_str ++ " are allowed.");
+        }
+
+        return max_value + 1;
+    }
+
+    const count = directEnumArrayLen(@This(), 0);
+};
+
+const Sections = struct
+{
+    name_offsets: [Section.count]u32,
+    names: []const u8,
+};
+
 const InstructionBuffer = ArrayList(Instruction);
 const FunctionBuffer = ArrayList(Function);
 const LabelBuffer = ArrayList(Label);
@@ -591,6 +802,7 @@ const Executable = struct
     constant_data_list: ArrayList(ConstantData),
     code_base_RVA: u64,
     data_base_RVA: u64,
+    main_function: *Function,
 
     const ConstantData = struct
     {
@@ -598,242 +810,533 @@ const Executable = struct
         offset: u64,
     };
 
-    fn write_elf64(self: *Executable, filename: []const u8) void
+    fn write_elf64(self: *Executable, allocator: *Allocator, filename: []const u8) void
     {
-        const minimal_elf64 = [_]u8
+        var aprox_instruction_count: u64 = 0;
+        const max_bytes_per_instruction: u8 = 15;
+
+        for (self.functions.items) |function|
         {
-            // e_ident
-            0x7f, // magic number
-            0x45, 0x4c, 0x46, // "ELF"
-            0x02, // Bit count
-            0x01, // Endianness
-            0x01, // ELF header version
-            0x00, // ABI
-            0x00, // ABI version
-            // padding
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            aprox_instruction_count += 6 + function.instructions.items.len;
+        }
 
-            // object type
-            0x02, 0x00,
-            // machine
-            0x3e, 0x00,
-            // ELF version
-            0x01, 0x00, 0x00, 0x00,
-            // Program entry position
-            0x78, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
+        const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
 
-            // Program header table position
-            0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // Section header table position
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // Flags
-            0x00, 0x00, 0x00, 0x00,
-            // Header size
-            0x40, 0x00,
-            // Size of an entry in the program header table
-            0x38, 0x00,
-            // Number of entries in the program header table
-            0x01, 0x00,
-            // Size of an entry in the section header table
-            0x00, 0x00,
-            // Number of entries in the section header table
-            0x00, 0x00,
-            // Index in section header table with the section names
-            0x00, 0x00,
+        log.debug("Aproximate code size: {}\n", .{aprox_code_size});
 
-            // Program header
-            //
-            // Segment type
-            0x01, 0x00, 0x00, 0x00,
-            // Flags
-            0x05, 0x00, 0x00, 0x00,
-            // Offset of the segment in file image
-            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // Virtual address of the segment in memory
-            0x00, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
-            // Physical address of the segment in memory
-            0x00, 0x80, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00,
-            // File size
-            0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // Memory size
-            0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-            // Alignment
-            0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        const file_header_size = @sizeOf(Elf64.FileHeader);
+        const program_header_size = @sizeOf(Elf64.ProgramHeader);
+        const section_header_size = @sizeOf(Elf64.SectionHeader);
 
+        assert(file_header_size == 0x40);
+        assert(program_header_size == 0x38);
+        assert(section_header_size == 0x40);
 
-            // Code
-            0x66, 0xbf, 0x2e, 0x00, 0x31, 0xc0, 0xb0, 0x3c, 0x0f, 0x05,
-        };
-
-        const Elf64 = struct
+        // @Info: this has to do with the way I order sections and it's not official in any way
+        const sections = comptime blk:
         {
-            const Header = extern struct
+            assert(Section.count == 5);
+
+            const section_names_str = comptime std.enums.directEnumArray(Section, []const u8, 0, .
+                {
+                    .@"null" = "\x00",
+                    .data = ".data\x00",
+                    .text = ".text\x00",
+                    .shstrtab = ".shstrtab\x00",
+                    .bss = ".bss\x00",
+                });
+
+            var section_names: []const u8 = "";
+            var section_names_byte_count: u32 = 0;
+            var name_offsets: [Section.count]u32 = undefined;
+
+            inline for (section_names_str) |section_name, i|
             {
-                // e_ident
-                magic: u8 = 0x7f,
-                elf_id: [3]u8 = "ELF".*,
-                bit_count: u8 = @enumToInt(Bits.b64),
-                endianness: u8 = @enumToInt(Endianness.little),
-                header_version: u8 = 1,
-                os_abi: u8 = @enumToInt(ABI.SystemV),
-                abi_version: u8 = 0,
-                padding: [7]u8 = [_]u8 { 0 } ** 7,
-                object_type: u16 = @enumToInt(ObjectFileType.executable), // e_type
-                machine : u16 = @enumToInt(Machine.AMD64),
-                version: u32 = 1,
-                entry: u64,
-                program_header_offset: u64 = @enumToInt(ProgramHeaderOffset.b64),
-                section_header_offset: u64,
-                flags: u32 = 0,
-                header_size: u16 = @enumToInt(HeaderSize.b64),
-                program_header_size: u16 = @enumToInt(ProgramHeaderSize.b64),
-                program_header_entry_count: u16 = 1,
-                section_header_size: u16 = 0,
-                section_header_entry_count: u16,
-                name_section_header_index: u16,
+                section_names = section_names ++ section_name;
+                name_offsets[i] = section_names_byte_count;
+                section_names_byte_count += @intCast(u32, section_name.len);
+            }
 
-                const Bits = enum(u8)
-                {
-                    b32 = 1,
-                    b64 = 2,
-                };
+            assert(section_names.len == section_names_byte_count);
 
-                const Endianness = enum(u8)
-                {
-                    little = 1,
-                    big = 2,
-                };
-
-                const ABI = enum(u8)
-                {
-                    SystemV = 0,
-                };
-
-                const ObjectFileType = enum(u16)
-                {
-                    none = 0,
-                    relocatable = 1,
-                    executable = 2,
-                    dynamic = 3,
-                    core = 4,
-                    lo_os = 0xfe00,
-                    hi_os = 0xfeff,
-                    lo_proc = 0xff00,
-                    hi_proc = 0xffff,
-                };
-
-                const Machine = enum(u16)
-                {
-                    AMD64 = 0x3e,
-                };
-
-                const ProgramHeaderOffset = enum(u64)
-                {
-                    b32 = 52,
-                    b64 = 64,
-                };
-
-                const HeaderSize = enum(u16)
-                {
-                    b32 = 52,
-                    b64 = 64,
-                };
-
-                const ProgramHeaderSize = enum(u16)
-                {
-                    b32 = 32,
-                    b64 = 56,
-                };
-
-                const SectionHeaderSize = enum(u16)
-                {
-                    b32 = 40,
-                    b64 = 64,
-                };
-            };
-
-            const ProgramHeader = extern struct
+            break :blk Sections
             {
-                type: u32 = @enumToInt(ProgramHeaderType.load),
-                flags: u32 = @enumToInt(Flags.readable) | @enumToInt(Flags.executable),
-                offset: u64,
-                virtual_address: u64,
-                physical_address: u64,
-                size_in_file: u64,
-                size_in_memory: u64,
-                alignment: u64 = 0x100,
-
-                const ProgramHeaderType = enum(u32)
-                {
-                    @"null" = 0,
-                    load = 1,
-                    dynamic = 2,
-                    interpreter = 3,
-                    note = 4,
-                    shlib = 5, // reserved
-                    program_header = 6,
-                    tls = 7,
-                    lo_os = 0x60000000,
-                    hi_os = 0x6fffffff,
-                    lo_proc = 0x70000000,
-                    hi_proc = 0x7fffffff,
-                };
-
-                const Flags = enum(u8)
-                {
-                    executable = 1,
-                    writable = 2,
-                    readable = 4,
-                };
+                .name_offsets = name_offsets,
+                .names = section_names,
             };
         };
 
-        const program_header_base_address: u64 = 0x08048000;
-        const entry = program_header_base_address + @enumToInt(Elf64.Header.ProgramHeaderOffset.b64) + @sizeOf(Elf64.ProgramHeader);
-        const section_header_offset: u64 = 0;
-        const section_header_entry_count: u16 = 0;
-        const name_section_header_index: u16 = 0;
+        const contents = std.enums.directEnumArray(Section, ?[]const u8, 0, .
+            {
+                .@"null" = null,
+                // Wrong. We don't know yet the length of the code section
+                .text = self.code_buffer.items,
+                .data = self.data_buffer.items,
+                .shstrtab = sections.names,
+                .bss = null,
+            });
+       
+        // @TODO: turn this into a loop
+        const base_address: u64 = 0x08048000;
+        const header_offset = file_header_size + program_header_size;
+        const data_length = self.data_buffer.items.len;
+        const shstrtab_length = sections.names.len;
+        // @TODO: buggy?
+        const bss_length = 0;
+        const section_headers_size = Section.count * @sizeOf(Elf64.SectionHeader);
 
-        const code = [_]u8 { 0x66, 0xbf, 0x2e, 0x00, 0x31, 0xc0, 0xb0, 0x3c, 0x0f, 0x05 };
-
-        assert(@sizeOf(Elf64.Header) == 0x40);
-        assert(@sizeOf(Elf64.ProgramHeader) == 0x38);
-        assert(0x40 + 0x38 + code.len == 130);
-
-        const file_size = @sizeOf(Elf64.Header) + @sizeOf(Elf64.ProgramHeader) + self.code_buffer.items.len;
-
-        const elf_header = Elf64.Header
+        const file_header_value = Elf64.FileHeader
         {
-            .entry = entry,
-            .section_header_offset = section_header_offset,
-            .section_header_entry_count = section_header_entry_count,
-            .name_section_header_index = name_section_header_index,
+            .entry = undefined, // entry_offset,
+            .section_header_offset = undefined, // sections_offset,
+            .section_header_entry_count = Section.count,
+            .name_section_header_index = @enumToInt(Section.shstrtab),
         };
 
-        const program_header = Elf64.ProgramHeader
+        const program_header_value = Elf64.ProgramHeader
         {
             .offset = 0,
-            .virtual_address = program_header_base_address,
-            .physical_address = program_header_base_address,
-            .size_in_file = file_size,
-            .size_in_memory = file_size,
-            .alignment = 0x100,
+            .virtual_address = base_address,
+            .physical_address = base_address,
+            .size_in_file = undefined, // file size
+            .size_in_memory = undefined, // file size
         };
 
-        const file_buffer = blk: {
-            var file_buffer = std.ArrayList(u8).initCapacity(std.heap.page_allocator, file_size) catch |err| {
-                panic("Couldn't allocate memory for file buffer\n", .{});
+        // @Info: we estimate this we don't want any reallocation which makes us have a bad pointer
+        const aproximate_file_size = header_offset + data_length + aprox_code_size + shstrtab_length + bss_length + section_headers_size;
+
+        var file_buffer = ArrayList(u8).initCapacity(allocator, aproximate_file_size) catch |err| {
+            panic("Error allocating memory for code section buffer\n", .{});
+        };
+
+        self.code_buffer = ArrayList(u8).initCapacity(allocator, aprox_code_size) catch |err| {
+            panic("Error allocating the code buffer\n", .{});
+        };
+
+        const file_header_offset = file_buffer.items.len;
+        file_buffer.appendSlice(std.mem.asBytes(&file_header_value)) catch unreachable;
+        const program_header_offset = file_buffer.items.len;
+        file_buffer.appendSlice(std.mem.asBytes(&program_header_value)) catch unreachable;
+
+        // @TODO: alignment
+        //
+        // @Info: data buffer is already initialized; don't need to do anything
+        self.data_base_RVA = file_buffer.items.len;
+        file_buffer.appendSlice(self.data_buffer.items) catch unreachable;
+
+        // @TODO: alignment
+        self.code_base_RVA = file_buffer.items.len;
+
+        // Encode entry point
+        {
+            const ir_main_function = self.main_function.ir_ref;
+
+            const function_type = @ptrCast(*IR.FunctionType, ir_main_function.type);
+            const return_type = function_type.ret_type;
+            const return_void = return_type.id == IR.Type.ID.void;
+
+            const callee_operand = Operand.Relative.function_operand(@ptrCast(*IR.Value, ir_main_function), self);
+            const call_main_operands = [1]Operand { callee_operand };
+
+            const call_main = Instruction.create(Mnemonic.call, call_main_operands[0..]);
+            encode_instruction(allocator, self, call_main);
+
+            if (return_void)
+            {
+                // call main
+                // mov di, 0
+                // xor eax, eax
+                // mov al, 60
+                // syscall
+                //
+
+                const di = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.DI,
+                    },
+                    .size = 2,
+                };
+
+                const zero_imm16 = Operand
+                {
+                    .value = Operand.Value {
+                        .immediate = Operand.Immediate {
+                            .imm16 = 0,
+                        },
+                        },
+                    .size = 2,
+                };
+
+                const mov_di_operands = [2]Operand { di, zero_imm16 };
+                const mov_di = Instruction.create(Mnemonic.mov, mov_di_operands[0..]);
+                encode_instruction(allocator, self, mov_di);
+
+                const eax = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.A,
+                    },
+                    .size = 4,
+                };
+
+                const xor_eax_operands = [2]Operand { eax, eax };
+                const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
+                encode_instruction(allocator, self, xor_eax);
+
+                const al = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.A,
+                    },
+                    .size = 1,
+                };
+
+                const sixty_imm8 = Operand
+                {
+                    .value = Operand.Value {
+                        .immediate = Operand.Immediate {
+                            .imm8 = 60,
+                        },
+                        },
+                    .size = 1,
+                };
+
+                const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
+                const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
+                encode_instruction(allocator, self, mov_al_60);
+
+                const syscall = Instruction.create(Mnemonic.syscall, null);
+                encode_instruction(allocator, self, syscall);
+            }
+            else
+            {
+                // i32 return
+                // call main
+                // mov edi, eax
+                // xor eax, eax
+                // mov al, 60
+                // syscall
+
+                const edi = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.DI,
+                    },
+                    .size = 4,
+                };
+
+                const eax = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.A,
+                    },
+                    .size = 4,
+                };
+
+                const mov_edi_eax_operands = [2]Operand { edi, eax };
+                const mov_edi_eax = Instruction.create(Mnemonic.mov, mov_edi_eax_operands[0..]);
+                encode_instruction(allocator, self, mov_edi_eax);
+
+                const xor_eax_operands = [2]Operand { eax, eax };
+                const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
+                encode_instruction(allocator, self, xor_eax);
+
+                const al = Operand
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.A,
+                    },
+                    .size = 1,
+                };
+
+                const sixty_imm8 = Operand
+                {
+                    .value = Operand.Value {
+                        .immediate = Operand.Immediate {
+                            .imm8 = 60,
+                        },
+                        },
+                    .size = 1,
+                };
+
+                const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
+                const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
+                encode_instruction(allocator, self, mov_al_60);
+
+                const syscall = Instruction.create(Mnemonic.syscall, null);
+                encode_instruction(allocator, self, syscall);
+            }
+        }
+
+        switch (calling_convention)
+        {
+            CallingConvention.SystemV =>
+            {
+                for (self.functions.items) |function, function_index|
+                {
+                    {
+                        log.info("Printing function:\n\n", .{});
+                        for (function.instructions.items) |instruction, instruction_index|
+                        {
+                            log.info("{}: {}\n", .{instruction_index, instruction});
+                        }
+                        log.info("\n\n", .{});
+                    }
+
+                    {
+                        var label = &function.labels.items[0];
+                        label.patch(self);
+                    }
+
+                    if (encode_frame_pointer)
+                    {
+                        log_enc.debug("\nEncoding prologue\n", .{});
+                        const rbp = Operand 
+                        {
+                            .value = Operand.Value {
+                                .register = Encoding.Register.BP,
+                            },
+                            .size = @enumToInt(Operand.Size.bits64),
+                        };
+
+                        const rsp = Operand 
+                        {
+                            .value = Operand.Value {
+                                .register = Encoding.Register.SP,
+                            },
+                            .size = @enumToInt(Operand.Size.bits64),
+                        };
+
+                        const rbp_arr = [1]Operand { rbp }; 
+                        const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
+                        const operands = [2]Operand { rbp, rsp };
+                        const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
+                        encode_instruction(allocator, self, push_rbp);
+                        encode_instruction(allocator, self, mov_rbp_rsp);
+                    }
+
+                    if (function.rsp > 0)
+                    {
+                        const operands = [2]Operand
+                        {
+                            Operand 
+                            {
+                                .value = Operand.Value {
+                                    .register = Encoding.Register.SP,
+                                },
+                                .size = @enumToInt(Operand.Size.bits64),
+                            },
+                            Operand.Immediate.get_minimum(function.rsp),
+                        };
+
+                        const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
+                        encode_instruction(allocator, self, sub_rsp);
+                    }
+
+                    var instruction_index: u64 = 0;
+                    var label_index: u64 = 1;
+
+                    const instruction_count = function.instructions.items.len;
+                    const label_count = function.labels.items.len;
+
+                    log_enc.debug("\nLabel count: {}. Instruction count: {}\n", .{label_count, instruction_count});
+
+                    while (label_index < label_count) : (label_index += 1)
+                    {
+                        var label = &function.labels.items[label_index];
+                        const label_instruction_index = label.instruction_index;
+
+                        while (instruction_index < label_instruction_index) : (instruction_index += 1)
+                        {
+                            const instruction = function.instructions.items[instruction_index];
+                            assert(instruction.id != Mnemonic.ret);
+                            log_enc.debug("Encoding instruction {}\n", .{instruction_index});
+                            encode_instruction(allocator, self, instruction);
+                        }
+
+                        label.target = @ptrToInt(self.code_buffer.items.ptr) + self.code_buffer.items.len;
+
+                        for (label.locations.items) |location|
+                        {
+                            log_enc.debug("Location\n", .{});
+                            // @TODO: this can cause problems
+                            const target = @intCast(i64, label.target); 
+                            const address_after_instruction = @intCast(i64, location.address_after_instruction);
+                            const difference = target - address_after_instruction;
+                            assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
+                            // ???
+                            assert(difference >= 0);
+                            const relative_to_be_written = @intCast(i32, difference);
+                            log_enc.debug("Address of relative to be written: 0x{x}\n", .{location.relative_to_be_written_address});
+                            var patch_target = @intToPtr(*align(1) i32, location.relative_to_be_written_address);
+                            patch_target.* = relative_to_be_written;
+                            log_enc.debug("\n\n\nWrote relative: {}\n\n\n", .{relative_to_be_written});
+                        }
+
+                        log_enc.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
+                    }
+
+                    while (instruction_index < instruction_count - 1) : (instruction_index += 1)
+                    {
+                        const instruction = function.instructions.items[instruction_index];
+                        assert(instruction.id != Mnemonic.ret);
+                        encode_instruction(allocator, self, instruction);
+                    }
+
+                    if (function.rsp > 0)
+                    {
+                        const operands = [2]Operand
+                        {
+                            Operand 
+                            {
+                                .value = Operand.Value {
+                                    .register = Encoding.Register.SP,
+                                },
+                                .size = @enumToInt(Operand.Size.bits64),
+                            },
+                            Operand.Immediate.get_minimum(function.rsp),
+                        };
+
+                        const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
+                        encode_instruction(allocator, self, add_rsp);
+                    }
+
+                    if (encode_frame_pointer)
+                    {
+                        log_enc.debug("Encoding epilogue\n", .{});
+                        const rbp = Operand 
+                        {
+                            .value = Operand.Value {
+                                .register = Encoding.Register.BP,
+                            },
+                            .size = @enumToInt(Operand.Size.bits64),
+                        };
+                        const rbp_arr = [1]Operand { rbp };
+                        const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
+                        encode_instruction(allocator, self, pop_rbp);
+                    }
+
+                    assert(instruction_index == instruction_count - 1);
+                    const instruction = function.instructions.items[instruction_index];
+                    assert(instruction.id == Mnemonic.ret);
+                    encode_instruction(allocator, self, instruction);
+                }
+            },
+            else => panic("ni: {}\n", .{calling_convention}),
+        }
+
+        const code_size = self.code_buffer.items.len;
+        log.debug("\n\nAproximate code size: {}. Real code size: {}\n", .{aprox_code_size, code_size});
+
+        file_buffer.appendSlice(self.code_buffer.items) catch unreachable;
+        // @TODO: alignment
+        const string_table_offset = file_buffer.items.len;
+        file_buffer.appendSlice(sections.names) catch unreachable;
+
+        // @TODO: 
+        const bss_offset = file_buffer.items.len;
+
+        const section_headers_offset = file_buffer.items.len;
+
+        // can't be computed yet
+        const section_headers = blk:
+        {
+            var section_headers = [Section.count]Elf64.SectionHeader
+            {
+                // null
+                std.mem.zeroInit(Elf64.SectionHeader, .{
+                    .name_offset = sections.name_offsets[0],
+                    .type = @enumToInt(Elf64.SectionHeader.ID.program_space_no_data),
+                }),
+                // data
+                std.mem.zeroInit(Elf64.SectionHeader, .{
+                    .name_offset = sections.name_offsets[@enumToInt(Section.data)],
+                    .type = @enumToInt(Elf64.SectionHeader.ID.program_data),
+                    .address = base_address + self.data_base_RVA,
+                    .offset = self.data_base_RVA,
+                    .size = data_length,
+                }),
+                // text
+                std.mem.zeroInit(Elf64.SectionHeader, .{
+                    .name_offset = sections.name_offsets[@enumToInt(Section.text)],
+                    .type = @enumToInt(Elf64.SectionHeader.ID.program_data),
+                    .address = base_address + self.code_base_RVA,
+                    .offset = self.code_base_RVA,
+                    .size = self.code_buffer.items.len,
+                }),
+                // shstrtab
+                std.mem.zeroInit(Elf64.SectionHeader, .{
+                    .name_offset = sections.name_offsets[3],
+                    .type = @enumToInt(Elf64.SectionHeader.ID.string_table),
+                    .address = base_address + string_table_offset,
+                    .offset = string_table_offset,
+                    .size = shstrtab_length,
+                }),
+                // bss
+                std.mem.zeroInit(Elf64.SectionHeader, .{
+                    .name_offset = sections.name_offsets[4],
+                    .type = @enumToInt(Elf64.SectionHeader.ID.program_space_no_data),
+                    .address = base_address + bss_offset,
+                    .offset = bss_offset,
+                    .size = bss_length,
+                }),
             };
 
-            file_buffer.appendSlice(std.mem.asBytes(&elf_header)) catch unreachable;
-            file_buffer.appendSlice(std.mem.asBytes(&program_header)) catch unreachable;
-            file_buffer.appendSlice(self.code_buffer.items) catch unreachable;
-
-            break :blk file_buffer;
+            break :blk section_headers;
         };
 
-        assert(file_size == file_buffer.items.len);
+        for (section_headers) |*section_header, section_header_index|
+        {
+            log.debug("Section header {}: {}\n", .{section_header_index, section_header.*});
+            file_buffer.appendSlice(std.mem.asBytes(section_header)) catch unreachable;
+        }
 
+        const file_size = file_buffer.items.len;
+        assert(file_size <= aproximate_file_size);
+        
+        log.debug("File header offset: {}\n", .{file_header_offset});
+        log.debug("Program header offset: {}\n", .{program_header_offset});
+        log.debug("Data offset: {}\n", .{self.data_base_RVA});
+        log.debug("Code offset: {}\n", .{self.code_base_RVA});
+        log.debug("String table offset: {}\n", .{string_table_offset});
+        log.debug("BSS offset: {}\n", .{bss_offset});
+        log.debug("Section header offset: {}\n", .{section_headers_offset});
+
+        log.debug("\nBefore patching:\n", .{});
+        for (file_buffer.items[0x0..program_header_offset]) |byte, byte_index|
+        {
+            if (byte_index % 0x10 == 0)
+            {
+                log.debug("\n", .{});
+            }
+            log.debug("{x:0>2} ", .{byte});
+        }
+        log.debug("\n", .{});
+
+        // @Info: Patch file  and program headers
+        var file_header = @ptrCast(*align(1) Elf64.FileHeader, &file_buffer.items[file_header_offset]);
+        log.debug("File header before patching: {}\n\n", .{file_header.*});
+        file_header.entry = base_address + self.code_base_RVA;
+        file_header.section_header_offset = section_headers_offset;
+        var program_header = @ptrCast(*align(1) Elf64.ProgramHeader, &file_buffer.items[program_header_offset]);
+        log.debug("Program header before patching: {}\n\n", .{program_header.*});
+        program_header.size_in_file = file_size;
+        program_header.size_in_memory = file_size;
+
+        log.debug("File header after patching: {}\n\n", .{file_header.*});
+        log.debug("File header after patching: {}\n\n", .{program_header.*});
+        log.debug("\nAfter patching:\n", .{});
+        for (file_buffer.items[0x0..program_header_offset]) |byte, byte_index|
+        {
+            if (byte_index % 0x10 == 0)
+            {
+                log.debug("\n", .{});
+            }
+            log.debug("{x:0>2} ", .{byte});
+        }
+
+        log.debug("\n", .{});
         log.debug("Writing file {s}; size: {} bytes\n", .{filename, file_size});
         const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch |err| {
             panic("Error creating file {s}\n", .{filename});
@@ -1192,7 +1695,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                             },
                             Operand.ID.rip_relative =>
                             {
-                                const next_instruction_RVA = executable.code_base_RVA + executable.code_buffer.items.len;
+                                const next_instruction_RVA = executable.code_base_RVA + executable.code_buffer.items.len + @sizeOf(i32);
                                 assert(next_instruction_RVA <= std.math.maxInt(i64));
                                 const operand_RVA = executable.data_base_RVA + operand.value.rip_relative.offset;
                                 assert(operand_RVA <= std.math.maxInt(i64));
@@ -1263,6 +1766,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                 executable.code_buffer.appendSlice(std.mem.asBytes(&unresolved_jump_value)) catch |err| {
                                     panic("Error appending unresolved relative operand\n", .{});
                                 };
+
                                 label.locations.append(Label.Location {
                                     .relative_to_be_written_address = patch_target,
                                     .address_after_instruction = patch_target + jump_size,
@@ -1641,7 +2145,7 @@ const StackAllocator = struct
             .value = Operand.Value
             {
                 .indirect = Operand.Indirect {
-                    .displacement = @intCast(i32, self.stack_offset),
+                    .displacement = - @intCast(i32, self.stack_offset),
                     .register = get_stack_register(),
                 },
             },
@@ -2087,176 +2591,15 @@ pub fn const_int_eq(value: *IR.Value, int_value: u64) bool
     return const_value == int_value;
 }
 
-fn encode_entry_point(allocator: *Allocator, executable: *Executable, main_function_index: u64, ir_module: *IR.Module, ir_main_function: *IR.Function) void
-{
-    const main_function = &executable.functions.items[main_function_index];
-
-    const function_type = @ptrCast(*IR.FunctionType, ir_main_function.type);
-    const return_type = function_type.ret_type;
-    const return_void = return_type.id == IR.Type.ID.void;
-
-    if (return_void)
-    {
-        // call main
-        // mov di, 0
-        // xor eax, eax
-        // mov al, 60
-        // syscall
-        //
-        
-        // Not needed
-        // @TODO: separate bb relative and function relative
-        const ir_current_function = @intToPtr(*IR.Function, 0x1283900);
-
-        const callee_operand = Operand.Relative.create(@ptrCast(*IR.Value, ir_main_function), ir_module, ir_current_function, main_function_index, executable);
-        const call_main_operands = [1]Operand { callee_operand };
-
-        const call_main = Instruction.create(Mnemonic.call, call_main_operands[0..]);
-        encode_instruction(allocator, executable, call_main);
-
-        const di = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.DI,
-            },
-            .size = 2,
-        };
-
-        const zero_imm16 = Operand
-        {
-            .value = Operand.Value {
-                .immediate = Operand.Immediate {
-                    .imm16 = 0,
-                },
-            },
-            .size = 2,
-        };
-
-        const mov_di_operands = [2]Operand { di, zero_imm16 };
-        const mov_di = Instruction.create(Mnemonic.mov, mov_di_operands[0..]);
-        encode_instruction(allocator, executable, mov_di);
-
-        const eax = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.A,
-            },
-            .size = 4,
-        };
-
-        const xor_eax_operands = [2]Operand { eax, eax };
-        const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
-        encode_instruction(allocator, executable, xor_eax);
-
-        const al = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.A,
-            },
-            .size = 1,
-        };
-
-        const sixty_imm8 = Operand
-        {
-            .value = Operand.Value {
-                .immediate = Operand.Immediate {
-                    .imm8 = 60,
-                },
-            },
-            .size = 1,
-        };
-
-        const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
-        const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
-        encode_instruction(allocator, executable, mov_al_60);
-
-        const syscall = Instruction.create(Mnemonic.syscall, null);
-        encode_instruction(allocator, executable, syscall);
-    }
-    else
-    {
-        // void
-        // call main
-        // mov di, 0
-        // xor eax, eax
-        // mov al, 60
-        // syscall
-        
-        // i32
-        // call main
-        // mov edi, eax
-        // xor eax, eax
-        // mov al, 60
-        // syscall
-
-        // Not needed
-        // @TODO: separate bb relative and function relative
-        const ir_current_function = @intToPtr(*IR.Function, 0x1283900);
-
-        const callee_operand = Operand.Relative.create(@ptrCast(*IR.Value, ir_main_function), ir_module, ir_current_function, main_function_index, executable);
-        const call_main_operands = [1]Operand { callee_operand };
-
-        const call_main = Instruction.create(Mnemonic.call, call_main_operands[0..]);
-        encode_instruction(allocator, executable, call_main);
-
-        const edi = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.DI,
-            },
-            .size = 4,
-        };
-
-        const eax = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.A,
-            },
-            .size = 4,
-        };
-
-        const mov_edi_eax_operands = [2]Operand { edi, eax };
-        const mov_edi_eax = Instruction.create(Mnemonic.mov, mov_edi_eax_operands[0..]);
-        encode_instruction(allocator, executable, mov_edi_eax);
-
-        const xor_eax_operands = [2]Operand { eax, eax };
-        const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
-        encode_instruction(allocator, executable, xor_eax);
-
-        const al = Operand
-        {
-            .value = Operand.Value {
-                .register = Encoding.Register.A,
-            },
-            .size = 1,
-        };
-
-        const sixty_imm8 = Operand
-        {
-            .value = Operand.Value {
-                .immediate = Operand.Immediate {
-                    .imm8 = 60,
-                },
-            },
-            .size = 1,
-        };
-
-        const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
-        const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
-        encode_instruction(allocator, executable, mov_al_60);
-
-        const syscall = Instruction.create(Mnemonic.syscall, null);
-        encode_instruction(allocator, executable, syscall);
-    }
-}
-
 pub fn encode(allocator: *Allocator, module: *IR.Module) void
 {
     log.debug("\n==============\nx86-64 CODEGEN\n==============\n\n", .{});
 
     var executable = Executable
     {
-        .functions = FunctionBuffer.init(allocator),
+        .functions = FunctionBuffer.initCapacity(allocator, module.functions.len()) catch |err| {
+            panic("Error allocating memory for machine code functions\n", .{});
+        },
         .code_buffer = undefined,
         // @TODO: this is a hack to avoid reallocation. Reallocation kills the addresses
         .data_buffer = ArrayList(u8).initCapacity(allocator, 1024 * 64) catch |err| {
@@ -2265,11 +2608,12 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         .constant_data_list = ArrayList(Executable.ConstantData).init(allocator),
         .code_base_RVA = 0,
         .data_base_RVA = 0,
+        .main_function = undefined,
     };
+
     executable.data_base_RVA = @ptrToInt(executable.data_buffer.items.ptr);
 
-    var main_function_index: u64 = 0;
-    var maybe_ir_main_function: ?*IR.Function = null;
+    var found_main_function = false;
 
     for (module.functions.list.items) |function_bucket|
     {
@@ -2278,15 +2622,6 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         while (bucket_function_index < function_bucket.len) : (bucket_function_index += 1)
         {
             const function = &function_bucket.items[bucket_function_index];
-            if (maybe_ir_main_function != null)
-            {
-                assert(!std.mem.eql(u8, function.name, "main"));
-            }
-            else if (std.mem.eql(u8, function.name, "main"))
-            {
-                main_function_index = executable.functions.items.len;
-                maybe_ir_main_function = function;
-            }
 
             var mc_function_value = Function
             {
@@ -2331,15 +2666,23 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
             executable.functions.append(mc_function_value) catch |err| {
                 panic("Error allocating a new MC function\n", .{});
             };
+
+            if (found_main_function)
+            {
+                assert(!std.mem.eql(u8, function.name, "main"));
+            }
+            else if (std.mem.eql(u8, function.name, "main"))
+            {
+                executable.main_function = &executable.functions.items[executable.functions.items.len - 1];
+                found_main_function = true;
+            }
         }
     }
 
-    if (maybe_ir_main_function == null)
+    if (!found_main_function)
     {
         panic("Couldn't find main function\n", .{});
     }
-
-    const ir_main_function = maybe_ir_main_function.?;
 
     {
         var function_index: u64 = 0;
@@ -2581,7 +2924,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                         panic("not implemented. If block is not continous to the compare instruction\n", .{});
                                     }
                                     const ir_else_target = instruction.operands.items[2];
-                                    const jump_target = Operand.Relative.create(ir_else_target, module, function, function_index, &executable);
+                                    const jump_target = Operand.Relative.block_operand(ir_else_target, mc_function);
                                     const operands = [1]Operand { jump_target };
                                     const conditional_else_jump = Instruction.create(jmp_mnemonic, operands[0..]);
                                     mc_function.append(conditional_else_jump);
@@ -2595,7 +2938,8 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                     // @Info: if the jump is not to the next instruction, produce a jmp instruction
                                     if (target_basic_block != function.basic_blocks.items[block_index + 1])
                                     {
-                                        const operands = [1]Operand { Operand.Relative.create(operand, module, function, function_index, &executable) };
+                                        const jump_target = Operand.Relative.block_operand(operand, mc_function);
+                                        const operands = [1]Operand { jump_target };
 
                                         const jmp = Instruction.create(Mnemonic.jmp, operands[0..]);
                                         mc_function.append(jmp);
@@ -2740,7 +3084,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                                             mc_function.rsp += 16;
                                         }
 
-                                        const operands = [1]Operand { Operand.Relative.create(callee, module, function, function_index, &executable) };
+                                        const operands = [1]Operand { Operand.Relative.function_operand(callee, &executable) };
                                         const call_i = Instruction.create(Mnemonic.call, operands[0..]);
                                         mc_function.append(call_i);
 
@@ -2845,210 +3189,30 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         }
     }
 
-    var aprox_instruction_count: u64 = 0;
-    const max_bytes_per_instruction: u8 = 15;
-
-    for (executable.functions.items) |function|
-    {
-        aprox_instruction_count += 6 + function.instructions.items.len;
-    }
-
-    const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
-    log.debug("Aproximate code size: {}\n", .{aprox_code_size});
-
-    if (executable_model == ExecutableModel.JIT)
-    {
-        const buffer_allocator = std.mem.Allocator
-        {
-            .allocFn = ExecutionBuffer.allocFn,
-            .resizeFn = ExecutionBuffer.resizeFn,
-        };
-        executable.code_buffer = ArrayList(u8).initCapacity(&buffer_allocator, aprox_code_size) catch |err| {
-            panic("Error allocating memory for code section buffer\n", .{});
-        };
-    }
-    else
-    {
-        // @Info: here we don't need to allocate virtual memory with execution permissions
-        executable.code_buffer = ArrayList(u8).initCapacity(allocator, aprox_code_size) catch |err| {
-            panic("Error allocating memory for code section buffer\n", .{});
-        };
-    }
-
-    executable.code_base_RVA = @ptrToInt(executable.code_buffer.items.ptr);
-
-    encode_entry_point(allocator, &executable, main_function_index, module, ir_main_function);
-
-    switch (calling_convention)
-    {
-        CallingConvention.SystemV =>
-        {
-            for (executable.functions.items) |function, function_index|
-            {
-                {
-                    log.info("Printing function:\n\n", .{});
-                    for (function.instructions.items) |instruction, instruction_index|
-                    {
-                        log.info("{}: {}\n", .{instruction_index, instruction});
-                    }
-                    log.info("\n\n", .{});
-                }
-
-                {
-                    var label = &function.labels.items[0];
-                    label.patch(&executable);
-                }
-
-                if (encode_frame_pointer)
-                {
-                    log_enc.debug("\nEncoding prologue\n", .{});
-                    const rbp = Operand 
-                    {
-                        .value = Operand.Value {
-                            .register = Encoding.Register.BP,
-                        },
-                        .size = @enumToInt(Operand.Size.bits64),
-                    };
-
-                    const rsp = Operand 
-                    {
-                        .value = Operand.Value {
-                            .register = Encoding.Register.SP,
-                        },
-                        .size = @enumToInt(Operand.Size.bits64),
-                    };
-
-                    const rbp_arr = [1]Operand { rbp }; 
-                    const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
-                    const operands = [2]Operand { rbp, rsp };
-                    const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
-                    encode_instruction(allocator, &executable, push_rbp);
-                    encode_instruction(allocator, &executable, mov_rbp_rsp);
-                }
-
-                if (function.rsp > 0)
-                {
-                    const operands = [2]Operand
-                    {
-                        Operand 
-                        {
-                            .value = Operand.Value {
-                                .register = Encoding.Register.SP,
-                            },
-                            .size = @enumToInt(Operand.Size.bits64),
-                        },
-                        Operand.Immediate.get_minimum(function.rsp),
-                    };
-
-                    const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
-                    encode_instruction(allocator, &executable, sub_rsp);
-                }
-
-                var instruction_index: u64 = 0;
-                var label_index: u64 = 1;
-
-                const instruction_count = function.instructions.items.len;
-                const label_count = function.labels.items.len;
-
-                log_enc.debug("\nLabel count: {}. Instruction count: {}\n", .{label_count, instruction_count});
-
-                while (label_index < label_count) : (label_index += 1)
-                {
-                    var label = &function.labels.items[label_index];
-                    const label_instruction_index = label.instruction_index;
-
-                    while (instruction_index < label_instruction_index) : (instruction_index += 1)
-                    {
-                        const instruction = function.instructions.items[instruction_index];
-                        assert(instruction.id != Mnemonic.ret);
-                        log_enc.debug("Encoding instruction {}\n", .{instruction_index});
-                        encode_instruction(allocator, &executable, instruction);
-                    }
-
-                    label.target = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len;
-
-                    for (label.locations.items) |location|
-                    {
-                        log_enc.debug("Location\n", .{});
-                        // @TODO: this can cause problems
-                        const target = @intCast(i64, label.target); 
-                        const address_after_instruction = @intCast(i64, location.address_after_instruction);
-                        const difference = target - address_after_instruction;
-                        assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
-                        // ???
-                        assert(difference >= 0);
-                        const relative_to_be_written = @intCast(i32, difference);
-                        log_enc.debug("Address of relative to be written: 0x{x}\n", .{location.relative_to_be_written_address});
-                        var patch_target = @intToPtr(*align(1) i32, location.relative_to_be_written_address);
-                        patch_target.* = relative_to_be_written;
-                        log_enc.debug("\n\n\nWrote relative: {}\n\n\n", .{relative_to_be_written});
-                    }
-
-                    log_enc.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
-                }
-
-                while (instruction_index < instruction_count - 1) : (instruction_index += 1)
-                {
-                    const instruction = function.instructions.items[instruction_index];
-                    assert(instruction.id != Mnemonic.ret);
-                    encode_instruction(allocator, &executable, instruction);
-                }
-
-                if (function.rsp > 0)
-                {
-                    const operands = [2]Operand
-                    {
-                        Operand 
-                        {
-                            .value = Operand.Value {
-                                .register = Encoding.Register.SP,
-                            },
-                            .size = @enumToInt(Operand.Size.bits64),
-                        },
-                        Operand.Immediate.get_minimum(function.rsp),
-                    };
-
-                    const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
-                    encode_instruction(allocator, &executable, add_rsp);
-                }
-
-                if (encode_frame_pointer)
-                {
-                    log_enc.debug("Encoding epilogue\n", .{});
-                    const rbp = Operand 
-                    {
-                        .value = Operand.Value {
-                            .register = Encoding.Register.BP,
-                        },
-                        .size = @enumToInt(Operand.Size.bits64),
-                    };
-                    const rbp_arr = [1]Operand { rbp };
-                    const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
-                    encode_instruction(allocator, &executable, pop_rbp);
-                }
-
-                assert(instruction_index == instruction_count - 1);
-                const instruction = function.instructions.items[instruction_index];
-                assert(instruction.id == Mnemonic.ret);
-                encode_instruction(allocator, &executable, instruction);
-            }
-        },
-        else => panic("ni: {}\n", .{calling_convention}),
-    }
-
-    const code_size = executable.code_buffer.items.len;
-    log.debug("\n\nAproximate code size: {}. Real code size: {}\n", .{aprox_code_size, code_size});
+    const to_join = [2][]const u8 { module.name, ".elf" };
+    const filename = std.mem.join(allocator, "", to_join[0..]) catch |err| {
+        panic("Error formatting file name\n", .{});
+    };
 
     switch (executable_model)
     {
-        ExecutableModel.File =>
+        ExecutableModel.File => executable.write_elf64(allocator, filename),
+        ExecutableModel.JIT =>
         {
-            const to_join = [2][]const u8 { module.name, ".elf" };
-            const filename = std.mem.join(allocator, "", to_join[0..]) catch |err| {
-                panic("Error formatting file name\n", .{});
-            };
-            executable.write_elf64(filename);
+            //if (executable_model == ExecutableModel.JIT)
+            //{
+            //const buffer_allocator = std.mem.Allocator
+            //{
+            //.allocFn = ExecutionBuffer.allocFn,
+            //.resizeFn = ExecutionBuffer.resizeFn,
+            //};
+            //executable.code_buffer = ArrayList(u8).initCapacity(&buffer_allocator, aprox_code_size) catch |err| {
+            //panic("Error allocating memory for code section buffer\n", .{});
+            //};
+            //}
+            panic("Not implemented JIT\n", .{});
         },
-        else => panic("ni: {}\n", .{executable_model}),
+        //else => panic("ni: {}\n", .{executable_model}),
     }
 }
+
