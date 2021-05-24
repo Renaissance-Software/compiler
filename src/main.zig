@@ -15,7 +15,7 @@ const logger = std.log.scoped(.general);
 
 const CG = @import("x86_64/codegen.zig");
 
-fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) bool
+fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) void
 {
     var types: TypeBuffer = Types.init(allocator);
 
@@ -29,24 +29,21 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
     var module = IR.encode(allocator, &semantics_result, src_filename);
 
     CG.encode(allocator, &module);
-
-    return true;
 }
 
-fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) !void
+fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) void
 {
     var arena = std.heap.ArenaAllocator.init(page_allocator);
     defer arena.deinit();
     const allocator = &arena.allocator;
-    const file_content = try cwd.readFileAlloc(allocator, filename, 0xffffffff);
+    const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch |err| {
+        panic("Error reading file: {}\n", .{err});
+    };
 
     logger.info("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
     defer allocator.free(file_content);
 
-    if (!compiler_work_on_file_content(allocator, file_content, filename))
-    {
-        logger.err("Compiler workflow failed\n", .{});
-    }
+    compiler_work_on_file_content(allocator, file_content, filename);
 }
 
 fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
@@ -164,7 +161,7 @@ const test_files = [_][]const u8
     test_dir ++ "pointer_and_branching.rns",
     test_dir ++ "array_basic.rns",
     test_dir ++ "array_assign.rns",
-    //test_dir ++ "struct_basic.rns",
+    test_dir ++ "struct_basic.rns",
 };
 
 pub const log_level: std.log.Level = .debug;
@@ -178,7 +175,7 @@ pub const log_x86_64_encoding = false;
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
@@ -189,14 +186,14 @@ pub fn main() anyerror!void
         {
             for (test_files) |test_file, i|
             {
-                try compiler_file_workflow(page_allocator, cwd, test_file, i);
+                compiler_file_workflow(page_allocator, cwd, test_file, i);
             }
         }
         else
         {
-            const index = 0;
-            //const index = test_files.len - 1;
-            try compiler_file_workflow(page_allocator, cwd, test_files[index], index);
+            //const index = 0;
+            const index = test_files.len - 1;
+            compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }
     else
