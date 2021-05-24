@@ -2359,13 +2359,14 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executabl
                                 IR.Type.ID.@"struct" =>
                                 {
                                     const struct_type = @ptrCast(*IR.StructType, alloca_base_type);
+                                    log.debug("Index value: {}\n", .{index_value});
                                     assert(index_value < struct_type.field_types.len);
                                     const field = struct_type.field_types[index_value];
 
                                     var offset: u64 = 0;
-                                    for (struct_type.field_types) |field_type|
+                                    for (struct_type.field_types) |field_type, field_index|
                                     {
-                                        if (field_type == field)
+                                        if (field_index == index_value)
                                         {
                                             break;
                                         }
@@ -3251,4 +3252,3 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         //else => panic("ni: {}\n", .{executable_model}),
     }
 }
-
