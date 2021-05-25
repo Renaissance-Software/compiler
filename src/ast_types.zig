@@ -184,7 +184,7 @@ pub const Type = struct
         return result;
     }
 
-    pub fn get_array_type(arr_type: *Type, count: usize, types: *TypeBuffer) *Type
+    pub fn get_array_type(arr_type: *Type, count: u64, types: *TypeBuffer) *Type
     {
         for (types.list.items) |type_bucket|
         {
@@ -248,7 +248,7 @@ pub const Type = struct
                 const type_decl = &type_bucket.items[index];
                 if (type_decl.value == Type.ID.function and type_decl.value.function.ret_type == function_type.ret_type and type_decl.value.function.arg_types.items.len == function_type.arg_types.items.len)
                 {
-                    var i: usize = 0;
+                    var i: u64 = 0;
                     while (i < function_type.arg_types.items.len)
                     {
                         if (function_type.arg_types.items[i] == type_decl.value.function.arg_types.items[i])

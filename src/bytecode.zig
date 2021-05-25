@@ -104,13 +104,14 @@ pub const StructType = struct
     base: Type,
     field_types: []*Type,
     name: []const u8,
+    alignment: u64,
 };
 
 pub const ArrayType = struct
 {
     base: Type,
     type: *Type,
-    count: usize,
+    count: u64,
 };
 
 pub const FunctionType = struct
@@ -220,7 +221,8 @@ pub const Value = struct
             },
             else =>
             {
-                panic("Not implemented: {}\n", .{self.id});
+                const constant_struct = @ptrCast(*const ConstantStruct, self);
+                try std.fmt.format(writer, "{}", .{constant_struct.*});
             }
         }
     }
@@ -303,6 +305,34 @@ pub const ConstantArray = struct
     array_values: []*Value,
 
     pub fn format(self: ConstantArray, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    {
+        const lvalue = self.base.parent;
+        assert(lvalue.id == Value.ID.Instruction);
+        const instruction = @ptrCast(*Instruction, lvalue);
+        assert(instruction.id == Instruction.ID.Alloca);
+
+        var it: *Value = self.base.parent;
+        while (true)
+        {
+            if (it.id == Value.ID.GlobalFunction)
+            {
+                break;
+            }
+            it = it.parent;
+        }
+
+        const function = @ptrCast(*Function, it);
+
+        try std.fmt.format(writer, "@__const.{s}.%{}", .{function.name, @ptrToInt(lvalue)});
+    }
+};
+
+pub const ConstantStruct = struct
+{
+    base: Value,
+    values: []*Value,
+
+    pub fn format(self: ConstantStruct, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         const lvalue = self.base.parent;
         assert(lvalue.id == Value.ID.Instruction);
@@ -669,6 +699,11 @@ pub const OperatorBitCast = struct
                 
                 const constant_array = @ptrCast(*ConstantArray, self.cast_value);
                 try std.fmt.format(writer, "{} bitcast ({}* {} to {})", .{self.base.type, self.cast_value.type, constant_array, self.base.type});
+            },
+            Value.ID.ConstantStruct =>
+            {
+                const constant_struct = @ptrCast(*ConstantStruct, self.cast_value);
+                try std.fmt.format(writer, "{} bitcast ({}* {} to {})", .{self.base.type, self.cast_value.type, constant_struct, self.base.type});
             },
             else =>
             {
@@ -1550,6 +1585,7 @@ const ArrayTypeBuffer      = BucketArrayList(ArrayType, 64);
 const PointerTypeBuffer    = BucketArrayList(PointerType, 64);
 const StructTypeBuffer     = BucketArrayList(StructType, 64);
 const ConstantArrayBuffer  = BucketArrayList(ConstantArray, 64);
+const ConstantStructBuffer  = BucketArrayList(ConstantStruct, 64);
 const ConstantIntBuffer    = BucketArrayList(ConstantInt, 64);
 const IntrinsicBuffer      = BucketArrayList(Intrinsic, 64);
 
@@ -1575,6 +1611,7 @@ const Context = struct
     pointer_types: PointerTypeBuffer,
     structure_types: StructTypeBuffer,
     constant_arrays: ConstantArrayBuffer,
+    constant_structs: ConstantStructBuffer,
     constant_ints: ConstantIntBuffer,
     intrinsics: IntrinsicBuffer,
 
@@ -1610,6 +1647,9 @@ const Context = struct
             panic("Failed to allocate big type buffer\n", .{});
         }; 
         context.constant_arrays = ConstantArrayBuffer.init(allocator) catch |err| {
+            panic("Failed to allocate big type buffer\n", .{});
+        }; 
+        context.constant_structs = ConstantStructBuffer.init(allocator) catch |err| {
             panic("Failed to allocate big type buffer\n", .{});
         }; 
         context.constant_ints   = ConstantIntBuffer.init(allocator) catch |err| {
@@ -1753,9 +1793,15 @@ const Context = struct
         }
 
         var size: u32 = 0;
+        var alignment: u32 = 0;
         for (field_types) |field_type|
         {
-            size += field_type.size;
+            const field_size = field_type.size;
+            size += field_size;
+            if (alignment < field_size)
+            {
+                alignment = field_size;
+            }
         }
 
         const new_struct = StructType {
@@ -1766,6 +1812,7 @@ const Context = struct
             },
             .field_types = field_types,
             .name = name,
+            .alignment = alignment,
         };
 
         const result = self.structure_types.append(new_struct) catch |err| {
@@ -1818,6 +1865,26 @@ const Context = struct
 
         const result = self.constant_arrays.append(new_array) catch |err| {
             panic("Failed to allocate memory for constant array\n", .{});
+        };
+
+        return result;
+    }
+
+    fn get_constant_struct(self: *Context, allocator: *Allocator, struct_values: []*Value, struct_type: *Type) *ConstantStruct
+    {
+        const new_struct = ConstantStruct 
+        {
+            .base = Value {
+                .type = struct_type,
+                .id = Value.ID.ConstantStruct,
+                .parent = undefined,
+                .uses = ValueList.init(allocator),
+            },
+            .values = struct_values,
+        };
+
+        const result = self.constant_structs.append(new_struct) catch |err| {
+            panic("Failed to allocate memory for constant struct\n", .{});
         };
 
         return result;
@@ -1875,6 +1942,30 @@ pub const ValueSide = enum
     RValue,
     LValue,
 };
+
+fn initialize_aggregate_with_constant(allocator: *Allocator, builder: *Builder, rvalue: *Value, alloca_ptr: *Value, var_type: *Type) void
+{
+    rvalue.parent = alloca_ptr;
+    const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
+    const aggregate_cast_to_i8 = builder.create_bitcast(allocator, alloca_ptr, pointer_to_i8_type);
+    const memcpy_size = get_size(var_type);
+    const memcpy_size_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(64), memcpy_size, false);
+
+    const bitcast_constant_aggregate = builder.create_bitcast_operator(allocator, rvalue, pointer_to_i8_type);
+    var memcpy_args = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
+        panic("Error allocating memory for memcpy args\n", .{});
+    }; 
+    memcpy_args.append(@ptrCast(*Value, aggregate_cast_to_i8)) catch |err| {
+        panic("Error appending new memcpy arg\n", .{});
+    };
+    memcpy_args.append(@ptrCast(*Value, bitcast_constant_aggregate)) catch |err| {
+        panic("Error appending new memcpy arg\n", .{});
+    };
+    memcpy_args.append(@ptrCast(*Value, memcpy_size_value)) catch |err| {
+        panic("Error appending new memcpy arg\n", .{});
+    };
+    _ = builder.create_memcpy_intrinsic(allocator, memcpy_args.items);
+}
 
 fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeBuffer, node: *Node, expected_type: ?*Type, expected_value: ?*Value) ?*Value
 {
@@ -2001,27 +2092,12 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                         {
                             // @TODO: maybe unify in a big if if the variable is an array (see above TODOs
                             assert(rvalue.id == Value.ID.ConstantArray);
-                            rvalue.parent = @ptrCast(*Value, alloca_ptr);
-                            const pointer_to_i8_type = builder.context.get_pointer_type(builder.context.get_integer_type(8));
-                            const array_cast_to_i8 = builder.create_bitcast(allocator, @ptrCast(*Value, alloca_ptr), pointer_to_i8_type);
-                            const memcpy_size = get_size(var_type);
-                            const memcpy_size_value = builder.context.get_constant_int(allocator, builder.context.get_integer_type(64), memcpy_size, false);
-                            // @Info: We need to bitcast **as operator** the constant array
-                            assert(rvalue.id == Value.ID.ConstantArray);
-                            const bitcast_constant_array = builder.create_bitcast_operator(allocator, rvalue, pointer_to_i8_type);
-                            var memcpy_args = ArrayList(*Value).initCapacity(allocator, 3) catch |err| {
-                                panic("Error allocating memory for memcpy args\n", .{});
-                            }; 
-                            memcpy_args.append(@ptrCast(*Value, array_cast_to_i8)) catch |err| {
-                                panic("Error appending new memcpy arg\n", .{});
-                            };
-                            memcpy_args.append(@ptrCast(*Value, bitcast_constant_array)) catch |err| {
-                                panic("Error appending new memcpy arg\n", .{});
-                            };
-                            memcpy_args.append(@ptrCast(*Value, memcpy_size_value)) catch |err| {
-                                panic("Error appending new memcpy arg\n", .{});
-                            };
-                            _ = builder.create_memcpy_intrinsic(allocator, memcpy_args.items);
+                            initialize_aggregate_with_constant(allocator, builder, rvalue, alloca_ptr, var_type);
+                        },
+                        Type.ID.@"struct" =>
+                        {
+                            assert(rvalue.id == Value.ID.ConstantStruct);
+                            initialize_aggregate_with_constant(allocator, builder, rvalue, alloca_ptr, var_type);
                         },
                         else => panic("ni: {}\n", .{var_type.id}),
                     }
@@ -2095,7 +2171,7 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
 
                 switch (left_type.id)
                 {
-                    Type.ID.integer, Type.ID.pointer, Type.ID.array =>
+                    Type.ID.integer, Type.ID.pointer, Type.ID.array, Type.ID.@"struct" =>
                     {
                         if (do_node(allocator, builder, ast_types, ast_right, left_type, null)) |right_value|
                         {
@@ -2381,6 +2457,40 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
             const constant_array = builder.context.get_constant_array(allocator, array_values.items, type_expr);
             result = @ptrCast(*Value, constant_array);
         },
+        Node.ID.struct_lit =>
+        {
+            assert(node.value_type == Node.ValueType.RValue);
+            const name_count = node.value.struct_lit.field_names.items.len;
+            const expression_count = node.value.struct_lit.field_expressions.items.len;
+            assert(name_count == expression_count);
+            const field_count = expression_count;
+            assert(field_count > 0);
+            assert(expected_type != null);
+            const type_expr = expected_type.?;
+            assert(type_expr.id == Type.ID.@"struct");
+            const struct_type = @ptrCast(*StructType, type_expr);
+
+            var struct_lit_values = ArrayList(*Value).initCapacity(allocator, field_count) catch |err| {
+                panic("Error allocating memory for struct literal\n", .{});
+            };
+
+            for (node.value.struct_lit.field_expressions.items) |ast_struct_lit_elem, field_index|
+            {
+                if (do_node(allocator, builder, ast_types, ast_struct_lit_elem, struct_type.field_types[field_index], null)) |struct_lit_elem|
+                {
+                    struct_lit_values.append(struct_lit_elem) catch |err| {
+                        panic("Error appending struct literal element\n", .{});
+                    };
+                }
+                else
+                {
+                    panic("Couldn't generate bytecode for struct literal element\n", .{});
+                }
+            }
+
+            const constant_struct = builder.context.get_constant_struct(allocator, struct_lit_values.items, type_expr);
+            result = @ptrCast(*Value, constant_struct);
+        },
         Node.ID.array_subscript_expr =>
         {
             const ast_array_subscript_expr = node.value.array_subscript_expr.expression;
@@ -2624,15 +2734,20 @@ fn get_size(type_: *Type) usize
     {
         Type.ID.array =>
         {
-            const array_type = @ptrCast(*ArrayType, type_);
-            const array_size = array_type.count * get_size(array_type.type);
-            return array_size;
+            return type_.size;
+            //const array_type = @ptrCast(*ArrayType, type_);
+            //const array_size = 
+            //return array_size;
         },
         Type.ID.integer =>
         {
             const integer_type = @ptrCast(*IntegerType, type_);
             assert(integer_type.bits % 8 == 0);
             return integer_type.bits / 8;
+        },
+        Type.ID.@"struct" =>
+        {
+            return type_.size;
         },
         else =>
         {

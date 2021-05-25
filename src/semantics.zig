@@ -143,7 +143,7 @@ fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, type
     }
 }
 
-fn resolve_compile_time_uint_constant(node: *Node) usize
+fn resolve_compile_time_uint_constant(node: *Node) u64
 {
     switch (node.value)
     {
@@ -260,6 +260,25 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                 else => panic("ni: {}\n", .{right.value}),
             }
         },
+        Type.ID.structure =>
+        {
+            switch (right.value)
+            {
+                Node.ID.struct_lit =>
+                {
+                    for (right.value.struct_lit.field_names.items) |field_id, field_index|
+                    {
+                        const field_expr = right.value.struct_lit.field_expressions.items[field_index];
+                        _ = typecheck(field_id.type, field_expr, types);
+                    }
+
+                    right.type = lvalue_type;
+
+                    return lvalue_type;
+                },
+                else => panic("ni: {}\n", .{right.value}),
+            }
+        },
         Type.ID.unresolved =>
         {
             switch (right.type.value)
@@ -311,6 +330,73 @@ pub fn find_function_decl(allocator: *Allocator, current_function: *Node, curren
     semantics_error("Can't find function name: {s}\n", .{name});
 }
 
+fn find_field_from_struct(structure_type: *Type, field_name: []const u8) *Type.Struct.Field
+{
+    for (structure_type.value.structure.fields) |*field|
+    {
+        if (std.mem.eql(u8, field.name,  field_name))
+        {
+            return field;
+        }
+    }
+
+    semantics_error("Couldn't match field expression with structure\n", .{});
+}
+
+fn find_field_from_resolved_identifier(resolved_id_node: *Node, name: []const u8) *Type.Struct.Field
+{
+    const decl_node = resolved_id_node.value.resolved_identifier;
+    switch (decl_node.value)
+    {
+        Node.ID.var_decl =>
+        {
+            const decl_type = decl_node.type;
+            switch (decl_type.value)
+            {
+                Type.ID.pointer =>
+                {
+                    const appointee_type = decl_type.value.pointer.type;
+                    switch (appointee_type.value)
+                    {
+                        Type.ID.structure =>
+                        {
+                            const field = find_field_from_struct(appointee_type, name);
+                            return field;
+                        },
+                        else => panic("ni: {}\n", .{appointee_type.value}),
+                    }
+                },
+                Type.ID.structure =>
+                {
+                    const field = find_field_from_struct(decl_type, name);
+                    return field;
+                },
+                else => panic("ni: {}\n", .{decl_type.value}),
+            }
+        },
+        else => panic("ni: {}\n", .{decl_node.value}),
+    }
+}
+
+fn new_field_node(node_buffer: *NodeBuffer, field: *Type.Struct.Field, parent_node: *Node) *Node
+{
+    const field_node = Node
+    {
+        .value = Node.Value {
+            .field_expr = field,
+        },
+        .parent = parent_node,
+        .value_type = Node.ValueType.RValue,
+        .type = field.type,
+    };
+
+    const result = node_buffer.append(field_node) catch |err| {
+        panic("Error allocating memory for type node\n", .{});
+    };
+
+    return result;
+}
+
 pub fn explore_field_identifier_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
 {
     switch (node.value)
@@ -329,54 +415,38 @@ pub fn explore_field_identifier_expression(allocator: *Allocator, current_functi
                         {
                             Node.ID.resolved_identifier =>
                             {
-                                const decl_node = struct_var_node.value.resolved_identifier;
-                                switch (decl_node.value)
-                                {
-                                    Node.ID.var_decl =>
-                                    {
-                                        const decl_type = decl_node.type;
-                                        switch (decl_type.value)
-                                        {
-                                            Type.ID.pointer =>
-                                            {
-                                                const appointee_type = decl_type.value.pointer.type;
-                                                switch (appointee_type.value)
-                                                {
-                                                    Type.ID.structure =>
-                                                    {
-                                                        for (appointee_type.value.structure.fields) |*field|
-                                                        {
-                                                            if (std.mem.eql(u8, field.name,  name))
-                                                            {
-                                                                const field_node = Node
-                                                                {
-                                                                    .value = Node.Value {
-                                                                        .field_expr = field,
-                                                                    },
-                                                                    .parent = node.parent,
-                                                                    .value_type = Node.ValueType.RValue,
-                                                                    .type = field.type,
-                                                                };
-
-                                                                var result = node_buffer.append(field_node) catch |err| {
-                                                                    panic("Error allocating memory for type node\n", .{});
-                                                                };
-                                                                return result;
-                                                            }
-                                                        }
-
-                                                        semantics_error("Couldn't match field expression with structure\n", .{});
-                                                    },
-                                                    else => panic("ni: {}\n", .{appointee_type.value}),
-                                                }
-                                            },
-                                            else => panic("ni: {}\n", .{decl_type.value}),
-                                        }
-                                    },
-                                    else => panic("ni: {}\n", .{decl_node.value}),
-                                }
+                                const field = find_field_from_resolved_identifier(struct_var_node, name);
+                                const field_node = new_field_node(node_buffer, field, parent);
+                                return field_node;
                             },
                             else => panic("ni: {}\n", .{struct_var_node.value}),
+                        }
+                    },
+                    Node.ID.struct_lit =>
+                    {
+                        assert(parent.value_type == Node.ValueType.RValue);
+                        const parent_of_parent = parent.parent.?;
+                        switch (parent_of_parent.value)
+                        {
+                            Node.ID.binary_expr =>
+                            {
+                                assert(parent_of_parent.value.binary_expr.id == BinaryExpression.ID.Assignment);
+                                const left = parent_of_parent.value.binary_expr.left;
+                                const right = parent_of_parent.value.binary_expr.right;
+                                assert(parent == right);
+
+                                switch (left.value)
+                                {
+                                    Node.ID.resolved_identifier =>
+                                    {
+                                        const field = find_field_from_resolved_identifier(left, name);
+                                        const field_node = new_field_node(node_buffer, field, parent);
+                                        return field_node;
+                                    },
+                                    else => panic("left value: {}\n", .{left.value}),
+                                }
+                            },
+                            else => panic("ni: {}\n", .{parent_of_parent.value}),
                         }
                     },
                     else => panic("ni: {}\n", .{parent.value}),
@@ -514,6 +584,18 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
 
             // @TODO: improve
             node.type = Type.get_literal_type(types);
+        },
+        Node.ID.struct_lit =>
+        {
+            for (node.value.struct_lit.field_names.items) |*name_node_ptr|
+            {
+                name_node_ptr.* = explore_field_identifier_expression(allocator, current_function, current_block, name_node_ptr.*, types, functions, node_buffer);
+            }
+
+            for (node.value.struct_lit.field_expressions.items) |*expression_node_ptr|
+            {
+                expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, types, functions, node_buffer);
+            }
         },
         Node.ID.array_subscript_expr =>
         {

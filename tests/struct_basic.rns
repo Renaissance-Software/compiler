@@ -1,10 +1,18 @@
-foo :: struct 
+Foo :: struct 
 {
     a: s32,
     b: s32,
 }
 
-main :: (a: &foo, b: &foo) -> s32
+foo :: (a: &Foo, b: &Foo) -> s32
 {
     return a.a * b.a + a.b * b.b;
+}
+
+main :: () -> s32
+{
+    a: Foo = { .a = 5, .b = 4 };
+    b: Foo = { .a = 2, .b = 7 };
+
+    return foo(&a, &b);
 }

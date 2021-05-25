@@ -210,6 +210,12 @@ const ArrayLiteral = struct
     elements: NodeRefBuffer,
 };
 
+const StructLiteral = struct
+{
+    field_names: NodeRefBuffer,
+    field_expressions: NodeRefBuffer,
+};
+
 const FieldAccessExpression = struct
 {
     expression: *Node,
@@ -229,6 +235,7 @@ pub const Node = struct
         function_decl: FunctionDeclaration,
         int_lit: IntegerLiteral,
         array_lit: ArrayLiteral,
+        struct_lit: StructLiteral,
         unary_expr: UnaryExpression,
         binary_expr: BinaryExpression,
         return_expr: ReturnExpression,
@@ -251,6 +258,7 @@ pub const Node = struct
         function_decl,
         int_lit,
         array_lit,
+        struct_lit,
         unary_expr,
         binary_expr,
         return_expr,
@@ -310,6 +318,14 @@ pub const Node = struct
             {
                     try std.fmt.format(writer, "{s}: {}", .{self.value.var_decl.name, self.value.var_decl.var_type});
             },
+            Node.ID.int_lit =>
+            {
+                if (self.value.int_lit.signed)
+                {
+                    try writer.writeAll("-");
+                }
+                try std.fmt.format(writer, "{}", .{self.value.int_lit.value});
+            },
             Node.ID.array_lit =>
             {
                 try std.fmt.format(writer, "[", .{});
@@ -319,13 +335,9 @@ pub const Node = struct
                 }
                 try writer.writeAll("]");
             },
-            Node.ID.int_lit =>
+            Node.ID.struct_lit =>
             {
-                if (self.value.int_lit.signed)
-                {
-                    try writer.writeAll("-");
-                }
-                try std.fmt.format(writer, "{}", .{self.value.int_lit.value});
+                panic("Struct literal formatting not implemented:\n", .{});
             },
             Node.ID.binary_expr =>
             {
@@ -861,6 +873,90 @@ const Parser = struct
         return array_literal;
     }
 
+    fn parse_struct_literal(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
+    {
+        var struct_lit_node_value = Node
+        {
+            .value = Node.Value {
+                .struct_lit = StructLiteral {
+                    .field_names = NodeRefBuffer.init(allocator),
+                    .field_expressions = NodeRefBuffer.init(allocator),
+                },
+            },
+            .parent = parent_node,
+            .value_type = Node.ValueType.RValue,
+            .type = undefined,
+        };
+
+        var struct_lit_node = self.append_and_get(struct_lit_node_value);
+
+        if (consumer.expect_and_consume_sign('}') != null)
+        {
+            panic("Empty struct initialization is not implemented yet\n", .{});
+        }
+
+        while (true)
+        {
+            if (consumer.expect_and_consume_operator(Operator.Dot) != null)
+            {
+                if (consumer.expect_and_consume(Token.ID.identifier)) |field_identifier_token|
+                {
+                    const field_identifier = field_identifier_token.value.identifier;
+                    const field_id_node = Node {
+                        .value = Node.Value {
+                            .identifier_expr = IdentifierExpression {
+                                .name = field_identifier,
+                            },
+                        },
+                        .parent = struct_lit_node,
+                        .value_type = Node.ValueType.RValue,
+                        .type = undefined,
+                    };
+
+                    struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch |err| {
+                        panic("Error appending field identifier in struct literal node\n", .{});
+                    };
+
+                    if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
+                    {
+                        panic("Error: expected assignment token '='\n", .{});
+                    }
+
+                    struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, consumer, struct_lit_node)) catch |err| {
+                        panic("Error appending field initialization expression in struct literal node\n", .{});
+                    };
+
+                    if (consumer.expect_and_consume_sign('}') != null)
+                    {
+                        break;
+                    }
+                    else if (consumer.expect_and_consume_sign(',') != null)
+                    {
+                        if (consumer.expect_and_consume_sign('}') != null)
+                        {
+                            log.debug("end of struct initializer\n", .{});
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        panic("Not implemented\n", .{});
+                    }
+                }
+                else
+                {
+                    panic("Expecting identifier token\n", .{});
+                }
+            }
+            else
+            {
+                panic("No Dot\n", .{});
+            }
+        }
+
+        return struct_lit_node;
+    }
+
     fn parse_prefix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
     {
         const token = consumer.peek();
@@ -922,6 +1018,19 @@ const Parser = struct
                         return unary_expr;
                     },
                     else => panic("ni: {}\n", .{operator}),
+                }
+            },
+            Token.ID.sign =>
+            {
+                const sign = token.value.sign;
+                switch (sign)
+                {
+                    '{' =>
+                    {
+                        const struct_lit_expr = self.parse_struct_literal(allocator, consumer, parent_node);
+                        return struct_lit_expr;
+                    },
+                    else => panic("ni: {c}\n", .{sign}),
                 }
             },
             else => panic("Prefix functionality not implemented for {}\n", .{token.value}),
@@ -1129,6 +1238,7 @@ const Parser = struct
                         '{' => Precedence.None,
                         ';' => Precedence.None,
                         ',' => Precedence.None,
+                        '}' => Precedence.None,
                         else => panic("Precedence not implemented for sign {c}\n", .{sign}),
                     };
 

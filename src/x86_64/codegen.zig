@@ -2231,6 +2231,94 @@ const StackAllocator = struct
     }
 };
 
+fn zero_fill_until_alignment_is_met(executable: *Executable, alignment: u64) void
+{
+    var address = @ptrToInt(executable.data_buffer.items.ptr) + executable.data_buffer.items.len;
+    const aligned_address = align_number(address, alignment);
+    // @TODO: alignment might not be satisfied if there are reallocations
+    log.debug("Aligned address: 0x{x}\n", .{aligned_address});
+
+    while (address < aligned_address) : (address += 1)
+    {
+        executable.data_buffer.append(0) catch |err| {
+            panic("error writing byte to the .data buffer to achieve alignment\n", .{});
+        };
+    }
+}
+
+// @TODO: maybe it will be faster if we do a plain memcpy for arrays, given that arrays in LLVM format is an raw type ArrayList?
+fn get_constant_data_from_ir_to_mc(executable: *Executable, alignment: u64, ir_value: *IR.Value, ir_values: []*IR.Value) Operand
+{
+    zero_fill_until_alignment_is_met(executable, alignment);
+
+    const offset = executable.data_buffer.items.len;
+    log.debug("offset: {}\n", .{offset});
+
+    for (ir_values) |ir_data_value|
+    {
+        append_value_to_data_buffer(executable, ir_data_value);
+    }
+
+    const new_data_constant = Executable.ConstantData
+    {
+        .value = ir_value,
+        .offset = offset,
+    };
+
+    executable.constant_data_list.append(new_data_constant) catch |err| {
+        panic("Error appending tracking information for .data constant\n", .{});
+    };
+
+    const constant_operand = Operand
+    {
+        .value = Operand.Value {
+            .rip_relative = Operand.RIPRelative {
+                .offset = offset,
+            },
+        },
+        .size = ir_value.type.size,
+    };
+
+    return constant_operand;
+}
+
+fn append_value_to_data_buffer(executable: *Executable, value: *IR.Value) void
+{
+    switch (value.id)
+    {
+        IR.Value.ID.ConstantInt =>
+        {
+            const constant_int = @ptrCast(*IR.ConstantInt, value);
+            const constant_value = constant_int.int_value;
+            const signed = constant_int.is_signed;
+            const size = constant_int.base.type.size;
+
+            if (signed)
+            {
+                switch (size)
+                {
+                    else => panic("ni: {}\n", .{size}),
+                }
+            }
+            else
+            {
+                switch (size)
+                {
+                    4 =>
+                    {
+                        const number32 = @intCast(u32, constant_value);
+                        executable.data_buffer.appendSlice(std.mem.asBytes(&number32)) catch |err| {
+                            panic("Error appending bytes to the .data section\n", .{});
+                        };
+                    },
+                    else => panic("ni: {}\n", .{size}),
+                }
+            }
+        },
+        else => panic("ni: {}\n", .{value.id}),
+    }
+}
+
 pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executable, mc_function: *Function, ir_value: *IR.Value, use: ?*IR.Value) Operand
 {
     log.debug("Getting value of {s}\n", .{@tagName(ir_value.id)});
@@ -2429,83 +2517,26 @@ pub fn get_mc_value_from_ir_value(function: *IR.Function, executable: *Executabl
             const elem_size = array_size / constant_array.array_values.len;
             const alignment = elem_size;
 
-            var address = @ptrToInt(executable.data_buffer.items.ptr) + executable.data_buffer.items.len;
-            const aligned_address = align_number(address, alignment);
-            // @TODO: alignment might not be satisfied if there are reallocations
-            log.debug("Aligned address: 0x{x}\n", .{aligned_address});
-
-            while (address < aligned_address) : (address += 1)
+            const operand = get_constant_data_from_ir_to_mc(executable, alignment, ir_value, constant_array.array_values);
+            return operand;
+        },
+        IR.Value.ID.ConstantStruct =>
+        {
+            log.debug("Getting constant array. The value is not in a register\n", .{});
+            for (executable.constant_data_list.items) |constant_data|
             {
-                executable.data_buffer.append(0) catch |err| {
-                    panic("error writing byte to the .data buffer to achieve alignment\n", .{});
-                };
-            }
-
-            const offset = executable.data_buffer.items.len;
-            log.debug("offset: {}\n", .{offset});
-
-            // @TODO: rework constant arrays to delete this mess
-            for (constant_array.array_values) |array_value|
-            {
-                switch (array_value.id)
+                if (constant_data.value == ir_value)
                 {
-                    IR.Value.ID.ConstantInt =>
-                    {
-                        const constant_int = @ptrCast(*IR.ConstantInt, array_value);
-                        const constant_value = constant_int.int_value;
-                        const signed = constant_int.is_signed;
-                        if (signed)
-                        {
-                            switch (elem_size)
-                            {
-                                else => panic("ni: {}\n", .{elem_size}),
-                            }
-                        }
-                        else
-                        {
-                            switch (elem_size)
-                            {
-                                4 =>
-                                {
-                                    const number32 = @intCast(u32, constant_value);
-                                    executable.data_buffer.appendSlice(std.mem.asBytes(&number32)) catch |err| {
-                                        panic("Error appending bytes to the .data section\n", .{});
-                                    };
-                                },
-                                else => panic("ni: {}\n", .{elem_size}),
-                            }
-                        }
-                    },
-                    else => panic("ni: {}\n", .{array_value.id}),
+                    panic("ni\n", .{});
                 }
             }
 
-            const new_data_constant = Executable.ConstantData
-            {
-                .value = ir_value,
-                .offset = offset,
-            };
+            const constant_struct = @ptrCast(*IR.ConstantStruct, ir_value);
+            const struct_type = @ptrCast(*IR.StructType, constant_struct.base.type);
+            const struct_alignment = struct_type.alignment;
 
-            executable.constant_data_list.append(new_data_constant) catch |err| {
-                panic("Error appending tracking information for .data constant\n", .{});
-            };
-
-            // @TODO: the array must be an operand which points to the data segment
-            //check if that constant exist (data_constant_list)
-            //if not create and write bytes to .data section
-            // return an rip_relative operand from that
-            
-            const constant_operand = Operand
-            {
-                .value = Operand.Value {
-                    .rip_relative = Operand.RIPRelative {
-                        .offset = offset,
-                    },
-                },
-                .size = array_size,
-            };
-
-            return constant_operand;
+            const operand = get_constant_data_from_ir_to_mc(executable, struct_alignment, ir_value, constant_struct.values);
+            return operand;
         },
         IR.Value.ID.Argument =>
         {
