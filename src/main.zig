@@ -17,8 +17,6 @@ const CG = @import("x86_64/codegen.zig");
 
 fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) void
 {
-    var types: TypeBuffer = Types.init(allocator);
-
     const lexer_result = Lexer.lexical_analyze(allocator, file_content);
     // @Info: lexer_result.line_count is ignored
 
@@ -63,7 +61,7 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     var i: u64 = 0;
     while (i < iterations) : (i += 1)
     {
-        for (test_file_contents) |test_file_content, file_index|
+        for (test_file_contents) |test_file_content|
         {
             logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
             if (!compiler_work_on_file_content(allocator, &compiler, test_file_content))
@@ -74,7 +72,7 @@ fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
     }
 }
 
-pub fn log(comptime level: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
+pub fn log(comptime _: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
 {
     switch (scope)
     {
@@ -162,6 +160,7 @@ const test_files = [_][]const u8
     test_dir ++ "array_basic.rns",
     test_dir ++ "array_assign.rns",
     test_dir ++ "struct_basic.rns",
+    test_dir ++ "hello_world.rns",
 };
 
 pub const log_level: std.log.Level = .debug;
@@ -175,7 +174,7 @@ pub const log_x86_64_encoding = false;
 
 pub fn main() anyerror!void
 {
-    const all_tests = false;
+    const all_tests = true;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();

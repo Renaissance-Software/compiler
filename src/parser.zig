@@ -90,6 +90,7 @@ pub const TypeIdentifier = struct
         array: Array,
         structure: Struct,
         function: Function,
+        slice: Slice,
     };
 
     pub const ID = enum
@@ -100,6 +101,12 @@ pub const TypeIdentifier = struct
         array,
         structure,
         function,
+        slice,
+    };
+
+    pub const Slice = struct
+    {
+        type: *Node,
     };
 
     pub const Function = struct
@@ -124,10 +131,18 @@ pub const TypeIdentifier = struct
         // @Info: struct fields are of type var_decl
         fields: NodeRefBuffer,
         name: []const u8,
+
     };
 
-    pub fn format(self: TypeIdentifier, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    //pub fn create_slice(type_identifier: *Type) void
+    //{
+        //@compileError("here\n");
+    //}
+
+    pub fn format(self: TypeIdentifier, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        _ = fmt;
+
         switch (self.value)
         {
             TypeIdentifier.ID.simple => try std.fmt.format(writer, "{s}", .{self.value.simple}),
@@ -233,6 +248,7 @@ pub const Node = struct
     {
         var_decl: VariableDeclaration,
         function_decl: FunctionDeclaration,
+        syscall_decl: Intrinsic.Syscall,
         int_lit: IntegerLiteral,
         array_lit: ArrayLiteral,
         struct_lit: StructLiteral,
@@ -256,6 +272,7 @@ pub const Node = struct
     {
         var_decl,
         function_decl,
+        syscall_decl,
         int_lit,
         array_lit,
         struct_lit,
@@ -281,8 +298,10 @@ pub const Node = struct
         LValue,
     };
 
-    pub fn format(self: *const Node, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    pub fn format(self: *const Node, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        _ = fmt;
+
         switch (self.value)
         {
             Node.ID.function_decl =>
@@ -306,6 +325,22 @@ pub const Node = struct
                     try std.fmt.format(writer, "{}", .{self.value.function_decl.blocks.items[0]});
                 }
                 try writer.writeAll("}\n");
+            },
+            Node.ID.syscall_decl =>
+            {
+                const syscall_decl = self.value.syscall_decl;
+                try std.fmt.format(writer, "{s} : syscall({}) : (", .{syscall_decl.name, syscall_decl.id});
+                for (syscall_decl.arg_bytes) |bytes|
+                {
+                    if (bytes == 0)
+                    {
+                        break;
+                    }
+
+                    try std.fmt.format(writer, "u{},", .{bytes * 8});
+                }
+
+                try writer.writeAll(");");
             },
             Node.ID.block_expr =>
             {
@@ -595,6 +630,34 @@ const TokenConsumer = struct
     }
 };
 
+const Intrinsic = struct
+{
+    const Value = union(ID)
+    {
+        syscall: Syscall,
+    };
+
+    const ID = enum
+    {
+        syscall,
+    };
+
+    const Syscall = struct
+    {
+        id: u64,
+        arg_bytes: [max_arg_count]u8,
+        name: []const u8,
+
+        const max_arg_count = 6;
+
+        const Invocation = struct
+        {
+            declaration: *Syscall,
+            arguments: [max_arg_count]Argument,
+        };
+    };
+};
+
 const Parser = struct
 {
     nb: NodeBuffer,
@@ -603,10 +666,11 @@ const Parser = struct
 
     function_declarations: NodeRefBuffer,
     type_declarations: NodeRefBuffer,
+    syscalls: NodeRefBuffer,
 
     fn append_and_get(self: *Parser, node: Node) *Node
     {
-        const result = self.nb.append(node) catch |err| {
+        const result = self.nb.append(node) catch {
             panic("Couldn't allocate memory for node", .{});
         };
         log.debug("new node:\n\n{s}\n\n", .{@tagName(result.value)});
@@ -677,7 +741,7 @@ const Parser = struct
                             while (true)
                             {
                                 const field = self.parse_expression(allocator, consumer, result);
-                                result.value.type_identifier.value.structure.fields.append(field) catch |err| {
+                                result.value.type_identifier.value.structure.fields.append(field) catch {
                                     panic("Error allocating memory for struct field\n", .{});
                                 };
 
@@ -738,34 +802,43 @@ const Parser = struct
                     },
                     Operator.LeftBracket =>
                     {
-                        var type_node_value = Node {
-                            .value = Node.Value {
-                                .type_identifier = TypeIdentifier {
-                                    .value = TypeIdentifier.Value {
-                                        .array = TypeIdentifier.Array {
-                                            .type = undefined,
-                                            .len_expr = undefined,
-                                        },
-                                    },
-                                },
-                            },
-                            .parent = parent_node,
-                            .value_type = Node.ValueType.LValue,
-                            .type = undefined,
-                        };
-
-                        const type_node = self.append_and_get(type_node_value);
-
-                        type_node.value.type_identifier.value.array.len_expr = self.parse_expression(allocator, consumer, type_node);
-
                         if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
                         {
-                            parser_error("Expected ']' in array type\n", .{});
+                            var type_node_value = Node {
+                                .value = Node.Value {
+                                    .type_identifier = TypeIdentifier {
+                                        .value = TypeIdentifier.Value {
+                                            .array = TypeIdentifier.Array {
+                                                .type = undefined,
+                                                .len_expr = undefined,
+                                            },
+                                            },
+                                        },
+                                        },
+                                    .parent = parent_node,
+                                    .value_type = Node.ValueType.LValue,
+                                    .type = undefined,
+                                };
+
+                            const type_node = self.append_and_get(type_node_value);
+
+                            type_node.value.type_identifier.value.array.len_expr = self.parse_expression(allocator, consumer, type_node);
+
+                            if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
+                            {
+                                parser_error("Expected ']' in array type\n", .{});
+                            }
+
+                            type_node.value.type_identifier.value.array.type = self.parse_type(allocator, consumer, parent_node);
+
+                            return type_node;
                         }
-
-                        type_node.value.type_identifier.value.array.type = self.parse_type(allocator, consumer, parent_node);
-
-                        return type_node;
+                        else
+                        {
+                            // Slice
+                            const slice_type = self.parse_type(allocator, consumer, parent_node);
+                            panic("This is a slice of type: {}\n", .{slice_type});
+                        }
                     },
                     else => panic("ni: {}\n", .{operator}),
                 }
@@ -848,7 +921,7 @@ const Parser = struct
             while (true)
             {
                 const array_elem = self.parse_expression(allocator, consumer, parent_node);
-                array_literal.value.array_lit.elements.append(array_elem) catch |err| {
+                array_literal.value.array_lit.elements.append(array_elem) catch {
                     panic("Error allocating memory for array literal element\n", .{});
                 };
                 
@@ -913,7 +986,7 @@ const Parser = struct
                         .type = undefined,
                     };
 
-                    struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch |err| {
+                    struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch {
                         panic("Error appending field identifier in struct literal node\n", .{});
                     };
 
@@ -922,7 +995,7 @@ const Parser = struct
                         panic("Error: expected assignment token '='\n", .{});
                     }
 
-                    struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, consumer, struct_lit_node)) catch |err| {
+                    struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, consumer, struct_lit_node)) catch {
                         panic("Error appending field initialization expression in struct literal node\n", .{});
                     };
 
@@ -1037,7 +1110,7 @@ const Parser = struct
         }
     }
 
-    fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
     {
         log.debug("Parsing argument list\n", .{});
         var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
@@ -1049,7 +1122,7 @@ const Parser = struct
             while (true)
             {
                 const arg = self.parse_expression(allocator, consumer, parent_node);
-                arg_list.append(arg) catch |err| {
+                arg_list.append(arg) catch {
                     panic("Error allocating memory for argument node\n", .{});
                 };
 
@@ -1105,7 +1178,7 @@ const Parser = struct
         return result;
     }
 
-    fn parse_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    fn parse_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
     {
         const type_expr = self.parse_type(allocator, consumer, parent_node);
 
@@ -1133,7 +1206,7 @@ const Parser = struct
         return declaration;
     }
 
-    fn parse_array_subscript(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    fn parse_array_subscript(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
     {
         const subscript_node_value = Node
         {
@@ -1159,7 +1232,7 @@ const Parser = struct
         return subscript_node;
     }
 
-    fn parse_field_access(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    fn parse_field_access(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
     {
         const field_acces_value = Node
         {
@@ -1198,22 +1271,22 @@ const Parser = struct
 
             Operator.LeftParenthesis =>
             {
-                const call_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr, operator, precedence);
+                const call_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr);
                 return call_expr;
             },
             Operator.Declaration => 
             {
-                const declaration_expr = self.parse_declaration(allocator, consumer, parent_node, left_expr, operator, precedence);
+                const declaration_expr = self.parse_declaration(allocator, consumer, parent_node, left_expr);
                 return declaration_expr;
             },
             Operator.LeftBracket =>
             {
-                const array_subscript_expr = self.parse_array_subscript(allocator, consumer, parent_node, left_expr, operator, precedence);
+                const array_subscript_expr = self.parse_array_subscript(allocator, consumer, parent_node, left_expr);
                 return array_subscript_expr;
             },
             Operator.Dot =>
             {
-                const field_access_expr = self.parse_field_access(allocator, consumer, parent_node, left_expr, operator, precedence);
+                const field_access_expr = self.parse_field_access(allocator, consumer, parent_node, left_expr);
                 return field_access_expr;
             },
             else => panic("operator not implemented: {}\n", .{operator}),
@@ -1379,7 +1452,7 @@ const Parser = struct
             .type = undefined,
         };
         const loop_block_node = self.append_and_get(loop_block_value);
-        self.current_function.value.function_decl.blocks.append(loop_block_node) catch |err| {
+        self.current_function.value.function_decl.blocks.append(loop_block_node) catch {
             panic("Failed to allocate a block reference to function block list\n", .{});
         };
         return loop_block_node;
@@ -1466,10 +1539,10 @@ const Parser = struct
             const it_decl_node = self.append_and_get(it_decl_value);
             it_decl_literal_node.parent = it_decl_node;
 
-            self.current_function.value.function_decl.variables.append(it_decl_node) catch |err| {
+            self.current_function.value.function_decl.variables.append(it_decl_node) catch {
                 panic("Error allocating variable reference to function variable list\n", .{});
             };
-            self.current_block.value.block_expr.statements.append(it_decl_node) catch |err| {
+            self.current_block.value.block_expr.statements.append(it_decl_node) catch {
                 panic("Error allocating statement reference to block statement list\n", .{});
             };
 
@@ -1502,7 +1575,7 @@ const Parser = struct
             };
 
             const assignment_node = self.append_and_get(assignment);
-            self.current_block.value.block_expr.statements.append(assignment_node) catch |err| {
+            self.current_block.value.block_expr.statements.append(assignment_node) catch {
                 panic("Error allocating statement reference to block statement list\n", .{});
             };
 
@@ -1574,7 +1647,7 @@ const Parser = struct
 
                 const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
                 // @Info: in other kind of loops we should support multiple statements
-                self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch |err| {
+                self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch {
                     panic("Couldn't allocate prefix statement\n", .{});
                 };
             }
@@ -1651,7 +1724,7 @@ const Parser = struct
                 };
 
                 const postfix_assignment_node = self.append_and_get(postfix_assignment_value);
-                self.current_block.value.block_expr.statements.append(postfix_assignment_node) catch |err| {
+                self.current_block.value.block_expr.statements.append(postfix_assignment_node) catch {
                     panic("Couldn't allocate postfix statement\n", .{});
                 };
             }
@@ -1728,7 +1801,7 @@ const Parser = struct
         return branch_node;
     }
 
-    fn parse_break(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
+    fn parse_break(self: *Parser, consumer: *TokenConsumer, parent_node: *Node) *Node
     {
         // consuming break keyword
         consumer.consume();
@@ -1797,14 +1870,14 @@ const Parser = struct
                             {
                                 parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
-                            block_node.value.block_expr.statements.append(return_statement) catch |err| {
+                            block_node.value.block_expr.statements.append(return_statement) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
                         },
                         KeywordID.@"for" =>
                         {
                             const for_st = self.parse_for(allocator, consumer, block_node);
-                            block_node.value.block_expr.statements.append(for_st) catch |err| {
+                            block_node.value.block_expr.statements.append(for_st) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
 
@@ -1812,18 +1885,18 @@ const Parser = struct
                         KeywordID.@"if" =>
                         {
                             const if_st = self.parse_if(allocator, consumer, block_node);
-                            block_node.value.block_expr.statements.append(if_st) catch |err| {
+                            block_node.value.block_expr.statements.append(if_st) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
                         },
                         KeywordID.@"break" =>
                         {
-                            const break_st = self.parse_break(allocator, consumer, block_node);
+                            const break_st = self.parse_break(consumer, block_node);
                             if (consumer.expect_and_consume_sign(';') == null)
                             {
                                 parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
-                            block_node.value.block_expr.statements.append(break_st) catch |err| {
+                            block_node.value.block_expr.statements.append(break_st) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
                         },
@@ -1903,15 +1976,15 @@ const Parser = struct
                         {
                             parser_error("Expected semicolon at the end of the statement\n", .{});
                         }
-                        block_node.value.block_expr.statements.append(var_decl_node) catch |err| {
+                        block_node.value.block_expr.statements.append(var_decl_node) catch {
                             panic("Failed to allocate memory for statement", .{});
                         };
-                        self.current_function.value.function_decl.variables.append(var_decl_node) catch |err| {
+                        self.current_function.value.function_decl.variables.append(var_decl_node) catch {
                             panic("Error allocating variable reference to function variable list\n", .{});
                         };
                         if (initialization_assignment) |assignment|
                         {
-                            block_node.value.block_expr.statements.append(assignment) catch |err| {
+                            block_node.value.block_expr.statements.append(assignment) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
                         }
@@ -1925,7 +1998,7 @@ const Parser = struct
                         {
                             parser_error("Expected semicolon at the end of the statement\n", .{});
                         }
-                        block_node.value.block_expr.statements.append(identifier_expr) catch |err| {
+                        block_node.value.block_expr.statements.append(identifier_expr) catch {
                             panic("Failed to allocate memory for statement", .{});
                         };
                     }
@@ -1942,7 +2015,7 @@ const Parser = struct
                             {
                                 parser_error("Expected semicolon at the end of the statement\n", .{});
                             }
-                            block_node.value.block_expr.statements.append(deref_st) catch |err| {
+                            block_node.value.block_expr.statements.append(deref_st) catch {
                                 panic("Failed to allocate memory for statement", .{});
                             };
                         },
@@ -1955,7 +2028,6 @@ const Parser = struct
                 },
             }
 
-            const next_token = consumer.peek();
             should_keep_parsing = has_braces and consumer.expect_sign('}') == null;
         }
 
@@ -1966,6 +2038,168 @@ const Parser = struct
             {
                 parser_error("Expected end sign at the end of the block", .{});
             }
+        }
+    }
+
+    fn parse_intrinsic(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, intrinsic_name: []const u8) void
+    {
+        if (std.meta.stringToEnum(Intrinsic.ID, intrinsic_name)) |intrinsic_id|
+        {
+            print("Intrinsic found: {}\n", .{intrinsic_id});
+            switch (intrinsic_id)
+            {
+                Intrinsic.ID.syscall =>
+                {
+                    if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) == null)
+                    {
+                        panic("expected left parenthesis to indicate system call id\n", .{});
+                    }
+
+                    if (consumer.expect_and_consume(Token.ID.int_lit)) |syscall_id_token|
+                    {
+                        const syscall_id = syscall_id_token.value.int_lit;
+                        if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
+                        {
+                            panic("expected right parenthesis\n", .{});
+                        }
+
+                        if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
+                        {
+                            panic("expected colon\n", .{});
+                        }
+
+                        if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) == null)
+                        {
+                            panic("expected left parenthesis\n", .{});
+                        }
+
+                        var syscall = std.mem.zeroes(Intrinsic.Syscall);
+                        syscall.id = syscall_id;
+                        var argument_count: u64 = 0;
+
+                        while (true) : (argument_count += 1)
+                        {
+                            if (argument_count >= 6)
+                            {
+                                panic("Too many arguments for syscall {}: {}\n", .{syscall_id, argument_count});
+                            }
+                            if (consumer.expect_and_consume(Token.ID.identifier) == null)
+                            {
+                                panic("expected identifier\n", .{});
+                            }
+
+                            if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
+                            {
+                                panic("expected colon\n", .{});
+                            }
+
+                            const arg_type = self.parse_type(allocator, consumer, null);
+                            const byte_count: u8 = blk:
+                            {
+                                switch (arg_type.value)
+                                {
+                                    Node.ID.type_identifier =>
+                                    {
+                                        const type_identifier = arg_type.value.type_identifier;
+                                        const type_kind = type_identifier.value;
+                                        switch (type_kind)
+                                        {
+                                            TypeIdentifier.ID.simple =>
+                                            {
+                                                const type_str = type_kind.simple;
+                                                if (std.mem.eql(u8, type_str, "u8") or std.mem.eql(u8, type_str, "s8"))
+                                                {
+                                                    break :blk 1;
+                                                }
+                                                else if (std.mem.eql(u8, type_str, "u16") or std.mem.eql(u8, type_str, "s16"))
+                                                {
+                                                    break :blk 2;
+                                                }
+                                                else if (std.mem.eql(u8, type_str, "u32") or std.mem.eql(u8, type_str, "s32"))
+                                                {
+                                                    break :blk 4;
+                                                }
+                                                else if (std.mem.eql(u8, type_str, "u64") or std.mem.eql(u8, type_str, "s64"))
+                                                {
+                                                    break :blk 8;
+                                                }
+                                            },
+                                            TypeIdentifier.ID.pointer =>
+                                            {
+                                                break :blk 8;
+                                            },
+                                            else => panic("ni: {}\n", .{type_kind}),
+                                        }
+                                    },
+                                    else => panic("ni: {}\n", .{arg_type.value}),
+                                }
+
+                                panic("byte count couldn't be figured out\n", .{});
+                            };
+
+                            syscall.arg_bytes[argument_count] = byte_count;
+                            print("Byte count: {}\n", .{byte_count});
+
+                            const next_token = consumer.peek();
+                            consumer.consume();
+                            switch (next_token.value)
+                            {
+                                Token.ID.sign =>
+                                {
+                                    const sign = next_token.value.sign;
+                                    switch (sign)
+                                    {
+                                        ',' => {},
+                                        else => panic("ni: {c}\n", .{sign}),
+                                    }
+                                },
+                                Token.ID.operator =>
+                                {
+                                    const operator = next_token.value.operator;
+                                    switch (operator)
+                                    {
+                                        Operator.RightParenthesis =>
+                                        {
+                                            break;
+                                        },
+                                        else => panic("ni: {}\n", .{operator}),
+                                    }
+                                },
+                                else => panic("ni: {}\n", .{next_token.value}),
+                            }
+                        }
+
+                        if (consumer.expect_and_consume_sign(';') == null)
+                        {
+                            panic("expected ';' at the end of syscall statement", .{});
+                        }
+
+                        const syscall_value = Node
+                        {
+                            .value = Node.Value {
+                                .syscall_decl = syscall,
+                            },
+                            .parent = null,
+                            .value_type = Node.ValueType.RValue,
+                            .type = undefined,
+                        };
+
+                        const syscall_node = self.append_and_get(syscall_value);
+
+                        self.syscalls.append(syscall_node) catch {
+                            panic("Error appending syscall\n", .{});
+                        };
+                    }
+                    else
+                    {
+                        panic("Expected syscall id\n", .{});
+                    }
+                },
+            }
+        }
+        else
+        {
+            panic("Intrinsic not found: {s}\n", .{intrinsic_name});
         }
     }
 
@@ -1992,17 +2226,6 @@ const Parser = struct
         var function_node = self.append_and_get(function_node_value);
         self.current_function = function_node;
 
-        var function_type = TypeIdentifier
-        {
-            .value = TypeIdentifier.Value
-            {
-                .function = TypeIdentifier.Function {
-                    .arg_types = NodeRefBuffer.init(allocator),
-                    .return_type = null,
-                }
-            }
-        };
-
         var next_token = consumer.tokens[consumer.next_index];
         var arg_types = NodeRefBuffer.init(allocator);
         var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
@@ -2015,7 +2238,7 @@ const Parser = struct
                 parser_error("Error parsing argument\n", .{});
             }
 
-            arg_types.append(arg_node.value.var_decl.var_type) catch |err| {
+            arg_types.append(arg_node.value.var_decl.var_type) catch {
                 panic("Error allocating memory for argument type\n", .{});
             };
 
@@ -2084,7 +2307,7 @@ const Parser = struct
         };
 
         var block_node = self.append_and_get(block_node_value);
-        self.current_function.value.function_decl.blocks.append(block_node) catch |err| {
+        self.current_function.value.function_decl.blocks.append(block_node) catch {
             panic("Failed to allocate memory for block node reference\n", .{});
         };
 
@@ -2112,37 +2335,52 @@ const Parser = struct
         const constant = consumer.expect_and_consume_operator(Operator.Constant);
         if (constant == null)
         {
-            panic("not implemented: top level declaration with type in the middle specified\n", .{});
-        }
-
-        if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
-        {
-            const function_result = self.parse_function_declaration(allocator, consumer) catch |err| {
-                parser_error("Couldn't parse the function\n", .{});
-            };
-            if (function_result) |function_node|
+            if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
             {
-                function_node.value.function_decl.name = name;
-                self.function_declarations.append(function_node) catch |err| {
-                    panic("Failed to allocate node reference for top-level declaration\n", .{});
+                panic("This is not a declaration\n", .{});
+            }
+
+            if (consumer.expect_and_consume_operator(Operator.CompilerIntrinsic) == null)
+            {
+                panic("Expected compiler intrinsic\n", .{});
+            }
+
+            if (consumer.expect_and_consume(Token.ID.identifier)) |intrinsic_identifier|
+            {
+                self.parse_intrinsic(allocator, consumer, intrinsic_identifier.value.identifier);
+            }
+        }
+        else
+        {
+            if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
+            {
+                const function_result = self.parse_function_declaration(allocator, consumer) catch {
+                    parser_error("Couldn't parse the function\n", .{});
+                };
+                if (function_result) |function_node|
+                {
+                    function_node.value.function_decl.name = name;
+                    self.function_declarations.append(function_node) catch {
+                        panic("Failed to allocate node reference for top-level declaration\n", .{});
+                    };
+                }
+                else
+                {
+                    parser_error("Couldn't parse the function\n", .{});
+                }
+            }
+            else if (consumer.expect_keyword(KeywordID.@"struct") != null)
+            {
+                const struct_type = self.parse_type(allocator, consumer, null);
+                struct_type.value.type_identifier.value.structure.name = name;
+                self.type_declarations.append(struct_type) catch {
+                    panic("Error allocating memory for type declaration\n", .{});
                 };
             }
             else
             {
-                parser_error("Couldn't parse the function\n", .{});
+                panic("Couldn't parse top level declaration\n", .{});
             }
-        }
-        else if (consumer.expect_keyword(KeywordID.@"struct") != null)
-        {
-            const struct_type = self.parse_type(allocator, consumer, null);
-            struct_type.value.type_identifier.value.structure.name = name;
-            self.type_declarations.append(struct_type) catch |err| {
-                panic("Error allocating memory for type declaration\n", .{});
-            };
-        }
-        else
-        {
-            panic("Couldn't parse top level declaration\n", .{});
         }
     }
 };
@@ -2152,6 +2390,7 @@ pub const ParserResult = struct
     function_declarations: NodeRefBuffer,
     node_buffer: NodeBuffer,
     type_declarations: NodeRefBuffer,
+    syscalls: NodeRefBuffer,
 };
 
 pub fn parse(allocator: *Allocator, lexer_result: LexerResult) ParserResult
@@ -2169,18 +2408,19 @@ pub fn parse(allocator: *Allocator, lexer_result: LexerResult) ParserResult
 
     var parser = Parser
     {
-        .nb = NodeBuffer.init(allocator) catch |err| {
+        .nb = NodeBuffer.init(allocator) catch {
             panic("Couldn't allocate the bucket node buffer\n", .{});
         },
         .current_function = undefined,
         .current_block = undefined,
         .function_declarations = NodeRefBuffer.init(allocator),
         .type_declarations = NodeRefBuffer.init(allocator),
+        .syscalls = NodeRefBuffer.init(allocator),
     };
 
     while (token_consumer.next_index < token_count)
     {
-        parser.tld(allocator, &token_consumer) catch |err| {
+        parser.tld(allocator, &token_consumer) catch {
             panic("Couldn't parse TLD\n", .{});
         };
     }
@@ -2190,6 +2430,7 @@ pub fn parse(allocator: *Allocator, lexer_result: LexerResult) ParserResult
         .function_declarations = parser.function_declarations,
         .type_declarations = parser.type_declarations,
         .node_buffer = parser.nb,
+        .syscalls = parser.syscalls,
     };
 
     log.debug("Printing AST:\n\n", .{});

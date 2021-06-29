@@ -59,6 +59,7 @@ pub const Operator = enum
     BitwiseXORAssignment,
     Arrow,
     Constant,
+    CompilerIntrinsic,
 };
 
 
@@ -93,8 +94,10 @@ pub const Token = struct
         sign: u8,
         operator: Operator,
 
-        pub fn format(self: Value, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+        pub fn format(self: Value, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
         {
+            _ = fmt;
+
             switch (self)
             {
                 Token.Value.identifier =>
@@ -173,11 +176,11 @@ const Tokenizer = struct
             .column = column,
         };
         log.debug("Added new token: {}\n", .{token});
-        self.tokens.append(token) catch |err| {
+        self.tokens.append(token) catch {
             panic("Failed to allocate a new token\n", .{});
         };
     }
-    fn match_name(self: Tokenizer, name: []const u8) Token.Value
+    fn match_name(name: []const u8) Token.Value
     {
         if (std.meta.stringToEnum(KeywordID, name)) |keyword|
         {
@@ -244,12 +247,11 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
                 end = i;
                 i -= 1;
 
-                const len = end - start;
                 const identifier_slice = src_file[start..end];
                 //print("Symbol found: {}. Length: {}\n", .{ symbol_slice, len });
 
                 assert(identifier_slice.len != 0);
-                const token_type = tokenizer.match_name(identifier_slice);
+                const token_type = Tokenizer.match_name(identifier_slice);
 
                 tokenizer.new_token(token_type, start, end, line_count, column);
             },
@@ -264,7 +266,7 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
                 end = i;
                 i -= 1;
                 const number_str = src_file[start..end];
-                const value = std.fmt.parseUnsigned(u64, number_str, 10) catch |err| {
+                const value = std.fmt.parseUnsigned(u64, number_str, 10) catch {
                     panic("Couldn't parse number\n", .{});
                 };
                 // print("Could parse a number: {}\n", .{value});
@@ -284,7 +286,6 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
                 }
                 i += 1;
                 end = i;
-                const len = end - start;
                 const str_lit = src_file[start..end];
                 // print("String literal found: {}. Length: {}\n", .{ str_lit, len });
                 const str_lit_type = Token.Value{
@@ -594,6 +595,15 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
                 const operator = Token.Value
                 {
                     .operator = Operator.Dot,
+                };
+                end = i + 1;
+                tokenizer.new_token(operator, start, end, line_count, column);
+            },
+            '#' =>
+            {
+                const operator = Token.Value
+                {
+                    .operator = Operator.CompilerIntrinsic,
                 };
                 end = i + 1;
                 tokenizer.new_token(operator, start, end, line_count, column);

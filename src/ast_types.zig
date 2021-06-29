@@ -74,28 +74,13 @@ pub const Type = struct
             parent: *Type,
             index: u64,
 
-            pub fn format(self: Field, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+            pub fn format(self: Field, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
             {
+                _ = fmt;
                 try std.fmt.format(writer, "{s}", .{self.name});
             }
         };
     };
-
-    pub fn find_type_by_name(types: *TypeBuffer, name: []const u8) ?*Type
-    {
-        for (types.list.items) |type_bucket|
-        {
-            var index : u64 = 0;
-            while (index < type_bucket.len) : (index += 1)
-            {
-                const type_decl = &type_bucket.items[index];
-                if (type_decl.value == Type.ID.void_type)
-                {
-                    return type_decl;
-                }
-            }
-        }
-    }
 
     pub fn get_void_type(types: *TypeBuffer) *Type
     {
@@ -177,7 +162,7 @@ pub const Type = struct
             },
         };
 
-        const result = types.append(new_type) catch |err| {
+        const result = types.append(new_type) catch {
             panic("Failing to allocate a new type\n", .{});
         };
 
@@ -211,7 +196,7 @@ pub const Type = struct
             },
         };
 
-        const result = types.append(new_type) catch |err| {
+        const result = types.append(new_type) catch {
             panic("Failing to allocate a new type\n", .{});
         };
 
@@ -230,7 +215,7 @@ pub const Type = struct
             },
         };
 
-        const result = types.append(new_struct) catch |err| {
+        const result = types.append(new_struct) catch {
             panic("Failed to allocate memory for new struct type\n", .{});
         };
 
@@ -268,7 +253,7 @@ pub const Type = struct
             },
         };
 
-        const result = types.append(fn_type) catch |err| {
+        const result = types.append(fn_type) catch {
             panic("Failed to allocate function type", .{});
         };
 
@@ -341,8 +326,10 @@ pub const Type = struct
     }
 
 
-    pub fn format(self: *const Type, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    pub fn format(self: *const Type, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        _ = fmt;
+
         switch (self.value)
         {
             Type.ID.integer =>
@@ -373,11 +360,10 @@ pub const Type = struct
 
 pub fn init(allocator: *Allocator) TypeBuffer
 {
-    var types = TypeBuffer.init(allocator) catch |err| {
+    var types = TypeBuffer.init(allocator) catch {
         panic("Failed to allocate type buffer\n", .{});
     };
     const int_bits = [_]u8{ 8, 16, 32, 64 };
-    const names = [8][]const u8{ "u8", "s8", "u16", "s16", "u32", "s32", "u64", "s64" };
     var bit_index: u64 = 0;
 
     while (bit_index < int_bits.len) : (bit_index += 1)
@@ -392,12 +378,12 @@ pub fn init(allocator: *Allocator) TypeBuffer
         var integer_type = Type{
             .value = t_type,
         };
-        _ = types.append(integer_type) catch |err| {
+        _ = types.append(integer_type) catch {
             panic("Error allocating memory for primitive type\n", .{});
         };
 
         integer_type.value.integer.signed = true;
-        _ = types.append(integer_type) catch |err| {
+        _ = types.append(integer_type) catch {
             panic("Error allocating memory for primitive type\n", .{});
         };
     }
@@ -406,7 +392,7 @@ pub fn init(allocator: *Allocator) TypeBuffer
     {
         .value = Type.ID.void_type,
     };
-    _ = types.append(void_type) catch |err| {
+    _ = types.append(void_type) catch {
         panic("Error allocating memory for void type\n", .{});
     };
 
@@ -415,7 +401,7 @@ pub fn init(allocator: *Allocator) TypeBuffer
     {
         .value = Type.ID.unresolved,
     };
-    _ = types.append(literal_type) catch |err| {
+    _ = types.append(literal_type) catch {
         panic("Error allocating memory for literal type\n", .{});
     };
 

@@ -49,7 +49,6 @@ fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, type
                         log.debug("Type not found. Must create\n", .{});
                     }
 
-                    const struct_name = type_in_analysis.value.type_identifier.value.structure.name;
                     var fields = ArrayList(Type.Struct.Field).init(allocator);
 
                     for (type_in_analysis.value.type_identifier.value.structure.fields.items) |ast_field, i|
@@ -67,7 +66,7 @@ fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, type
                             .index =  i,
                         };
 
-                        fields.append(new_field) catch |err| {
+                        fields.append(new_field) catch {
                             panic("Failed to allocate memory for struct field\n", .{});
                         };
                     }
@@ -94,12 +93,10 @@ fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, type
                         function_type.ret_type = return_type;
                     }
 
-                    const ast_arg_type_count = type_in_analysis.value.type_identifier.value.function.arg_types.items.len;
-
                     for (type_in_analysis.value.type_identifier.value.function.arg_types.items) |*arg_type_node|
                     {
                         const arg_type = analyze_type_declaration(allocator, arg_type_node.*, types, node_buffer);
-                        function_type.arg_types.append(arg_type) catch |err| {
+                        function_type.arg_types.append(arg_type) catch {
                             panic("Error allocating argument type\n", .{});
                         };
                     }
@@ -296,7 +293,7 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
     semantics_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
 }
 
-pub fn find_variable(allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer) *Node
+pub fn find_variable(current_function: *Node, name: []const u8) *Node
 {
     for (current_function.value.function_decl.arguments.items) |arg|
     {
@@ -317,7 +314,7 @@ pub fn find_variable(allocator: *Allocator, current_function: *Node, current_blo
     semantics_error("Can't find variable name: {s}\n", .{name});
 }
 
-pub fn find_function_decl(allocator: *Allocator, current_function: *Node, current_block: *Node, name: []const u8, types: *TypeBuffer, functions: *NodeRefBuffer) *Node
+pub fn find_function_decl(name: []const u8, functions: *NodeRefBuffer) *Node
 {
     for (functions.items) |function_decl|
     {
@@ -390,14 +387,14 @@ fn new_field_node(node_buffer: *NodeBuffer, field: *Type.Struct.Field, parent_no
         .type = field.type,
     };
 
-    const result = node_buffer.append(field_node) catch |err| {
+    const result = node_buffer.append(field_node) catch {
         panic("Error allocating memory for type node\n", .{});
     };
 
     return result;
 }
 
-pub fn explore_field_identifier_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
+pub fn explore_field_identifier_expression(node: *Node, node_buffer: *NodeBuffer) *Node
 {
     switch (node.value)
     {
@@ -461,7 +458,7 @@ pub fn explore_field_identifier_expression(allocator: *Allocator, current_functi
     }
 }
 
-pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, types: *TypeBuffer, functions: *NodeRefBuffer, node_buffer: *NodeBuffer) *Node
+pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, functions: *NodeRefBuffer, node_buffer: *NodeBuffer, types: *TypeBuffer) *Node
 {
     switch (node.value)
     {
@@ -471,15 +468,14 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
         },
         Node.ID.binary_expr =>
         {
-            const binary_op = node.value.binary_expr.id;
-            node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, types, functions, node_buffer);
-            node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, types, functions, node_buffer);
+            node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, functions, node_buffer, types);
+            node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, functions, node_buffer, types);
             node.type = typecheck(node.value.binary_expr.left.type, node.value.binary_expr.right, types);
         },
         Node.ID.identifier_expr =>
         {
             const name = node.value.identifier_expr.name;
-            const decl_node = find_variable(allocator, current_function, current_block, name, types);
+            const decl_node = find_variable(current_function, name);
             const new_node_value = Node
             {
                 .value = Node.Value {
@@ -490,7 +486,7 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
                 .type = decl_node.type,
             };
 
-            var new_node = node_buffer.append(new_node_value) catch |err| {
+            var new_node = node_buffer.append(new_node_value) catch {
                 panic("Error allocating memory for resolved identifier node\n", .{});
             };
 
@@ -500,7 +496,7 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
         {
             if (node.value.return_expr.expression) |return_expr|
             {
-                node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, types, functions, node_buffer);
+                node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, functions, node_buffer, types);
             }
             node.type = Type.get_void_type(types);
         },
@@ -509,24 +505,24 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
             for (node.value.block_expr.statements.items) |*statement|
             {
                 const new_current_block = node;
-                statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, types, functions, node_buffer);
+                statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, functions, node_buffer, types);
             }
             node.type = Type.get_void_type(types);
         },
         Node.ID.loop_expr =>
         {
-            node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, types, functions, node_buffer);
-            node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, types, functions, node_buffer);
-            node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, types, functions, node_buffer);
+            node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, functions, node_buffer, types);
+            node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, functions, node_buffer, types);
+            node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, functions, node_buffer, types);
             node.type = Type.get_void_type(types);
         },
         Node.ID.branch_expr =>
         {
-            node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, types, functions, node_buffer);
-            node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, types, functions, node_buffer);
+            node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, functions, node_buffer, types);
+            node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, functions, node_buffer, types);
             if (node.value.branch_expr.else_block) |else_block|
             {
-                node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, types, functions, node_buffer);
+                node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, functions, node_buffer, types);
             }
             node.type = Type.get_void_type(types);
         },
@@ -536,19 +532,19 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
             assert(function_call_id_node.value == Node.ID.identifier_expr);
             const function_call_name = function_call_id_node.value.identifier_expr.name;
             log.debug("function call name: {s}\n", .{function_call_name});
-            const function_decl = find_function_decl(allocator, current_function, current_block, function_call_name, types, functions);
+            const function_decl = find_function_decl(function_call_name, functions);
             node.type = function_decl.type.value.function.ret_type;
             node.value.invoke_expr.expression = function_decl;
 
             for (node.value.invoke_expr.arguments.items) |*arg|
             {
-                arg.* = explore_expression(allocator, current_function, current_block, arg.*, types, functions, node_buffer);
+                arg.* = explore_expression(allocator, current_function, current_block, arg.*, functions, node_buffer, types);
             }
         },
         Node.ID.unary_expr =>
         {
             // @TODO: check anything more with unary expression id?
-            node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, types, functions, node_buffer);
+            node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, functions, node_buffer, types);
             switch (node.value.unary_expr.id)
             {
                 UnaryExpression.ID.AddressOf =>
@@ -573,12 +569,12 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
         Node.ID.array_lit =>
         {
             const first_elem = node.value.array_lit.elements.items[0];
-            const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, types, functions, node_buffer);
-            const first_elem_type = first_elem.type;
+            const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, functions, node_buffer, types);
+            const first_elem_type = first_elem_analyzed.type;
 
             for (node.value.array_lit.elements.items) |*array_elem|
             {
-                array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, types, functions, node_buffer);
+                array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, functions, node_buffer, types);
                 _ = typecheck(first_elem_type, array_elem.*, types);
             }
 
@@ -589,24 +585,24 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
         {
             for (node.value.struct_lit.field_names.items) |*name_node_ptr|
             {
-                name_node_ptr.* = explore_field_identifier_expression(allocator, current_function, current_block, name_node_ptr.*, types, functions, node_buffer);
+                name_node_ptr.* = explore_field_identifier_expression(name_node_ptr.*, node_buffer);
             }
 
             for (node.value.struct_lit.field_expressions.items) |*expression_node_ptr|
             {
-                expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, types, functions, node_buffer);
+                expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, functions, node_buffer, types);
             }
         },
         Node.ID.array_subscript_expr =>
         {
-            node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, types, functions, node_buffer);
-            node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, types, functions, node_buffer);
+            node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, functions, node_buffer, types);
+            node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, functions, node_buffer, types);
             node.type = node.value.array_subscript_expr.expression.type.value.array.type;
         },
         Node.ID.field_access_expr =>
         {
-            node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, types, functions, node_buffer);
-            node.value.field_access_expr.field_expr = explore_field_identifier_expression(allocator, current_function, current_block, node.value.field_access_expr.field_expr, types, functions, node_buffer);
+            node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, functions, node_buffer, types);
+            node.value.field_access_expr.field_expr = explore_field_identifier_expression(node.value.field_access_expr.field_expr, node_buffer);
             node.type = node.value.field_access_expr.field_expr.type;
         },
         else => panic("ni: {}\n", .{node.value}),
@@ -647,7 +643,7 @@ pub fn analyze(allocator: *Allocator, parser_result: *ParserResult) SemanticsRes
     {
         const main_block = function_decl.value.function_decl.blocks.items[0];
 
-        _ = explore_expression(allocator, function_decl, main_block, main_block, &types, &parser_result.function_declarations, &parser_result.node_buffer);
+        _ = explore_expression(allocator, function_decl, main_block, main_block, &parser_result.function_declarations, &parser_result.node_buffer, &types);
     }
 
     const semantics_result = SemanticsResult

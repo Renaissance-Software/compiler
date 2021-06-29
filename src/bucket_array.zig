@@ -57,7 +57,7 @@ pub fn BucketArrayList(comptime T: type, comptime cap: usize) type
 
         pub fn append(self: *Self, new_element: T) !*T
         {
-            return self.list.items[self.current_index].append(new_element) catch |err|
+            return self.list.items[self.current_index].append(new_element) catch
             {
                 const new_bucket = try BucketArray(T, cap).init(self.allocator);
                 try self.list.append(new_bucket);

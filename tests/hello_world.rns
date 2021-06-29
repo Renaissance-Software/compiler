@@ -1,4 +1,7 @@
+write : #syscall(1) : (file_descriptor: u32, buffer_ptr: &u8, buffer_len: u64);
 main :: ()
 {
-    write("Hello world\n");
+    stdout: u32 = 1;
+    hello_world_str : []u8 = "Hello world\n";
+    #syscall[write](stdout, hello_world_str.ptr, hello_world_str.len);
 }

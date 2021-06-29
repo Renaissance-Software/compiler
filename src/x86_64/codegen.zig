@@ -245,8 +245,9 @@ const Operand = struct
         register: Encoding.Register,
     };
 
-    pub fn format(self: Operand, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    pub fn format(self: Operand, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        _ = fmt;
         switch (self.value)
         {
             Operand.ID.register =>
@@ -449,7 +450,6 @@ const Instruction = struct
 
         if (operands) |operand_slice|
         {
-            const operand_count = instruction.operand_count;
             assert(operand_slice.len <= instruction.operands.len);
 
             for (operand_slice) |operand|
@@ -462,8 +462,10 @@ const Instruction = struct
         return instruction;
     }
 
-    pub fn format(self: Instruction, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    pub fn format(self: Instruction, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
+        _ = fmt;
+
         try std.fmt.format(writer, "{s}", .{@tagName(self.id)});
         if (self.operand_count > 0)
         {
@@ -491,7 +493,7 @@ const Function = struct
     fn append(self: *Function, instruction: Instruction) void
     {
         log.debug("Appending instruction: {}\n", .{instruction});
-        self.instructions.append(instruction) catch |err| {
+        self.instructions.append(instruction) catch {
             panic("Error allocating memory for instruction\n", .{});
         };
     }
@@ -741,47 +743,13 @@ const Elf64 = struct
 
 const Section = enum
 {
-    @"null" = 0,
-    data = 1,
-    text = 2,
-    shstrtab = 3,
-    bss = 4,
+    @"null",
+    data,
+    text,
+    shstrtab,
+    bss,
 
-    fn directEnumArrayLen(comptime E: type, comptime max_unused_slots: comptime_int) comptime_int
-    {
-        var max_value: comptime_int = -1;
-        const max_usize: comptime_int = ~@as(usize, 0);
-        const fields = std.enums.uniqueFields(E);
-
-        for (fields) |f|
-        {
-            if (f.value < 0)
-            {
-                @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ", field ." ++ f.name ++ " has a negative value.");
-            }
-            if (f.value > max_value)
-            {
-                if (f.value > max_usize)
-                {
-                    @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ", field ." ++ f.name ++ " is larger than the max value of usize.");
-                }
-                max_value = f.value;
-            }
-        }
-
-        const unused_slots = max_value + 1 - fields.len;
-
-        if (unused_slots > max_unused_slots)
-        {
-            const unused_str = std.fmt.comptimePrint("{d}", .{unused_slots});
-            const allowed_str = std.fmt.comptimePrint("{d}", .{max_unused_slots});
-            @compileError("Cannot create a direct enum array for " ++ @typeName(E) ++ ". It would have " ++ unused_str ++ " unused slots, but only " ++ allowed_str ++ " are allowed.");
-        }
-
-        return max_value + 1;
-    }
-
-    const count = directEnumArrayLen(@This(), 0);
+    const count = std.enums.values(Section).len;
 };
 
 const Sections = struct
@@ -837,7 +805,7 @@ const Executable = struct
         {
             assert(Section.count == 5);
 
-            const section_names_str = comptime std.enums.directEnumArray(Section, []const u8, 0, .
+            const section_names_str = std.enums.directEnumArray(Section, []const u8, 0, .
                 {
                     .@"null" = "\x00",
                     .data = ".data\x00",
@@ -866,16 +834,6 @@ const Executable = struct
             };
         };
 
-        const contents = std.enums.directEnumArray(Section, ?[]const u8, 0, .
-            {
-                .@"null" = null,
-                // Wrong. We don't know yet the length of the code section
-                .text = self.code_buffer.items,
-                .data = self.data_buffer.items,
-                .shstrtab = sections.names,
-                .bss = null,
-            });
-       
         // @TODO: turn this into a loop
         const base_address: u64 = 0x08048000;
         const header_offset = file_header_size + program_header_size;
@@ -905,11 +863,11 @@ const Executable = struct
         // @Info: we estimate this we don't want any reallocation which makes us have a bad pointer
         const aproximate_file_size = header_offset + data_length + aprox_code_size + shstrtab_length + bss_length + section_headers_size;
 
-        var file_buffer = ArrayList(u8).initCapacity(allocator, aproximate_file_size) catch |err| {
+        var file_buffer = ArrayList(u8).initCapacity(allocator, aproximate_file_size) catch {
             panic("Error allocating memory for code section buffer\n", .{});
         };
 
-        self.code_buffer = ArrayList(u8).initCapacity(allocator, aprox_code_size) catch |err| {
+        self.code_buffer = ArrayList(u8).initCapacity(allocator, aprox_code_size) catch {
             panic("Error allocating the code buffer\n", .{});
         };
 
@@ -939,7 +897,7 @@ const Executable = struct
             const call_main_operands = [1]Operand { callee_operand };
 
             const call_main = Instruction.create(Mnemonic.call, call_main_operands[0..]);
-            encode_instruction(allocator, self, call_main);
+            encode_instruction(self, call_main);
 
             if (return_void)
             {
@@ -970,7 +928,7 @@ const Executable = struct
 
                 const mov_di_operands = [2]Operand { di, zero_imm16 };
                 const mov_di = Instruction.create(Mnemonic.mov, mov_di_operands[0..]);
-                encode_instruction(allocator, self, mov_di);
+                encode_instruction(self, mov_di);
 
                 const eax = Operand
                 {
@@ -982,7 +940,7 @@ const Executable = struct
 
                 const xor_eax_operands = [2]Operand { eax, eax };
                 const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
-                encode_instruction(allocator, self, xor_eax);
+                encode_instruction(self, xor_eax);
 
                 const al = Operand
                 {
@@ -1004,10 +962,10 @@ const Executable = struct
 
                 const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
                 const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
-                encode_instruction(allocator, self, mov_al_60);
+                encode_instruction(self, mov_al_60);
 
                 const syscall = Instruction.create(Mnemonic.syscall, null);
-                encode_instruction(allocator, self, syscall);
+                encode_instruction(self, syscall);
             }
             else
             {
@@ -1036,11 +994,11 @@ const Executable = struct
 
                 const mov_edi_eax_operands = [2]Operand { edi, eax };
                 const mov_edi_eax = Instruction.create(Mnemonic.mov, mov_edi_eax_operands[0..]);
-                encode_instruction(allocator, self, mov_edi_eax);
+                encode_instruction(self, mov_edi_eax);
 
                 const xor_eax_operands = [2]Operand { eax, eax };
                 const xor_eax = Instruction.create(Mnemonic.xor, xor_eax_operands[0..]);
-                encode_instruction(allocator, self, xor_eax);
+                encode_instruction(self, xor_eax);
 
                 const al = Operand
                 {
@@ -1062,10 +1020,10 @@ const Executable = struct
 
                 const mov_al_60_operands = [2]Operand { al, sixty_imm8 };
                 const mov_al_60 = Instruction.create(Mnemonic.mov, mov_al_60_operands[0..]);
-                encode_instruction(allocator, self, mov_al_60);
+                encode_instruction(self, mov_al_60);
 
                 const syscall = Instruction.create(Mnemonic.syscall, null);
-                encode_instruction(allocator, self, syscall);
+                encode_instruction(self, syscall);
             }
         }
 
@@ -1073,7 +1031,7 @@ const Executable = struct
         {
             CallingConvention.SystemV =>
             {
-                for (self.functions.items) |function, function_index|
+                for (self.functions.items) |function|
                 {
                     {
                         log.info("Printing function:\n\n", .{});
@@ -1112,8 +1070,8 @@ const Executable = struct
                         const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
                         const operands = [2]Operand { rbp, rsp };
                         const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
-                        encode_instruction(allocator, self, push_rbp);
-                        encode_instruction(allocator, self, mov_rbp_rsp);
+                        encode_instruction(self, push_rbp);
+                        encode_instruction(self, mov_rbp_rsp);
                     }
 
                     if (function.rsp > 0)
@@ -1131,7 +1089,7 @@ const Executable = struct
                         };
 
                         const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
-                        encode_instruction(allocator, self, sub_rsp);
+                        encode_instruction(self, sub_rsp);
                     }
 
                     var instruction_index: u64 = 0;
@@ -1152,7 +1110,7 @@ const Executable = struct
                             const instruction = function.instructions.items[instruction_index];
                             assert(instruction.id != Mnemonic.ret);
                             log_enc.debug("Encoding instruction {}\n", .{instruction_index});
-                            encode_instruction(allocator, self, instruction);
+                            encode_instruction(self, instruction);
                         }
 
                         label.target = @ptrToInt(self.code_buffer.items.ptr) + self.code_buffer.items.len;
@@ -1181,7 +1139,7 @@ const Executable = struct
                     {
                         const instruction = function.instructions.items[instruction_index];
                         assert(instruction.id != Mnemonic.ret);
-                        encode_instruction(allocator, self, instruction);
+                        encode_instruction(self, instruction);
                     }
 
                     if (function.rsp > 0)
@@ -1199,7 +1157,7 @@ const Executable = struct
                         };
 
                         const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
-                        encode_instruction(allocator, self, add_rsp);
+                        encode_instruction(self, add_rsp);
                     }
 
                     if (encode_frame_pointer)
@@ -1214,13 +1172,13 @@ const Executable = struct
                         };
                         const rbp_arr = [1]Operand { rbp };
                         const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
-                        encode_instruction(allocator, self, pop_rbp);
+                        encode_instruction(self, pop_rbp);
                     }
 
                     assert(instruction_index == instruction_count - 1);
                     const instruction = function.instructions.items[instruction_index];
                     assert(instruction.id == Mnemonic.ret);
-                    encode_instruction(allocator, self, instruction);
+                    encode_instruction(self, instruction);
                 }
             },
             else => panic("ni: {}\n", .{calling_convention}),
@@ -1352,12 +1310,12 @@ const Executable = struct
 
         log.debug("\n", .{});
         log.debug("Writing file {s}; size: {} bytes\n", .{filename, file_size});
-        const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch |err| {
+        const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch {
             panic("Error creating file {s}\n", .{filename});
         };
         defer file.close();
 
-        file.writeAll(file_buffer.items[0..]) catch |err| {
+        file.writeAll(file_buffer.items[0..]) catch {
             panic("Error writting bytes to a file\n", .{});
         };
     }
@@ -1375,7 +1333,7 @@ fn get_stack_register() Encoding.Register
     return register;
 }
 
-fn encode_instruction(allocator: *Allocator, executable: *Executable, instruction: Instruction) void
+fn encode_instruction(executable: *Executable, instruction: Instruction) void
 {
     log_enc.debug("\nEncoding instruction: {}...\n", .{instruction.id});
     const encodings = Encoding.instructions[@enumToInt(instruction.id)];
@@ -1536,8 +1494,8 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                     assert(op_code[3] == 0);
 
                     reg_code = @enumToInt(instruction.operands[0].value.register);
-                    const d = plus_reg_op_code & 0b10 != 0;
-                    const s = plus_reg_op_code & 0b1 != 0;
+                    _ = plus_reg_op_code & 0b10 != 0; // const d
+                    _ = plus_reg_op_code & 0b1 != 0; // const s
                     plus_reg_op_code = (plus_reg_op_code & 0b11111000) | (reg_code & 0b111);
                     op_code[0] = plus_reg_op_code;
                 }
@@ -1693,14 +1651,14 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                     Encoding.Mod.displacement8 =>
                                     {
                                         const displacement8 = @intCast(i8, displacement);
-                                        executable.code_buffer.appendSlice(std.mem.asBytes(&displacement8)) catch |err| {
+                                        executable.code_buffer.appendSlice(std.mem.asBytes(&displacement8)) catch {
                                             panic("Error appending the displacement bytes\n", .{});
                                         };
                                     },
                                     Encoding.Mod.displacement32 =>
                                     {
                                         log_enc.debug("Writing displacement: 4 bytes\n", .{});
-                                        executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch |err| {
+                                        executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch {
                                             panic("Error appending the displacement bytes\n", .{});
                                         };
                                     },
@@ -1716,7 +1674,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                 const difference = @intCast(i64, operand_RVA) - @intCast(i64, next_instruction_RVA);
                                 assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
                                 const displacement = @intCast(i32, difference);
-                                executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch |err| {
+                                executable.code_buffer.appendSlice(std.mem.asBytes(&displacement)) catch {
                                     panic("Error allocating RIP-relative displacement\n", .{});
                                 };
                             },
@@ -1746,7 +1704,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                             var byte: u64 = 0;
                             while (byte < operand_size) : (byte += 1)
                             {
-                                executable.code_buffer.append(operand.value.immediate.imm_arr[byte]) catch |err| {
+                                executable.code_buffer.append(operand.value.immediate.imm_arr[byte]) catch {
                                     panic("Error encoding immediate\n", .{});
                                 };
                             }
@@ -1767,7 +1725,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                 const difference = @intCast(i32, sub_result);
                                 log_enc.debug("Difference: {}\n", .{difference});
                                 log_enc.debug("To be patch content: {}\n", .{patch_target.*});
-                                executable.code_buffer.appendSlice(std.mem.asBytes(&difference)) catch |err| {
+                                executable.code_buffer.appendSlice(std.mem.asBytes(&difference)) catch {
                                     panic("Error appending relative operand bytes\n", .{});
                                 };
                             }
@@ -1777,14 +1735,14 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
                                 const patch_target = @ptrToInt(executable.code_buffer.items.ptr) + executable.code_buffer.items.len;
                                 const unresolved_jump_value: u32 = 0xcccccccc;
                                 assert(@sizeOf(@TypeOf(unresolved_jump_value)) == jump_size);
-                                executable.code_buffer.appendSlice(std.mem.asBytes(&unresolved_jump_value)) catch |err| {
+                                executable.code_buffer.appendSlice(std.mem.asBytes(&unresolved_jump_value)) catch {
                                     panic("Error appending unresolved relative operand\n", .{});
                                 };
 
                                 label.locations.append(Label.Location {
                                     .relative_to_be_written_address = patch_target,
                                     .address_after_instruction = patch_target + jump_size,
-                                }) catch |err| {
+                                }) catch {
                                     panic("Error adding a patch location to the label\n", .{});
                                 };
                             }
@@ -1822,7 +1780,7 @@ fn encode_instruction(allocator: *Allocator, executable: *Executable, instructio
 
 pub const ExecutionBuffer = struct
 {
-    fn allocFn(allocator: *Allocator, len: usize, ptr_align: u29, len_align: u29, ret_addr: usize) std.mem.Allocator.Error![]u8
+    fn allocFn(_: *Allocator, len: usize, _: u29, _: u29, _: usize) std.mem.Allocator.Error![]u8
     {
         const mmap_result = c.mmap(null, len, c.PROT_READ |c.PROT_WRITE | c.PROT_EXEC, c.MAP_PRIVATE | c.MAP_ANON, -1, 0);
         if (@ptrToInt(mmap_result) != 0)
@@ -1834,7 +1792,7 @@ pub const ExecutionBuffer = struct
             return error.OutOfMemory;
         }
     }
-    fn resizeFn(allocator: *Allocator, buf: []u8, buf_align: u29, new_len: usize, len_align: u29, ret_addr: usize) std.mem.Allocator.Error!usize
+    fn resizeFn(_: *Allocator, _: []u8, _: u29, _: usize, _: u29, _: usize) std.mem.Allocator.Error!usize
     {
         return error.OutOfMemory;
     }
@@ -1880,7 +1838,7 @@ const RegisterAllocator = struct
         value: ?*IR.Value,
         size: u8,
 
-        const ID = enum
+        const ID = enum(u8)
         {
             A = 0,
             C = 1,
@@ -2170,7 +2128,7 @@ const StackAllocator = struct
                 .size = size,
                 .alignment = size,
                 .offset = self.stack_offset,
-            }) catch |err| {
+            }) catch {
             panic("Error allocating in the stack\n", .{});
         };
 
@@ -2240,7 +2198,7 @@ fn zero_fill_until_alignment_is_met(executable: *Executable, alignment: u64) voi
 
     while (address < aligned_address) : (address += 1)
     {
-        executable.data_buffer.append(0) catch |err| {
+        executable.data_buffer.append(0) catch {
             panic("error writing byte to the .data buffer to achieve alignment\n", .{});
         };
     }
@@ -2265,7 +2223,7 @@ fn get_constant_data_from_ir_to_mc(executable: *Executable, alignment: u64, ir_v
         .offset = offset,
     };
 
-    executable.constant_data_list.append(new_data_constant) catch |err| {
+    executable.constant_data_list.append(new_data_constant) catch {
         panic("Error appending tracking information for .data constant\n", .{});
     };
 
@@ -2307,7 +2265,7 @@ fn append_value_to_data_buffer(executable: *Executable, value: *IR.Value) void
                     4 =>
                     {
                         const number32 = @intCast(u32, constant_value);
-                        executable.data_buffer.appendSlice(std.mem.asBytes(&number32)) catch |err| {
+                        executable.data_buffer.appendSlice(std.mem.asBytes(&number32)) catch {
                             panic("Error appending bytes to the .data section\n", .{});
                         };
                     },
@@ -2668,12 +2626,12 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
 
     var executable = Executable
     {
-        .functions = FunctionBuffer.initCapacity(allocator, module.functions.len()) catch |err| {
+        .functions = FunctionBuffer.initCapacity(allocator, module.functions.len()) catch {
             panic("Error allocating memory for machine code functions\n", .{});
         },
         .code_buffer = undefined,
         // @TODO: this is a hack to avoid reallocation. Reallocation kills the addresses
-        .data_buffer = ArrayList(u8).initCapacity(allocator, 1024 * 64) catch |err| {
+        .data_buffer = ArrayList(u8).initCapacity(allocator, 1024 * 64) catch {
             panic("Error allocating memory for .data section buffer\n", .{});
         },
         .constant_data_list = ArrayList(Executable.ConstantData).init(allocator),
@@ -2697,7 +2655,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
             var mc_function_value = Function
             {
                 .instructions = InstructionBuffer.init(allocator),
-                .labels = LabelBuffer.initCapacity(allocator, function.basic_blocks.items.len) catch |err| {
+                .labels = LabelBuffer.initCapacity(allocator, function.basic_blocks.items.len) catch {
                     panic("Error allocating memory for labels\n", .{});
                 },
                 .ir_ref = function,
@@ -2720,7 +2678,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                 _ = mc_function_value.stack_allocator.allocate(alloca_size);
             }
 
-            mc_function_value.labels.resize(mc_function_value.labels.capacity) catch |err| {
+            mc_function_value.labels.resize(mc_function_value.labels.capacity) catch {
                 panic("Error resizing labels\n", .{});
             };
 
@@ -2734,7 +2692,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                 };
             }
 
-            executable.functions.append(mc_function_value) catch |err| {
+            executable.functions.append(mc_function_value) catch {
                 panic("Error allocating a new MC function\n", .{});
             };
 
@@ -2778,7 +2736,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                         mc_function.register_allocator.reset();
                     }
 
-                    for (basic_block.instructions.items) |instruction, instruction_index|
+                    for (basic_block.instructions.items) |instruction|
                     {
                         log.debug("Instruction: {}\n", .{instruction.id});
 
@@ -2831,7 +2789,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             },
                             IR.Instruction.ID.Load =>
                             {
-                                if (mc_function.register_allocator.get_allocation(@ptrCast(*IR.Value, instruction), null)) |load_instruction|
+                                if (mc_function.register_allocator.get_allocation(@ptrCast(*IR.Value, instruction), null) != null)
                                 {
                                     panic("Value is already in a register\n", .{});
                                 }
@@ -3035,7 +2993,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                             {
                                 assert(instruction.operands.items.len == 2);
 
-                                const first_value = instruction.operands.items[0];
+                                _ = instruction.operands.items[0];
                                 const second_value = instruction.operands.items[1];
                                 if (second_value.id != IR.Value.ID.ConstantInt)
                                 {
@@ -3258,7 +3216,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
     }
 
     const to_join = [2][]const u8 { module.name, ".elf" };
-    const filename = std.mem.join(allocator, "", to_join[0..]) catch |err| {
+    const filename = std.mem.join(allocator, "", to_join[0..]) catch {
         panic("Error formatting file name\n", .{});
     };
 
@@ -3274,7 +3232,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
             //.allocFn = ExecutionBuffer.allocFn,
             //.resizeFn = ExecutionBuffer.resizeFn,
             //};
-            //executable.code_buffer = ArrayList(u8).initCapacity(&buffer_allocator, aprox_code_size) catch |err| {
+            //executable.code_buffer = ArrayList(u8).initCapacity(&buffer_allocator, aprox_code_size) catch {
             //panic("Error allocating memory for code section buffer\n", .{});
             //};
             //}
