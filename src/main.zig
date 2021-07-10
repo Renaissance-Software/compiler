@@ -13,7 +13,9 @@ const Type = Types.Type;
 const TypeBuffer = Types.TypeBuffer;
 const logger = std.log.scoped(.general);
 
-const CG = @import("x86_64/codegen.zig");
+const x86_64 = @import("codegen/x86_64/codegen.zig");
+const arm64 = @import("codegen/arm64/codegen.zig");
+const macho = @import("codegen/mach-o.zig");
 
 fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) void
 {
@@ -26,7 +28,14 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
 
     var module = IR.encode(allocator, &semantics_result, src_filename);
 
-    CG.encode(allocator, &module);
+    const arch = std.builtin.target.cpu.arch;
+
+    switch (arch)
+    {
+        .x86_64 => x86_64.encode(allocator, &module),
+        .aarch64 => arm64.encode(allocator, &module),
+        else => panic("Architecture {} is not supported\n", .{arch}),
+    }
 }
 
 fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) void
@@ -178,6 +187,22 @@ pub fn main() anyerror!void
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
+
+    if (true)
+    {
+        const filename = "macho_exe";
+        var arena = std.heap.ArenaAllocator.init(page_allocator);
+        defer arena.deinit();
+        const allocator = &arena.allocator;
+        const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch |err| {
+            panic("Error reading file: {}\n", .{err});
+        };
+
+        defer allocator.free(file_content);
+        var fake_code = [_]u8{ 0x00, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
+        macho.experiment(allocator, file_content, fake_code[0..]);
+        return;
+    }
 
     if (!benchmark)
     {

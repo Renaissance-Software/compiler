@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
 
-const IR = @import("../bytecode.zig");
+const IR = @import("../../bytecode.zig");
 
 const Encoding = @import("encoding.zig");
 const Mnemonic = Encoding.Instruction.ID;
