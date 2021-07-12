@@ -5,3 +5,4 @@ zig-cache
 .cachegrind*
 perf.data*
 macho_exe
+macho_first

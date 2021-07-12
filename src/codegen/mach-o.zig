@@ -188,11 +188,12 @@ const LoadCommand = struct
         size: u32,
     };
 
-    const String = extern union
-    {
-        offset: u32,
-        ptr: [*]u8,
-    };
+    const String = u64;
+    //const String = extern union
+    //{
+        //offset: u32,
+        //ptr: [*]u8,
+    //};
 
     const Segment = extern struct
     {
@@ -288,14 +289,34 @@ const LoadCommand = struct
         header_address: u32,
     };
 
-    const DYLibCommand = extern struct
+    const DYLibCommand = packed struct
     {
         header: LCHeader,
         name: String,
         timestamp: u32,
         current_version: u32,
         compatibility_version: u32,
+
+        fn compare(d1: DYLibCommand, d2: DYLibCommand) void
+        {
+            print("{}\n{}\n", .{d1.header, d2.header});
+            print("{}\n{}\n", .{d1.name, d2.name});
+            print("{}\n{}\n", .{d1.timestamp, d2.timestamp});
+            print("{}\n{}\n", .{d1.current_version, d2.current_version});
+            print("{}\n{}\n", .{d1.compatibility_version, d2.compatibility_version});
+
+            const eql = std.mem.eql(u8, std.mem.asBytes(&d1), std.mem.asBytes(&d2));
+            print("Equal: {}\n", .{eql});
+        }
     };
+
+    comptime
+    {
+        if (@sizeOf(DYLibCommand) != 28)
+        {
+            @compileError("size is wrong");
+        }
+    }
 
     const SubFramework = extern struct
     {
@@ -593,7 +614,8 @@ fn add_to_exe(comptime T: type, exe_bytes: *ArrayList(u8), structure: *const T) 
 
 const magic_numbers_after_dylinker = [2]u64 { 0x6c79642f62696c2f, 0x64 };
 const magic_number_after_build_version: u64 = 0x28a090000000003;
-const magic_number_after_load_dylib = [3]u64 { 0x7473795362696c2f, 0x6c79642e422e6d65, 0x6269 };
+const magic_number_after_load_dylib = [28]u8 { 0x2f, 0x6c, 0x69, 0x62, 0x2f, 0x6c, 0x69, 0x62, 0x53, 0x79, 0x73, 0x74, 0x65, 0x6d, 0x2e, 0x42, 0x2e, 0x64, 0x79, 0x6c, 0x69, 0x62, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0 };
+var original_dylib_command: LoadCommand.DYLibCommand = undefined;
 
 pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section: []u8) void
 {
@@ -695,13 +717,15 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
             LoadCommand.ID.load_dylib =>
             {
                 const dylib = @intToPtr(*LoadCommand.DYLibCommand, load_command_offset);
-                const name = @ptrCast([*]u32, &dylib.name)[0..2];
+                original_dylib_command = dylib.*;
+
+                const name = @intToPtr(*u64, @ptrToInt(&dylib.name));
                 print("Load DYLib: {}\n", .{dylib});
-                print("Name 0: {}. Name 1: {}\n", .{name[0], name[1]});
-                const full_name = @ptrCast(*u64, &dylib.name).*;
+                const full_name = name.*;
                 print("Full name: 0x{x}\n", .{full_name});
                 const bytes_left_to_explore = dylib.header.size - @sizeOf(LoadCommand.DYLibCommand);
-                const bytes = @intToPtr([*]u64, load_command_offset + @sizeOf(LoadCommand.DYLibCommand))[0..bytes_left_to_explore / @sizeOf(u64)];
+                const bytes = @intToPtr([*]u8, load_command_offset + @sizeOf(LoadCommand.DYLibCommand))[0..bytes_left_to_explore];
+                print("Load dylib bytes: {}\n", .{bytes.len});
                 for (bytes) |byte|
                 {
                     print("Byte: 0x{x}\n", .{byte});
@@ -726,7 +750,12 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
         }
     }
 
-
+    //print("File from 792:\n", .{});
+    //for (file_content[792..16400]) |byte, i|
+    //{
+        //if (byte != 0) print("[{}] 0x{x}\n", .{i + 792, byte});
+    //}
+    
     var code = ArrayList(u8).initCapacity(allocator, file_content.len) catch
     {
         panic("Error creating arraylist\n", .{});
@@ -737,8 +766,8 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
     {
         .cpu_type = .arm64,
         .filetype = .executable,
-        .load_command_count = 0,
-        .load_command_size = 0,
+        .load_command_count = 15,
+        .load_command_size = 0x02f8,
         .flags = Header.Flags.pie | Header.Flags.two_level | Header.Flags.dyldlink | Header.Flags.noundefs,
     });
 
@@ -905,7 +934,7 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
             .size = @sizeOf(LoadCommand.DYLinker) + 16,
         },
         // @TODO: change
-        .name = LoadCommand.String { .ptr = @intToPtr([*]u8, 8247064187369422860), },
+        .name = 8247064187369422860,
     });
 
     for (magic_numbers_after_dylinker) |n|
@@ -963,23 +992,67 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
         .stack_size = 0,
     });
 
-    add_to_exe(LoadCommand.DYLibCommand, &code,
-    &LoadCommand.DYLibCommand
+    const my_dylib_command = LoadCommand.DYLibCommand
     {
         .header = LoadCommand.LCHeader
         {
             .id = LoadCommand.ID.load_dylib,
             .size = 56,
         },
-        .name = LoadCommand.String { .ptr = @intToPtr([*]u8, 0x200000018) },
+        .name = 0x200000018,
         .timestamp = 84698117,
         .current_version = 65536,
         .compatibility_version = 1920169263,
-    });
+    };
+
+    LoadCommand.DYLibCommand.compare(original_dylib_command, my_dylib_command);
+
+    print("Original: {}\nMine: {}\n", .{original_dylib_command, my_dylib_command});
+
+    const original_bytes = std.mem.asBytes(&original_dylib_command);
+    const mine_bytes = std.mem.asBytes(&my_dylib_command);
+    print("Bytes orig: {}. Bytes mine: {}\n", .{original_bytes.len, mine_bytes.len});
+    print("Original: {}. Mine: {}\n", .{original_dylib_command.compatibility_version, original_dylib_command.compatibility_version});
+
+    if (original_dylib_command.compatibility_version != my_dylib_command.compatibility_version) panic("neq", .{});
+
+    print("Size of dylib command: {}\n", .{@sizeOf(LoadCommand.DYLibCommand)});
+    for (original_bytes) |orig, i|
+    {
+        const mine = mine_bytes[i];
+        print("O: {x}. M: {x}\n", .{orig, mine});
+        if (orig != mine)
+        {
+            panic("At [{}], there is inequality:\nOriginal: {x}. Mine: {x}\n", .{i, orig, mine});
+        }
+    }
+    
+    add_to_exe(LoadCommand.DYLibCommand, &code,
+    &my_dylib_command);
 
     for (magic_number_after_load_dylib) |n|
     {
-        code.appendSlice(std.mem.asBytes(&n)) catch unreachable;
+        const to_append = std.mem.asBytes(&n);
+        const length = code.items.len;
+
+        for (to_append) |byte, i|
+        {
+            const index = i + length;
+            print("Appending {x} at [{}]...\tHere at original: {x}\n", .{byte, index, file_content[index]});
+        }
+        code.appendSlice(to_append) catch unreachable;
+
+        const original = file_content[length..length + to_append.len];
+
+        print("Added:\n", .{});
+        for (code.items[length..length + to_append.len]) |byte, i|
+        {
+            const orig = original[i];
+            if (byte != orig)
+            {
+                panic("Not the same: {x}, original: {x}\n", .{byte, orig});
+            }
+        }
     }
 
     add_to_exe(LoadCommand.LinkedItData, &code,
@@ -1018,7 +1091,70 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
         .data_size = 273,
     });
 
+    code.appendNTimes(0, code_offset - code.items.len) catch unreachable;
+    code.appendSlice(text_section) catch unreachable;
+
+    const magic_unwind_info = [_]u8
+    {
+        0x01, 0x00, 0x00, 0x00,
+        0x1c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x1c, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x1c, 0x00, 0x00, 0x00,
+        0x02, 0x00, 0x00, 0x00,
+        0xb0, 0x3f, 0x00, 0x00,
+        0x34, 0x00, 0x00, 0x00,
+        0x34, 0x00, 0x00, 0x00,
+        0xb9, 0x3f, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x34, 0x00, 0x00, 0x00,
+        0x03, 0x00, 0x00, 0x00,
+        0x0c, 0x00, 0x01, 0x00,
+        0x10, 0x00, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x02,
+    };
+
+    code.appendSlice(magic_unwind_info[0..]) catch unreachable;
+
+    print("File from unwindinfo:\n", .{});
+    const after_unwind_info = file_content[code.items.len..];
+    for (after_unwind_info) |byte, i|
+    {
+        print("[{}] 0x{x}\n", .{i + code.items.len, byte});
+    }
+
+    code.appendSlice(after_unwind_info) catch unreachable;
     print("Executable length so far: {}\n", .{code.items.len});
+
+    const filename = "macho_first";
+    const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch {
+        panic("Error creating file {s}\n", .{filename});
+    };
+    defer file.close();
+
+    file.writeAll(code.items[0..]) catch {
+        panic("Error writting bytes to a file\n", .{});
+    };
+
+    print("Size of DYLib command: {}\n", .{@sizeOf(LoadCommand.DYLibCommand)});
+    const original_offset = 688;
+    const original_end = 744;
+
+    print("\nOriginal:\n\n", .{});
+    for (file_content[original_offset..original_end]) |byte, i|
+    {
+        if (i % 16 == 0) print("\n[{}]    ", .{i + original_offset});
+        print("{x} ", .{byte});
+    }
+
+    print("\nMine:\n\n", .{});
+    for (code.items[original_offset..original_end]) |byte, i|
+    {
+        if (i % 16 == 0) print("\n[{}]    ", .{i + original_offset});
+        print("{x} ", .{byte});
+    }
 }
 
 comptime
