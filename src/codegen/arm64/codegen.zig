@@ -4,6 +4,10 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const IR = @import("../../bytecode.zig");
 
+const Register = enum(u6)
+{
+};
+
 const Instruction = packed struct
 {
     prefix: u3,
@@ -31,7 +35,7 @@ const Instruction = packed struct
     }
 };
 
-pub fn encode(allocator: *Allocator, module: *IR.Module) void
+pub fn encode(_: *Allocator, module: *IR.Module) void
 {
     if (true)
     {
@@ -39,11 +43,9 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         panic("Reached here\n",.{});
     }
 
-    var function_index: u64 = 0;
     for (module.functions.list.items) |*function_bucket|
     {
-        const length = function_bucket.len;
-        for (function_bucket.items[0..length]) |*function|
+        for (function_bucket.items[0..function_bucket.len]) |*function|
         {
             for (function.basic_blocks.items) |basic_block|
             {
