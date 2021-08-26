@@ -4,10 +4,6 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const IR = @import("../../bytecode.zig");
 
-const Register = enum(u6)
-{
-};
-
 const Instruction = packed struct
 {
     prefix: u3,

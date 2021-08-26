@@ -43,8 +43,8 @@ fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename:
     var arena = std.heap.ArenaAllocator.init(page_allocator);
     defer arena.deinit();
     const allocator = &arena.allocator;
-    const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch |err| {
-        panic("Error reading file: {}\n", .{err});
+    const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
+        panic("Error reading file: {s}\n", .{filename});
     };
 
     logger.info("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
@@ -188,14 +188,15 @@ pub fn main() anyerror!void
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
 
-    if (true)
+    // mac os workaround
+    if (false)
     {
         const filename = "macho_exe";
         var arena = std.heap.ArenaAllocator.init(page_allocator);
         defer arena.deinit();
         const allocator = &arena.allocator;
-        const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch |err| {
-            panic("Error reading file: {}\n", .{err});
+        const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
+            panic("Error reading file: {s}\n", .{filename});
         };
 
         defer allocator.free(file_content);

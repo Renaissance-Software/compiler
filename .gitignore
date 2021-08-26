@@ -1,4 +1,5 @@
 .vscode
+.vs
 zig-out
 zig-cache
 .gdb_history

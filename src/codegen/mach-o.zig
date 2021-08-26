@@ -1110,14 +1110,22 @@ pub fn experiment(allocator: *Allocator, file_content: []const u8, text_section:
     code.appendSlice(after_unwind_info) catch unreachable;
 
     const filename = "macho_first";
-    const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch {
-        panic("Error creating file {s}\n", .{filename});
-    };
-    defer file.close();
 
-    file.writeAll(code.items[0..]) catch {
-        panic("Error writting bytes to a file\n", .{});
-    };
+    if (std.Target.current.os.tag == .windows)
+    {
+        panic("Creating file here is not supported\n", .{});
+    }
+    else
+    {
+        const file = std.fs.cwd().createFile(filename, .{ .mode = 0o777}) catch {
+            panic("Error creating file {s}\n", .{filename});
+        };
+        defer file.close();
+
+        file.writeAll(code.items[0..]) catch {
+            panic("Error writting bytes to a file\n", .{});
+        };
+    }
 }
 
 comptime
