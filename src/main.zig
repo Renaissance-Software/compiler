@@ -8,14 +8,11 @@ const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Semantics = @import("semantics.zig");
 const IR = @import("bytecode.zig");
+const Codegen = @import("codegen.zig");
 const Types = @import("ast_types.zig");
 const Type = Types.Type;
 const TypeBuffer = Types.TypeBuffer;
 const logger = std.log.scoped(.general);
-
-const x86_64 = @import("codegen/x86_64/codegen.zig");
-const arm64 = @import("codegen/arm64/codegen.zig");
-const macho = @import("codegen/mach-o.zig");
 
 fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) void
 {
@@ -28,14 +25,9 @@ fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8
 
     var module = IR.encode(allocator, &semantics_result, src_filename);
 
-    const arch = std.builtin.target.cpu.arch;
+    const target = std.builtin.target;
 
-    switch (arch)
-    {
-        .x86_64 => x86_64.encode(allocator, &module),
-        .aarch64 => arm64.encode(allocator, &module),
-        else => panic("Architecture {} is not supported\n", .{arch}),
-    }
+    Codegen.encode(allocator, &module, target);
 }
 
 fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) void
@@ -169,7 +161,16 @@ const test_files = [_][]const u8
     test_dir ++ "array_basic.rns",
     test_dir ++ "array_assign.rns",
     test_dir ++ "struct_basic.rns",
-    test_dir ++ "hello_world.rns",
+};
+
+const test_files_windows = [_][]const u8
+{
+    test_dir ++ "windows_hello_world.rns",
+};
+
+const test_files_linux = [_][]const u8
+{
+    test_dir ++ "linux_hello_world.rns",
 };
 
 pub const log_level: std.log.Level = .debug;
@@ -183,7 +184,7 @@ pub const log_x86_64_encoding = false;
 
 pub fn main() anyerror!void
 {
-    const all_tests = true;
+    const all_tests = false;
     const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
@@ -216,8 +217,8 @@ pub fn main() anyerror!void
         }
         else
         {
-            //const index = 0;
-            const index = test_files.len - 1;
+            const index = 0;
+            //const index = test_files.len - 1;
             compiler_file_workflow(page_allocator, cwd, test_files[index], index);
         }
     }

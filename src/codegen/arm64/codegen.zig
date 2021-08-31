@@ -31,8 +31,9 @@ const Instruction = packed struct
     }
 };
 
-pub fn encode(_: *Allocator, module: *IR.Module) void
+pub fn encode(_: *Allocator, module: *IR.Module, target: std.Target) void
 {
+    _ = target;
     if (true)
     {
         Instruction.determine(0xd65f03c0);

@@ -7,3 +7,5 @@ zig-cache
 perf.data*
 macho_exe
 macho_first
+minimal*
+*.colors

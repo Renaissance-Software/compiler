@@ -4,17 +4,28 @@ const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 const print = std.debug.print;
+const os = std.Target.current.os.tag;
 
 const IR = @import("../../bytecode.zig");
 
 const Encoding = @import("encoding.zig");
 const Mnemonic = Encoding.Instruction.ID;
 
+const PE32 = @import("../pe32.zig");
+
 const encode_frame_pointer = true;
 const reset_register_allocator_each_basic_block = true;
 
 const log = std.log.scoped(.x86_64_codegen);
 const log_enc = std.log.scoped(.x86_64_codegen_enc);
+
+const Codegen = @import("../../codegen.zig");
+const ConstantData = Codegen.ConstantData;
+const ConstantDataList = Codegen.ConstantDataList;
+const DataBuffer = Codegen.DataBuffer;
+const CodeBuffer = Codegen.CodeBuffer;
+const Import = Codegen.Import;
+const TextSection = Codegen.TextSection;
 
 const c = @cImport(
 {
@@ -27,8 +38,6 @@ const CallingConvention = enum
     MSVC,
     SystemV,
 };
-
-const calling_convention = CallingConvention.SystemV;
 
 const ExecutableModel = enum
 {
@@ -57,16 +66,16 @@ const msvc_argument_registers = [_]Encoding.Register
 
 fn get_argument_register(index: u64) ?Encoding.Register
 {
-    switch (calling_convention)
+    switch (abi)
     {
-        CallingConvention.SystemV =>
+        .gnu =>
         {
             if (index < system_v_argument_registers.len)
             {
                 return system_v_argument_registers[index];
             }
         },
-        else => panic("ni: {}\n", .{calling_convention}),
+        else => panic("ni: {}\n", .{abi}),
     }
 
     return null;
@@ -440,6 +449,8 @@ const Label = struct
     }
 };
 
+
+
 const Instruction = struct
 {
     id: Mnemonic,
@@ -595,309 +606,45 @@ const Function = struct
 
 const Elf64 = struct
 {
-    const FileHeader = extern struct
-    {
-        // e_ident
-        magic: u8 = 0x7f,
-        elf_id: [3]u8 = "ELF".*,
-        bit_count: u8 = @enumToInt(Bits.b64),
-        endianness: u8 = @enumToInt(Endianness.little),
-        header_version: u8 = 1,
-        os_abi: u8 = @enumToInt(ABI.SystemV),
-        abi_version: u8 = 0,
-        padding: [7]u8 = [_]u8 { 0 } ** 7,
-        object_type: u16 = @enumToInt(ObjectFileType.executable), // e_type
-        machine : u16 = @enumToInt(Machine.AMD64),
-        version: u32 = 1,
-        entry: u64,
-        program_header_offset: u64 = 0x40,
-        section_header_offset: u64,
-        flags: u32 = 0,
-        header_size: u16 = 0x40,
-        program_header_size: u16 = @sizeOf(ProgramHeader),
-        program_header_entry_count: u16 = 1,
-        section_header_size: u16 = @sizeOf(SectionHeader),
-        section_header_entry_count: u16,
-        name_section_header_index: u16,
-
-        const Bits = enum(u8)
-        {
-            b32 = 1,
-            b64 = 2,
-        };
-
-        const Endianness = enum(u8)
-        {
-            little = 1,
-            big = 2,
-        };
-
-        const ABI = enum(u8)
-        {
-            SystemV = 0,
-        };
-
-        const ObjectFileType = enum(u16)
-        {
-            none = 0,
-            relocatable = 1,
-            executable = 2,
-            dynamic = 3,
-            core = 4,
-            lo_os = 0xfe00,
-            hi_os = 0xfeff,
-            lo_proc = 0xff00,
-            hi_proc = 0xffff,
-        };
-
-        const Machine = enum(u16)
-        {
-            AMD64 = 0x3e,
-        };
-    };
-
-    const ProgramHeader = extern struct
-    {
-        type: u32 = @enumToInt(ProgramHeaderType.load),
-        flags: u32 = @enumToInt(Flags.readable) | @enumToInt(Flags.executable),
-        offset: u64,
-        virtual_address: u64,
-        physical_address: u64,
-        size_in_file: u64,
-        size_in_memory: u64,
-        alignment: u64 = 0,
-
-        const ProgramHeaderType = enum(u32)
-        {
-            @"null" = 0,
-            load = 1,
-            dynamic = 2,
-            interpreter = 3,
-            note = 4,
-            shlib = 5, // reserved
-            program_header = 6,
-            tls = 7,
-            lo_os = 0x60000000,
-            hi_os = 0x6fffffff,
-            lo_proc = 0x70000000,
-            hi_proc = 0x7fffffff,
-        };
-
-        const Flags = enum(u8)
-        {
-            executable = 1,
-            writable = 2,
-            readable = 4,
-        };
-    };
-
-    const SectionHeader = extern struct
-    {
-        name_offset: u32,
-        type: u32,
-        flags: u64,
-        address: u64,
-        offset: u64,
-        size: u64,
-        // section index
-        link: u32,
-        info: u32,
-        alignment: u64,
-        entry_size: u64,
-
-        // type
-        const ID = enum(u32)
-        {
-            @"null" = 0,
-            program_data = 1,
-            symbol_table = 2,
-            string_table = 3,
-            relocation_entries_addends = 4,
-            symbol_hash_table = 5,
-            dynamic_linking_info = 6,
-            notes = 7,
-            program_space_no_data = 8,
-            relocation_entries = 9,
-            reserved = 10,
-            dynamic_linker_symbol_table = 11,
-            array_of_constructors = 14,
-            array_of_destructors = 15,
-            array_of_pre_constructors = 16,
-            section_group = 17,
-            extended_section_indices = 18,
-            number_of_defined_types = 19,
-            start_os_specific = 0x60000000,
-        };
-
-        const Flag = enum(u64)
-        {
-            writable = 0x01,
-            alloc = 0x02,
-            executable = 0x04,
-            mergeable = 0x10,
-            contains_null_terminated_strings = 0x20,
-            info_link = 0x40,
-            link_order = 0x80,
-            os_non_conforming = 0x100,
-            section_group = 0x200,
-            tls = 0x400,
-            mask_os = 0x0ff00000,
-            mask_processor = 0xf0000000,
-            ordered = 0x4000000,
-            exclude = 0x8000000,
-        };
-    };
 };
 
-const Section = enum
-{
-    @"null",
-    data,
-    text,
-    shstrtab,
-    bss,
-
-    const count = std.enums.values(Section).len;
-};
-
-const Sections = struct
-{
-    name_offsets: [Section.count]u32,
-    names: []const u8,
-};
 
 const InstructionBuffer = ArrayList(Instruction);
 const FunctionBuffer = ArrayList(Function);
 const LabelBuffer = ArrayList(Label);
 
-const Executable = struct
+pub const Executable = struct
 {
+    const Self = @This();
+
     functions: FunctionBuffer,
     //code_buffer: CodeBuffer,
     //data_buffer: DataBuffer,
     //constant_data_list: ConstantDataList,
-    code_base_RVA: u64,
-    data_base_RVA: u64,
-    main_function: *Function,
 
     argument_registers: []const Encoding.Register,
+    code_base_RVA: u64,
+    data_base_RVA: u64,
+    entry_point: *Function,
 
-    const ConstantData = struct
+    pub fn encode_text_section_pe32(self: *Self, allocator: *Allocator, header: *PE32.ImageSectionHeader) TextSection
     {
-        value: *IR.Value,
-        offset: u64,
-    };
+        const aprox_code_size = std.mem.alignForward(estimate_max_code_size(self.functions.items), PE32.file_alignment);
+        var code_buffer = DataBuffer.initCapacity(allocator, aprox_code_size) catch panic("Error creating code buffer\n", .{});
 
-    fn write_elf64(self: *Executable, data_buffer: *DataBuffer, allocator: *Allocator, filename: []const u8) void
-    {
-        var aprox_instruction_count: u64 = 0;
-        const max_bytes_per_instruction: u8 = 15;
+        self.code_base_RVA = header.virtual_address;
 
-        for (self.functions.items) |function|
-        {
-            aprox_instruction_count += 6 + function.instructions.items.len;
-        }
+        //var entry_point_RVA: u32 = 0;
+        //for (self.functions.items) |*function|
+        //{
 
-        const aprox_code_size = aprox_instruction_count * max_bytes_per_instruction;
-
-        log.debug("Aproximate code size: {}\n", .{aprox_code_size});
-
-        const file_header_size = @sizeOf(Elf64.FileHeader);
-        const program_header_size = @sizeOf(Elf64.ProgramHeader);
-        const section_header_size = @sizeOf(Elf64.SectionHeader);
-
-        assert(file_header_size == 0x40);
-        assert(program_header_size == 0x38);
-        assert(section_header_size == 0x40);
-
-        // @Info: this has to do with the way I order sections and it's not official in any way
-        const sections = comptime blk:
-        {
-            assert(Section.count == 5);
-
-            const section_names_str = std.enums.directEnumArray(Section, []const u8, 0, .
-                {
-                    .@"null" = "\x00",
-                    .data = ".data\x00",
-                    .text = ".text\x00",
-                    .shstrtab = ".shstrtab\x00",
-                    .bss = ".bss\x00",
-                });
-
-            var section_names: []const u8 = "";
-            var section_names_byte_count: u32 = 0;
-            var name_offsets: [Section.count]u32 = undefined;
-
-            inline for (section_names_str) |section_name, i|
-            {
-                section_names = section_names ++ section_name;
-                name_offsets[i] = section_names_byte_count;
-                section_names_byte_count += @intCast(u32, section_name.len);
-            }
-
-            assert(section_names.len == section_names_byte_count);
-
-            break :blk Sections
-            {
-                .name_offsets = name_offsets,
-                .names = section_names,
-            };
-        };
-
-        // @TODO: turn this into a loop
-        const base_address: u64 = 0x08048000;
-        const header_offset = file_header_size + program_header_size;
-        const data_length = data_buffer.items.len;
-        const shstrtab_length = sections.names.len;
-        // @TODO: buggy?
-        const bss_length = 0;
-        const section_headers_size = Section.count * @sizeOf(Elf64.SectionHeader);
-
-        const file_header_value = Elf64.FileHeader
-        {
-            .entry = undefined, // entry_offset,
-            .section_header_offset = undefined, // sections_offset,
-            .section_header_entry_count = Section.count,
-            .name_section_header_index = @enumToInt(Section.shstrtab),
-        };
-
-        const program_header_value = Elf64.ProgramHeader
-        {
-            .offset = 0,
-            .virtual_address = base_address,
-            .physical_address = base_address,
-            .size_in_file = undefined, // file size
-            .size_in_memory = undefined, // file size
-        };
-
-        // @Info: we estimate this we don't want any reallocation which makes us have a bad pointer
-        const aproximate_file_size = header_offset + data_length + aprox_code_size + shstrtab_length + bss_length + section_headers_size;
-
-        var file_buffer = ArrayList(u8).initCapacity(allocator, aproximate_file_size) catch {
-            panic("Error allocating memory for code section buffer\n", .{});
-        };
-
-        var code_buffer = ArrayList(u8).initCapacity(allocator, aprox_code_size) catch {
-            panic("Error allocating the code buffer\n", .{});
-        };
-
-        const file_header_offset = file_buffer.items.len;
-        file_buffer.appendSlice(std.mem.asBytes(&file_header_value)) catch unreachable;
-        const program_header_offset = file_buffer.items.len;
-        file_buffer.appendSlice(std.mem.asBytes(&program_header_value)) catch unreachable;
-
-        // @TODO: alignment
-        //
-        // @Info: data buffer is already initialized; don't need to do anything
-        self.data_base_RVA = file_buffer.items.len;
-        file_buffer.appendSlice(data_buffer.items) catch unreachable;
-
-        // @TODO: alignment
-        self.code_base_RVA = file_buffer.items.len;
+            //panic("Here we should be encoding the function\n", .{});
+            // fn_encode(buffer, function);
+        //}
 
         // Encode entry point
         {
-            const ir_main_function = self.main_function.ir_ref;
+            const ir_main_function = self.entry_point.ir_ref;
 
             const function_type = @ptrCast(*IR.FunctionType, ir_main_function.type);
             const return_type = function_type.ret_type;
@@ -1037,311 +784,181 @@ const Executable = struct
             }
         }
 
-        switch (calling_convention)
+        for (self.functions.items) |*function|
         {
-            CallingConvention.SystemV =>
             {
-                for (self.functions.items) |function|
+                log.info("Printing function:\n\n", .{});
+                for (function.instructions.items) |instruction, instruction_index|
                 {
+                    log.info("{}: {}\n", .{instruction_index, instruction});
+                }
+                log.info("\n\n", .{});
+            }
+
+            {
+                var label = &function.labels.items[0];
+                label.patch(&code_buffer);
+            }
+
+            if (encode_frame_pointer)
+            {
+                log_enc.debug("\nEncoding prologue\n", .{});
+                const rbp = Operand 
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.BP,
+                    },
+                    .size = @enumToInt(Operand.Size.bits64),
+                };
+
+                const rsp = Operand 
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.SP,
+                    },
+                    .size = @enumToInt(Operand.Size.bits64),
+                };
+
+                const rbp_arr = [1]Operand { rbp }; 
+                const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
+                const operands = [2]Operand { rbp, rsp };
+                const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
+                encode_instruction(self, &code_buffer, push_rbp);
+                encode_instruction(self, &code_buffer, mov_rbp_rsp);
+            }
+
+            if (function.rsp > 0)
+            {
+                const operands = [2]Operand
+                {
+                    Operand 
                     {
-                        log.info("Printing function:\n\n", .{});
-                        for (function.instructions.items) |instruction, instruction_index|
-                        {
-                            log.info("{}: {}\n", .{instruction_index, instruction});
-                        }
-                        log.info("\n\n", .{});
-                    }
+                        .value = Operand.Value {
+                            .register = Encoding.Register.SP,
+                        },
+                        .size = @enumToInt(Operand.Size.bits64),
+                    },
+                    Operand.Immediate.get_minimum(function.rsp),
+                };
 
-                    {
-                        var label = &function.labels.items[0];
-                        label.patch(&code_buffer);
-                    }
+                const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
+                encode_instruction(self, &code_buffer, sub_rsp);
+            }
 
-                    if (encode_frame_pointer)
-                    {
-                        log_enc.debug("\nEncoding prologue\n", .{});
-                        const rbp = Operand 
-                        {
-                            .value = Operand.Value {
-                                .register = Encoding.Register.BP,
-                            },
-                            .size = @enumToInt(Operand.Size.bits64),
-                        };
+            var instruction_index: u64 = 0;
+            var label_index: u64 = 1;
 
-                        const rsp = Operand 
-                        {
-                            .value = Operand.Value {
-                                .register = Encoding.Register.SP,
-                            },
-                            .size = @enumToInt(Operand.Size.bits64),
-                        };
+            const instruction_count = function.instructions.items.len;
+            const label_count = function.labels.items.len;
 
-                        const rbp_arr = [1]Operand { rbp }; 
-                        const push_rbp = Instruction.create(Mnemonic.push, rbp_arr[0..]);
-                        const operands = [2]Operand { rbp, rsp };
-                        const mov_rbp_rsp = Instruction.create(Mnemonic.mov, operands[0..]);
-                        encode_instruction(self, &code_buffer, push_rbp);
-                        encode_instruction(self, &code_buffer, mov_rbp_rsp);
-                    }
+            log_enc.debug("\nLabel count: {}. Instruction count: {}\n", .{label_count, instruction_count});
 
-                    if (function.rsp > 0)
-                    {
-                        const operands = [2]Operand
-                        {
-                            Operand 
-                            {
-                                .value = Operand.Value {
-                                    .register = Encoding.Register.SP,
-                                },
-                                .size = @enumToInt(Operand.Size.bits64),
-                            },
-                            Operand.Immediate.get_minimum(function.rsp),
-                        };
+            while (label_index < label_count) : (label_index += 1)
+            {
+                var label = &function.labels.items[label_index];
+                const label_instruction_index = label.instruction_index;
 
-                        const sub_rsp = Instruction.create(Mnemonic.sub, operands[0..]);
-                        encode_instruction(self, &code_buffer, sub_rsp);
-                    }
-
-                    var instruction_index: u64 = 0;
-                    var label_index: u64 = 1;
-
-                    const instruction_count = function.instructions.items.len;
-                    const label_count = function.labels.items.len;
-
-                    log_enc.debug("\nLabel count: {}. Instruction count: {}\n", .{label_count, instruction_count});
-
-                    while (label_index < label_count) : (label_index += 1)
-                    {
-                        var label = &function.labels.items[label_index];
-                        const label_instruction_index = label.instruction_index;
-
-                        while (instruction_index < label_instruction_index) : (instruction_index += 1)
-                        {
-                            const instruction = function.instructions.items[instruction_index];
-                            assert(instruction.id != Mnemonic.ret);
-                            log_enc.debug("Encoding instruction {}\n", .{instruction_index});
-                            encode_instruction(self, &code_buffer, instruction);
-                        }
-
-                        label.target = @ptrToInt(code_buffer.items.ptr) + code_buffer.items.len;
-
-                        for (label.locations.items) |location|
-                        {
-                            log_enc.debug("Location\n", .{});
-                            // @TODO: this can cause problems
-                            const target = @intCast(i64, label.target); 
-                            const address_after_instruction = @intCast(i64, location.address_after_instruction);
-                            const difference = target - address_after_instruction;
-                            assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
-                            // ???
-                            assert(difference >= 0);
-                            const relative_to_be_written = @intCast(i32, difference);
-                            log_enc.debug("Address of relative to be written: 0x{x}\n", .{location.relative_to_be_written_address});
-                            var patch_target = @intToPtr(*align(1) i32, location.relative_to_be_written_address);
-                            patch_target.* = relative_to_be_written;
-                            log_enc.debug("\n\n\nWrote relative: {}\n\n\n", .{relative_to_be_written});
-                        }
-
-                        log_enc.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
-                    }
-
-                    while (instruction_index < instruction_count - 1) : (instruction_index += 1)
-                    {
-                        const instruction = function.instructions.items[instruction_index];
-                        assert(instruction.id != Mnemonic.ret);
-                        encode_instruction(self, &code_buffer, instruction);
-                    }
-
-                    if (function.rsp > 0)
-                    {
-                        const operands = [2]Operand
-                        {
-                            Operand 
-                            {
-                                .value = Operand.Value {
-                                    .register = Encoding.Register.SP,
-                                },
-                                .size = @enumToInt(Operand.Size.bits64),
-                            },
-                            Operand.Immediate.get_minimum(function.rsp),
-                        };
-
-                        const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
-                        encode_instruction(self, &code_buffer, add_rsp);
-                    }
-
-                    if (encode_frame_pointer)
-                    {
-                        log_enc.debug("Encoding epilogue\n", .{});
-                        const rbp = Operand 
-                        {
-                            .value = Operand.Value {
-                                .register = Encoding.Register.BP,
-                            },
-                            .size = @enumToInt(Operand.Size.bits64),
-                        };
-                        const rbp_arr = [1]Operand { rbp };
-                        const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
-                        encode_instruction(self, &code_buffer, pop_rbp);
-                    }
-
-                    assert(instruction_index == instruction_count - 1);
+                while (instruction_index < label_instruction_index) : (instruction_index += 1)
+                {
                     const instruction = function.instructions.items[instruction_index];
-                    assert(instruction.id == Mnemonic.ret);
+                    assert(instruction.id != Mnemonic.ret);
+                    log_enc.debug("Encoding instruction {}\n", .{instruction_index});
                     encode_instruction(self, &code_buffer, instruction);
                 }
-            },
-            else => panic("ni: {}\n", .{calling_convention}),
+
+                label.target = @ptrToInt(code_buffer.items.ptr) + code_buffer.items.len;
+
+                for (label.locations.items) |location|
+                {
+                    log_enc.debug("Location\n", .{});
+                    // @TODO: this can cause problems
+                    const target = @intCast(i64, label.target); 
+                    const address_after_instruction = @intCast(i64, location.address_after_instruction);
+                    const difference = target - address_after_instruction;
+                    assert(difference >= std.math.minInt(i32) and difference <= std.math.maxInt(i32));
+                    // ???
+                    assert(difference >= 0);
+                    const relative_to_be_written = @intCast(i32, difference);
+                    log_enc.debug("Address of relative to be written: 0x{x}\n", .{location.relative_to_be_written_address});
+                    var patch_target = @intToPtr(*align(1) i32, location.relative_to_be_written_address);
+                    patch_target.* = relative_to_be_written;
+                    log_enc.debug("\n\n\nWrote relative: {}\n\n\n", .{relative_to_be_written});
+                }
+
+                log_enc.debug("patch label: 0x{x}. Locations: {}\n", .{label.target, label.locations.items.len});
+            }
+
+            while (instruction_index < instruction_count - 1) : (instruction_index += 1)
+            {
+                const instruction = function.instructions.items[instruction_index];
+                assert(instruction.id != Mnemonic.ret);
+                encode_instruction(self, &code_buffer, instruction);
+            }
+
+            if (function.rsp > 0)
+            {
+                const operands = [2]Operand
+                {
+                    Operand 
+                    {
+                        .value = Operand.Value {
+                            .register = Encoding.Register.SP,
+                        },
+                        .size = @enumToInt(Operand.Size.bits64),
+                    },
+                    Operand.Immediate.get_minimum(function.rsp),
+                };
+
+                const add_rsp = Instruction.create(Mnemonic.add, operands[0..]);
+                encode_instruction(self, &code_buffer, add_rsp);
+            }
+
+            if (encode_frame_pointer)
+            {
+                log_enc.debug("Encoding epilogue\n", .{});
+                const rbp = Operand 
+                {
+                    .value = Operand.Value {
+                        .register = Encoding.Register.BP,
+                    },
+                    .size = @enumToInt(Operand.Size.bits64),
+                };
+                const rbp_arr = [1]Operand { rbp };
+                const pop_rbp = Instruction.create(Mnemonic.pop, rbp_arr[0..]);
+                encode_instruction(self, &code_buffer, pop_rbp);
+            }
+
+            assert(instruction_index == instruction_count - 1);
+            const instruction = function.instructions.items[instruction_index];
+            assert(instruction.id == Mnemonic.ret);
+            encode_instruction(self, &code_buffer, instruction);
         }
 
         const code_size = code_buffer.items.len;
         log.debug("\n\nAproximate code size: {}. Real code size: {}\n", .{aprox_code_size, code_size});
 
-        file_buffer.appendSlice(code_buffer.items) catch unreachable;
-        // @TODO: alignment
-        const string_table_offset = file_buffer.items.len;
-        file_buffer.appendSlice(sections.names) catch unreachable;
+        header.misc.virtual_size = @intCast(u32, code_buffer.items.len);
+        header.size_of_raw_data = @intCast(u32, std.mem.alignForward(code_buffer.items.len, PE32.file_alignment));
 
-        // @TODO: 
-        const bss_offset = file_buffer.items.len;
-
-        const section_headers_offset = file_buffer.items.len;
-
-        // can't be computed yet
-        const section_headers = blk:
-        {
-            const data_section_flags = dsf_blk:
-            {
-                const is_data = data_buffer.items.len != 0;
-                if (is_data)
-                {
-                    break :dsf_blk @enumToInt(Elf64.SectionHeader.Flag.alloc) | @enumToInt(Elf64.SectionHeader.Flag.writable);
-                }
-                else
-                {
-                    break :dsf_blk 0;
-                }
-            };
-            var section_headers = [Section.count]Elf64.SectionHeader
-            {
-                // null
-                std.mem.zeroInit(Elf64.SectionHeader, .{
-                    .name_offset = sections.name_offsets[0],
-                    .type = @enumToInt(Elf64.SectionHeader.ID.program_space_no_data),
-                }),
-                // data
-                std.mem.zeroInit(Elf64.SectionHeader, .{
-                    .name_offset = sections.name_offsets[@enumToInt(Section.data)],
-                    .type = @enumToInt(Elf64.SectionHeader.ID.program_data),
-                    .address = base_address + self.data_base_RVA,
-                    .offset = self.data_base_RVA,
-                    .size = data_length,
-                    .flags = data_section_flags,
-                }),
-                // text
-                std.mem.zeroInit(Elf64.SectionHeader, .{
-                    .name_offset = sections.name_offsets[@enumToInt(Section.text)],
-                    .type = @enumToInt(Elf64.SectionHeader.ID.program_data),
-                    .address = base_address + self.code_base_RVA,
-                    .offset = self.code_base_RVA,
-                    .size = code_buffer.items.len,
-                    .flags = @enumToInt(Elf64.SectionHeader.Flag.alloc) | @enumToInt(Elf64.SectionHeader.Flag.executable),
-                }),
-                // shstrtab
-                std.mem.zeroInit(Elf64.SectionHeader, .{
-                    .name_offset = sections.name_offsets[3],
-                    .type = @enumToInt(Elf64.SectionHeader.ID.string_table),
-                    .address = base_address + string_table_offset,
-                    .offset = string_table_offset,
-                    .size = shstrtab_length,
-                }),
-                // bss
-                std.mem.zeroInit(Elf64.SectionHeader, .{
-                    .name_offset = sections.name_offsets[4],
-                    .type = @enumToInt(Elf64.SectionHeader.ID.program_space_no_data),
-                    .address = base_address + bss_offset,
-                    .offset = bss_offset,
-                    .size = bss_length,
-                }),
-            };
-
-            break :blk section_headers;
-        };
-
-        for (section_headers) |*section_header, section_header_index|
-        {
-            log.debug("Section header {}: {}\n", .{section_header_index, section_header.*});
-            file_buffer.appendSlice(std.mem.asBytes(section_header)) catch unreachable;
-        }
-
-        const file_size = file_buffer.items.len;
-        assert(file_size <= aproximate_file_size);
-        
-        log.debug("File header offset: {}\n", .{file_header_offset});
-        log.debug("Program header offset: {}\n", .{program_header_offset});
-        log.debug("Data offset: {}\n", .{self.data_base_RVA});
-        log.debug("Code offset: {}\n", .{self.code_base_RVA});
-        log.debug("String table offset: {}\n", .{string_table_offset});
-        log.debug("BSS offset: {}\n", .{bss_offset});
-        log.debug("Section header offset: {}\n", .{section_headers_offset});
-
-        log.debug("\nBefore patching:\n", .{});
-        for (file_buffer.items[0x0..program_header_offset]) |byte, byte_index|
-        {
-            if (byte_index % 0x10 == 0)
-            {
-                log.debug("\n", .{});
-            }
-            log.debug("{x:0>2} ", .{byte});
-        }
-        log.debug("\n", .{});
-
-        // @Info: Patch file  and program headers
-        var file_header = @ptrCast(*align(1) Elf64.FileHeader, &file_buffer.items[file_header_offset]);
-        log.debug("File header before patching: {}\n\n", .{file_header.*});
-        file_header.entry = base_address + self.code_base_RVA;
-        file_header.section_header_offset = section_headers_offset;
-        var program_header = @ptrCast(*align(1) Elf64.ProgramHeader, &file_buffer.items[program_header_offset]);
-        log.debug("Program header before patching: {}\n\n", .{program_header.*});
-        program_header.size_in_file = file_size;
-        program_header.size_in_memory = file_size;
-
-        log.debug("File header after patching: {}\n\n", .{file_header.*});
-        log.debug("File header after patching: {}\n\n", .{program_header.*});
-        log.debug("\nAfter patching:\n", .{});
-        for (file_buffer.items[0x0..program_header_offset]) |byte, byte_index|
-        {
-            if (byte_index % 0x10 == 0)
-            {
-                log.debug("\n", .{});
-            }
-            log.debug("{x:0>2} ", .{byte});
-        }
-
-        log.debug("\n", .{});
-        log.debug("Writing file {s}; size: {} bytes\n", .{filename, file_size});
-        const file = std.fs.cwd().createFile(filename, if (std.Target.current.os.tag == .windows) .{} else .{ .mode = 0o777}) catch {
-            panic("Error creating file {s}\n", .{filename});
-        };
-        defer file.close();
-
-        file.writeAll(file_buffer.items[0..]) catch {
-            panic("Error writting bytes to a file\n", .{});
+        return 
+        .{
+            .buffer = code_buffer.items,
+            .entry_point_RVA = header.virtual_address,
         };
     }
 };
 
-fn get_stack_register() Encoding.Register
-{
-    const register = switch (calling_convention)
-    {
-        CallingConvention.SystemV => Encoding.Register.BP,
-        CallingConvention.MSVC => Encoding.Register.SP,
-        //else => panic("ni: {}\n", .{calling_convention}),
-    };
-
-    return register;
-}
+//fn get_stack_register() Encoding.Register
+//{
+//    const register = switch (abi)
+//    {
+//        .gnu => Encoding.Register.BP,
+//        .msvc => Encoding.Register.SP,
+//        else => panic("ni: {}\n", .{abi}),
+//    };
+//
+//    return register;
+//}
 
 fn encode_instruction(executable: *Executable, code_buffer: *CodeBuffer, instruction: Instruction) void
 {
@@ -2120,6 +1737,7 @@ const StackAllocator = struct
 {
     allocations: ArrayList(Allocation),
     stack_offset: u64,
+    stack_register: Encoding.Register,
 
     const Allocation = struct
     {
@@ -2148,7 +1766,7 @@ const StackAllocator = struct
             {
                 .indirect = Operand.Indirect {
                     .displacement = - @intCast(i32, self.stack_offset),
-                    .register = get_stack_register(),
+                    .register = self.stack_register,
                 },
             },
             .size = @intCast(u32, size),
@@ -2191,7 +1809,7 @@ const StackAllocator = struct
                 .indirect = Operand.Indirect
                 {
                     .displacement = -@intCast(i32, allocation.offset),
-                    .register = get_stack_register(),
+                    .register = self.stack_register,
                 },
             },
             .size = @intCast(u32, allocation.size),
@@ -2227,7 +1845,7 @@ fn get_constant_data_from_ir_to_mc(data_buffer: *DataBuffer, constant_data_list:
         append_value_to_data_buffer(data_buffer, ir_data_value);
     }
 
-    const new_data_constant = Executable.ConstantData
+    const new_data_constant = ConstantData
     {
         .value = ir_value,
         .offset = offset,
@@ -2630,17 +2248,31 @@ pub fn const_int_eq(value: *IR.Value, int_value: u64) bool
     return const_value == int_value;
 }
 
-const ConstantDataList = ArrayList(Executable.ConstantData);
-const DataBuffer = ArrayList(u8);
-const CodeBuffer = ArrayList(u8);
+const max_bytes_per_instruction = 15;
 
-pub fn encode(allocator: *Allocator, module: *IR.Module) void
+fn estimate_max_code_size(functions: []Function) u64
 {
+    var total_instruction_count: u64 = 0;
+    const aprox_fixed_instruction_count_per_function = 5;
+
+    for (functions) |function|
+    {
+        total_instruction_count += aprox_fixed_instruction_count_per_function + function.instructions.items.len;
+    }
+
+    return total_instruction_count * max_bytes_per_instruction;
+}
+
+var abi: std.Target.Abi = undefined;
+
+pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) void
+{
+    abi = target.abi;
+    if (os == .windows) abi = .msvc;
     log.debug("\n==============\nx86-64 CODEGEN\n==============\n\n", .{});
     const function_count = module.functions.len();
     assert(function_count > 0);
 
-    const os = std.builtin.os.tag;
     //var function_buffer = FunctionBuffer.initCapacity(allocator, function_count) catch {
     //    panic("Error allocating memory for machine code functions\n", .{});
     //};
@@ -2648,24 +2280,17 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
     {
         panic("Unable to create buffer\n", .{});
     };
-    var code_buffer = CodeBuffer.initCapacity(allocator, 1024 * 64) catch
-    {
-        panic("Unable to create buffer\n", .{});
-    };
     var constant_data_list = ConstantDataList.initCapacity(allocator, 1024) catch
     {
         panic("Unable to create buffer\n", .{});
     };
-    _ = constant_data_list;
-    _ = code_buffer;
-    _ = data_buffer;
 
     var executable = Executable
     {
         .functions = FunctionBuffer.initCapacity(allocator, function_count) catch unreachable,
         .code_base_RVA = 0,
         .data_base_RVA = 0,
-        .main_function = undefined,
+        .entry_point = undefined,
         .argument_registers = switch (os)
         {
             .windows => msvc_argument_registers[0..],
@@ -2695,9 +2320,16 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
                 .ir_ref = function,
                 .rsp = 0,
                 .register_allocator = RegisterAllocator.create(),
-                .stack_allocator = StackAllocator {
+                .stack_allocator = StackAllocator
+                {
                     .allocations = ArrayList(StackAllocator.Allocation).init(allocator),
                     .stack_offset = 0,
+                    .stack_register = switch (abi)
+                    {
+                        .gnu => .BP,
+                        .msvc => .SP,
+                        else => unreachable,
+                    },
                 },
             };
 
@@ -2736,7 +2368,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
             }
             else if (std.mem.eql(u8, function.name, "main"))
             {
-                executable.main_function = &executable.functions.items[executable.functions.items.len - 1];
+                executable.entry_point = &executable.functions.items[executable.functions.items.len - 1];
                 found_main_function = true;
             }
         }
@@ -3249,14 +2881,32 @@ pub fn encode(allocator: *Allocator, module: *IR.Module) void
         }
     }
 
-    const to_join = [2][]const u8 { module.name, ".elf" };
+    const to_join = [2][]const u8
+    {
+        module.name, 
+        switch (os)
+        {
+            .windows => ".exe",
+            .linux => ".elf",
+            else => unreachable,
+        }
+    };
+
     const filename = std.mem.join(allocator, "", to_join[0..]) catch {
         panic("Error formatting file name\n", .{});
     };
 
     switch (executable_model)
     {
-        ExecutableModel.File => executable.write_elf64(&data_buffer, allocator, filename),
+        ExecutableModel.File => 
+        {
+            switch (os)
+            {
+                // @TODO: we should modify the import library part
+                .windows => PE32.write(allocator, &executable, filename, data_buffer.items, ArrayList(Import.Library).init(allocator).items, target),
+                else => panic("ni: {}\n", .{os}),
+            }
+        },
         ExecutableModel.JIT =>
         {
             //const buffer_allocator = std.mem.Allocator
