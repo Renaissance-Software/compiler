@@ -416,50 +416,56 @@ fn append_string(file_buffer: *DataBuffer, string: []const u8) void
 
 pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, data_buffer: []const u8, import_libraries: []Import.Library, target: std.Target) void
 {
-    var section_headers = [_]ImageSectionHeader
-    {
-        std.mem.zeroInit(ImageSectionHeader, .{
-            .name = rdata_section_name,
-            .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read),
-        }),
-        std.mem.zeroInit(ImageSectionHeader, .{
-            .name = text_section_name,
-            .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute),
-        }),
-        std.mem.zeroes(ImageSectionHeader),
-    };
+    //var section_headers = [_]ImageSectionHeader
+    //{
+        //std.mem.zeroInit(ImageSectionHeader, .{
+            //.name = rdata_section_name,
+            //.characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read),
+        //}),
+        //std.mem.zeroInit(ImageSectionHeader, .{
+            //.name = text_section_name,
+            //.characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute),
+        //}),
+        //std.mem.zeroes(ImageSectionHeader),
+    //};
 
-    comptime assert(section_headers.len == 3);
+    //comptime assert(section_headers.len == 3);
 
-    const file_size_of_headers = @intCast(u32, std.mem.alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(i32) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + @sizeOf(@TypeOf(section_headers)), file_alignment));
-    const virtual_size_of_headers = std.mem.alignForward(file_size_of_headers, section_alignment);
+    //const file_size_of_headers = @intCast(u32, std.mem.alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(i32) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + @sizeOf(@TypeOf(section_headers)), file_alignment));
+    //const virtual_size_of_headers = std.mem.alignForward(file_size_of_headers, section_alignment);
 
-    var rdata_section_header = &section_headers[0];
-    rdata_section_header.pointer_to_raw_data = @intCast(u32, file_size_of_headers);
-    rdata_section_header.virtual_address = @intCast(u32, virtual_size_of_headers);
+    //var rdata_section_header = &section_headers[0];
+    //rdata_section_header.pointer_to_raw_data = @intCast(u32, file_size_of_headers);
+    //rdata_section_header.virtual_address = @intCast(u32, virtual_size_of_headers);
 
-    const rdata_section = RDataSection.encode(allocator, data_buffer, import_libraries, rdata_section_header);
-    _ = rdata_section;
+    //const rdata_section = RDataSection.encode(allocator, data_buffer, import_libraries, rdata_section_header);
+    //_ = rdata_section;
 
-    var text_section_header = &section_headers[1];
-    text_section_header.pointer_to_raw_data = rdata_section_header.pointer_to_raw_data + rdata_section_header.size_of_raw_data;
-    text_section_header.virtual_address = rdata_section_header.virtual_address + @intCast(u32, std.mem.alignForward(rdata_section_header.size_of_raw_data, section_alignment));
+    //var text_section_header = &section_headers[1];
+    //text_section_header.pointer_to_raw_data = rdata_section_header.pointer_to_raw_data + rdata_section_header.size_of_raw_data;
+    //text_section_header.virtual_address = rdata_section_header.virtual_address + @intCast(u32, std.mem.alignForward(rdata_section_header.size_of_raw_data, section_alignment));
 
-    const text_section: TextSection = switch (target.cpu.arch)
-    {
-        .x86_64 => blk:
-        {
-            const exe = @ptrCast(*x86_64.Executable, executable);
-            break :blk exe.encode_text_section_pe32(allocator, text_section_header);
-        },
-        .aarch64 => unreachable,
-        else => unreachable,
-    };
-    _ = text_section;
+    //const text_section: TextSection = switch (target.cpu.arch)
+    //{
+        //.x86_64 => blk:
+        //{
+            //const exe = @ptrCast(*x86_64.Executable, executable);
+            //break :blk exe.encode_text_section_pe32(allocator, text_section_header);
+        //},
+        //.aarch64 => unreachable,
+        //else => unreachable,
+    //};
+    //_ = text_section;
 
-    const virtual_size_of_image = @intCast(u32, text_section_header.virtual_address + std.mem.alignForward(text_section_header.size_of_raw_data, section_alignment));
-    _ = virtual_size_of_image;
-    const max_file_buffer_size = file_size_of_headers + rdata_section_header.size_of_raw_data + text_section_header.size_of_raw_data;
+    //const virtual_size_of_image = @intCast(u32, text_section_header.virtual_address + std.mem.alignForward(text_section_header.size_of_raw_data, section_alignment));
+    //_ = virtual_size_of_image;
+    //const max_file_buffer_size = file_size_of_headers + rdata_section_header.size_of_raw_data + text_section_header.size_of_raw_data;
+
+    // @TODO: change this
+    _ = import_libraries;
+    _ = data_buffer;
+    _ = executable;
+    const max_file_buffer_size = 0x4000;
 
     var file_buffer = DataBuffer.initCapacity(allocator, max_file_buffer_size) catch panic("Error creating file buffer\n", .{});
     file_buffer.items.len = max_file_buffer_size;
@@ -549,8 +555,8 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
                 .file_alignment = file_alignment,
                 .major_os_version = min_windows_version_vista,
                 .major_subsystem_version = min_windows_version_vista,
-                .size_of_image = 0x4000,
-                .size_of_headers = 0x400,
+                .size_of_image = 0x3000,
+                .size_of_headers = 0,
                 .checksum = 0,
                 .subsystem = 3,
                 .dll_characteristics = @enumToInt(ImageDLLCharacteristics.high_entropy_va) | @enumToInt(ImageDLLCharacteristics.nx_compat) | @enumToInt(ImageDLLCharacteristics.dynamic_base) | @enumToInt(ImageDLLCharacteristics.terminal_server_aware),
@@ -577,10 +583,8 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     print("\n{}\n", .{image_optional_header});
     //print("\n{}\n", .{correct_image_optional_header});
 
-    var section_offset = image_optional_header.size_of_headers;
-
     const text_section_header_size_of_raw_data = image_optional_header.size_of_code;
-    const text_section_header_pointer_to_raw_data = section_offset;
+    const text_section_index = file_buffer.items.len;
 
     file_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageSectionHeader, .
                 {
@@ -588,14 +592,12 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
                     .misc = .{ .virtual_size = 0x0d },
                     .virtual_address = image_optional_header.base_of_code,
                     .size_of_raw_data = text_section_header_size_of_raw_data,
-                    .pointer_to_raw_data = text_section_header_pointer_to_raw_data,
+                    .pointer_to_raw_data = 0,
                     .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute),
                 }))) catch unreachable;
 
-    section_offset += text_section_header_size_of_raw_data;
-
     const rdata_section_size_of_raw_data = 0x200;
-    const rdata_section_header_pointer_to_raw_data = section_offset;
+    const rdata_section_index = file_buffer.items.len;
 
     file_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageSectionHeader, .
                 {
@@ -603,11 +605,31 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
                     .misc = .{ .virtual_size = 0x184 },
                     .virtual_address = 0x2000,
                     .size_of_raw_data = rdata_section_size_of_raw_data,
-                    .pointer_to_raw_data = rdata_section_header_pointer_to_raw_data,
+                    .pointer_to_raw_data = 0,
                     .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read),
                 }))) catch unreachable;
 
-    section_offset += rdata_section_size_of_raw_data;
+    file_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageSectionHeader))) catch unreachable;
+
+    const size_of_headers = @intCast(u32, std.mem.alignForward(file_buffer.items.len, image_optional_header.file_alignment));
+    file_buffer.items.len = size_of_headers;
+    image_optional_header.size_of_headers = size_of_headers;
+
+    const text_section_header = @intToPtr(*ImageSectionHeader, @ptrToInt(file_buffer.items.ptr) + text_section_index);
+    const rdata_section_header = @intToPtr(*ImageSectionHeader, @ptrToInt(file_buffer.items.ptr) + rdata_section_index);
+
+    const sections = [_]*ImageSectionHeader
+    {
+        text_section_header,
+        rdata_section_header,
+    };
+
+    var section_offset = size_of_headers;
+    for (sections) |section|
+    {
+        section.pointer_to_raw_data = section_offset;
+        section_offset += section.size_of_raw_data;
+    }
 
     //const pdata_section_size_of_raw_data = 0x200;
     //const pdata_section_header_pointer_to_raw_data = section_offset;
@@ -624,7 +646,6 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     //section_offset += pdata_section_size_of_raw_data;
 
     // null section
-    file_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageSectionHeader))) catch unreachable;
 
     //for (section_headers) |*section_header|
     //{
@@ -632,7 +653,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     //}
 
     // .text section
-    file_buffer.items.len = text_section_header_pointer_to_raw_data;
+    file_buffer.items.len = text_section_header.pointer_to_raw_data;
     print("Code being appended at {}\n", .{file_buffer.items.len});
 
     const code = [_]u8
@@ -647,12 +668,12 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     print("Code ends at {}\n", .{file_buffer.items.len});
 
     // .rdata section
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data;
     print("Appending IAT RVA at {}\n", .{file_buffer.items.len});
     const iat_rva: u32 = 0x2168;
     file_buffer.appendSlice(std.mem.asBytes(&iat_rva)) catch unreachable;
 
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data + 0x10;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data + 0x10;
     print("Debug bytes being appended at {}\n", .{file_buffer.items.len});
     const debug_bytes = [_]u8
     {
@@ -663,7 +684,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     print("Debug bytes end at [{}]\n", .{file_buffer.items.len});
 
     // .idata section
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data + 0xf8;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data + 0xf8;
 
     print("Image import descriptor appended at {}\n", .{file_buffer.items.len});
     file_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageImportDescriptor, .{
@@ -673,18 +694,18 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
         .first_thunk = 0x1c,
     }))) catch unreachable;
 
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data + 0x120;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data + 0x120;
     print("Random number 1 being generated at [{}]\n", .{file_buffer.items.len});
     file_buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0x61746164702e))) catch unreachable;
 
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data + 0x130;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data + 0x130;
     print("Random number 2 being generated at [{}]\n", .{file_buffer.items.len});
     file_buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0x2158))) catch unreachable;
 
     //const function_name = "ExitProcess";
     //append_string(&file_buffer, function_name);
 
-    //file_buffer.items.len = rdata_section_header_pointer_to_raw_data + 0x13e;
+    //file_buffer.items.len = rdata_section_header.pointer_to_raw_data + 0x13e;
 
     //const library_name = "KERNEL32.DLL";
     //append_string(&file_buffer, library_name);
@@ -708,7 +729,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     //file_buffer.appendSlice(pdata_section[0..]) catch unreachable;
     //print("Pdata section ends at [{}]\n", .{file_buffer.items.len});
     
-    file_buffer.items.len = rdata_section_header_pointer_to_raw_data + rdata_section_size_of_raw_data;
+    file_buffer.items.len = rdata_section_header.pointer_to_raw_data + rdata_section_size_of_raw_data;
 
     var error_count: u32 = 0;
     for (file_buffer.items) |b, i|
