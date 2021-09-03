@@ -1,4 +1,5 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
 const assert = std.debug.assert;
@@ -474,13 +475,21 @@ const TextSection = struct
     }
 };
 
+const ImportLibrary = struct
+{
+    name_RVA: u32,
+    RVA: u32,
+    image_thunk_RVA: u32,
+    symbol_RVAs: []u32,
+};
+
 const RDataSection = struct
 {
     section: Section,
     IAT: Section.Directory,
     import_directory: Section.Directory,
 
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader) RDataSection
+    fn encode(allocator: *Allocator, header: *ImageSectionHeader, import_libraries: []Import.Library) RDataSection
     {
         var rdata = Section
         {
@@ -490,50 +499,84 @@ const RDataSection = struct
             .permissions = @enumToInt(Section.Permission.read),
         };
 
-        // loop these
-        const symbol = "ExitProcess";
-        // loop these
-        const library = "KERNEL32.DLL";
+        var pe32_libraries = ArrayList(ImportLibrary).initCapacity(allocator, import_libraries.len) catch unreachable;
 
-        const symbol_rva = get_RVA(header, rdata.buffer.items.len);
-        rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0))) catch unreachable;
-        append_string(&rdata.buffer, symbol);
+        for (import_libraries) |*library|
+        {
+            const symbol_count = library.symbols.items.len;
+            var symbol_RVAs = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
+            symbol_RVAs.items.len = symbol_count;
 
+            for (library.symbols.items) |*symbol, i|
+            {
+                const symbol_rva = get_RVA(header, rdata.buffer.items.len);
+                symbol_RVAs.items[i] = symbol_rva;
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0))) catch unreachable;
+                append_string(&rdata.buffer, symbol.name);
+            }
+
+            pe32_libraries.append(ImportLibrary
+                {
+                    .name_RVA = 0,
+                    .RVA = 0,
+                    .image_thunk_RVA = 0,
+                    .symbol_RVAs = symbol_RVAs.items,
+                }) catch unreachable;
+        }
+
+        // IAT list
         const IAT_RVA = get_RVA(header, rdata.buffer.items.len);
-        // Loop these
-        const library_rva = get_RVA(header, rdata.buffer.items.len);
 
-        // loop these
-        const offset = get_RVA(header, rdata.buffer.items.len) - header.virtual_address;
-        _ = offset;
-        rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
+        for (pe32_libraries.items) |*pe32_lib|
+        {
+            pe32_lib.RVA = get_RVA(header, rdata.buffer.items.len);
 
-        rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+            for (pe32_lib.symbol_RVAs) |symbol_rva|
+            {
+                const offset = get_RVA(header, rdata.buffer.items.len) - header.virtual_address;
+                _ = offset;
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
+            }
+
+            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+        }
 
         const IAT_size = @intCast(u32, rdata.buffer.items.len);
 
-        // loop these
-        const lib_image_thunk_rva = get_RVA(header, rdata.buffer.items.len);
-        // loop these
-        rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
+        // Image thunks
+        for (pe32_libraries.items) |*pe32_lib|
+        {
+            pe32_lib.image_thunk_RVA = get_RVA(header, rdata.buffer.items.len);
 
-        rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+            for (pe32_lib.symbol_RVAs) |symbol_RVA|
+            {
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_RVA))) catch unreachable;
+            }
 
-        // library names
-        // loop these
-        //
-        const library_name_RVA = get_RVA(header, rdata.buffer.items.len);
-        append_string(&rdata.buffer, library);
+            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+        }
 
+        // Library names
+        for (import_libraries) |*library, library_i|
+        {
+            var pe32_lib = &pe32_libraries.items[library_i];
+            pe32_lib.name_RVA = get_RVA(header, rdata.buffer.items.len);
+
+            append_string(&rdata.buffer, library.name);
+        }
+
+        // Import directory
         const import_directory_RVA = get_RVA(header, rdata.buffer.items.len);
 
-        // loop these
-        rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageImportDescriptor, .
-                    {
-                        .characteristics_or_original_first_thunk = lib_image_thunk_rva,
-                        .name = library_name_RVA,
-                        .first_thunk = library_rva,
-                    }))) catch unreachable;
+        for (pe32_libraries.items) |pe32_lib|
+        {
+            rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageImportDescriptor, .
+                        {
+                            .characteristics_or_original_first_thunk = pe32_lib.image_thunk_RVA,
+                            .name = pe32_lib.name_RVA,
+                            .first_thunk = pe32_lib.RVA,
+                        }))) catch unreachable;
+        }
 
         const import_directory_size = get_RVA(header, rdata.buffer.items.len) - import_directory_RVA;
 
@@ -542,9 +585,7 @@ const RDataSection = struct
             rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageImportDescriptor))) catch unreachable;
         }
 
-        // Exception
-        // dont code for now
-        //
+        // @TODO: @INFO: Exception directory: dont code for now
 
         header.misc.virtual_size = @intCast(u32, rdata.buffer.items.len);
         header.size_of_raw_data = @intCast(u32, alignForward(rdata.buffer.items.len, file_alignment));
@@ -581,7 +622,6 @@ const DataSection = struct
 
 pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, data_buffer: []const u8, import_libraries: []Import.Library, target: std.Target) void
 {
-    _ = import_libraries;
     _ = data_buffer;
     _ = executable;
     
@@ -619,7 +659,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     rdata_section_header.pointer_to_raw_data = offset.file;
     rdata_section_header.virtual_address = offset.virtual;
 
-    const rdata = RDataSection.encode(allocator, rdata_section_header);
+    const rdata = RDataSection.encode(allocator, rdata_section_header, import_libraries);
     offset.after_size(rdata_section_header.size_of_raw_data);
 
     var data_section_header = &section_headers[2];

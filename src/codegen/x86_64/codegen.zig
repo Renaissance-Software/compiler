@@ -2902,8 +2902,29 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
         {
             switch (os)
             {
-                // @TODO: we should modify the import library part
-                .windows => PE32.write(allocator, &executable, filename, data_buffer.items, ArrayList(Import.Library).init(allocator).items, target),
+                .windows =>
+                {
+                    var libraries = ArrayList(Import.Library).init(allocator);
+                    libraries.append(blk:
+                            {
+                                var kernel32 = Import.Library
+                                {
+                                    .symbols = ArrayList(Import.Symbol).init(allocator),
+                                    .name = "KERNEL32.DLL",
+                                    .name_RVA = 0,
+                                    .RVA = 0,
+                                    .image_thunk_RVA = 0,
+                                };
+
+                                kernel32.symbols.append(std.mem.zeroInit(Import.Symbol, .
+                                        {
+                                            .name = "ExitProcess",
+                                        })) catch unreachable;
+                                break :blk kernel32;
+                            }) catch unreachable;
+
+                    PE32.write(allocator, &executable, filename, data_buffer.items, libraries.items, target);
+                },
                 else => panic("ni: {}\n", .{os}),
             }
         },
