@@ -4,6 +4,7 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 
+const Compiler = @import("compiler.zig");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Semantics = @import("semantics.zig");
@@ -13,65 +14,6 @@ const Types = @import("ast_types.zig");
 const Type = Types.Type;
 const TypeBuffer = Types.TypeBuffer;
 const logger = std.log.scoped(.general);
-
-fn compiler_work_on_file_content(allocator: *Allocator, file_content: []const u8, src_filename: []const u8) void
-{
-    const lexer_result = Lexer.lexical_analyze(allocator, file_content);
-    // @Info: lexer_result.line_count is ignored
-
-    var parser_result = Parser.parse(allocator, lexer_result);
-
-    var semantics_result = Semantics.analyze(allocator, &parser_result);
-
-    var module = IR.encode(allocator, &semantics_result, src_filename);
-
-    const target = std.builtin.target;
-
-    Codegen.encode(allocator, &module, target);
-}
-
-fn compiler_file_workflow(page_allocator: *Allocator, cwd: std.fs.Dir, filename: []const u8, i: u64) void
-{
-    var arena = std.heap.ArenaAllocator.init(page_allocator);
-    defer arena.deinit();
-    const allocator = &arena.allocator;
-    const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
-        panic("Error reading file: {s}\n", .{filename});
-    };
-
-    logger.info("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
-    defer allocator.free(file_content);
-
-    compiler_work_on_file_content(allocator, file_content, filename);
-}
-
-fn compile_load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
-{
-    var arena = std.heap.ArenaAllocator.init(page_allocator);
-    defer arena.deinit();
-    const allocator = &arena.allocator;
-
-    var test_file_contents: [test_files.len][]const u8 = undefined;
-
-    for (test_files) |test_filename, i|
-    {
-        test_file_contents[i] = try cwd.readFileAlloc(allocator, test_filename, 0xffffffff);
-    }
-
-    const iterations : u64 = 10000;
-    var i: u64 = 0;
-    while (i < iterations) : (i += 1)
-    {
-        for (test_file_contents) |test_file_content|
-        {
-            logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
-            if (!compiler_work_on_file_content(allocator, &compiler, test_file_content))
-            {
-                compiler.report_error("Compiler workflow failed\n", .{});
-            }
-        }
-    }
-}
 
 pub fn log(comptime _: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
 {
@@ -122,6 +64,20 @@ pub fn log(comptime _: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), com
         .x86_64_codegen_enc =>
         {
             if (!log_x86_64_encoding)
+            {
+                return;
+            }
+        },
+        .x86_64_codegen_enc =>
+        {
+            if (!log_x86_64_encoding)
+            {
+                return;
+            }
+        },
+        .compiler =>
+        {
+            if (!log_compiler)
             {
                 return;
             }
@@ -181,13 +137,14 @@ pub const log_semantics = false;
 pub const log_bytecode = true;
 pub const log_x86_64 = true;
 pub const log_x86_64_encoding = false;
+pub const log_compiler = true;
 
 pub fn main() anyerror!void
 {
     const all_tests = false;
-    const benchmark = false;
     var page_allocator = std.heap.page_allocator;
     const cwd = std.fs.cwd();
+    const target = std.builtin.target;
 
     // mac os workaround
     if (false)
@@ -206,24 +163,18 @@ pub fn main() anyerror!void
         return;
     }
 
-    if (!benchmark)
+    if (all_tests)
     {
-        if (all_tests)
+        for (test_files) |test_file, i|
         {
-            for (test_files) |test_file, i|
-            {
-                compiler_file_workflow(page_allocator, cwd, test_file, i);
-            }
-        }
-        else
-        {
-            const index = 0;
-            //const index = test_files.len - 1;
-            compiler_file_workflow(page_allocator, cwd, test_files[index], index);
+            print("[Test #{}] {s}\n", .{i, test_file});
+            Compiler.make_executable(page_allocator, test_file, target);
         }
     }
     else
     {
-        try compile_load_all_tests(page_allocator, cwd);
+        const index = 0;
+        //const index = test_files.len - 1;
+        Compiler.make_executable(page_allocator, test_files[index], target);
     }
 }

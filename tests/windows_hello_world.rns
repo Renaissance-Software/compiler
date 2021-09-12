@@ -1,6 +1,5 @@
-GetStdHandle :: (std_handle: s32) u64 extern;
-ExitProcess :: (exit_code: u32) extern;
-WriteFile :: (handle: u64, buffer: u64, bytes_to_be_written: u32, bytes_written: *u32, overlapped: u64) u32 extern;
+GetStdHandle :: (std_handle: s32) u64 extern("kernel32.dll");
+WriteFile :: (handle: u64, buffer: u64, bytes_to_be_written: u32, bytes_written: *u32, overlapped: u64) u32 extern("kernel32.dll");
 
 main :: ()
 {

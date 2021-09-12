@@ -10,7 +10,6 @@ const Parser = @import("parser.zig");
 const Node = Parser.Node;
 const NodeBuffer = Parser.NodeBuffer;
 const NodeRefBuffer = Parser.NodeRefBuffer;
-const ParserResult = Parser.ParserResult;
 const TypeIdentifier = Parser.TypeIdentifier;
 const BinaryExpression = Parser.BinaryExpression;
 const UnaryExpression = Parser.UnaryExpression;
@@ -617,7 +616,7 @@ pub const SemanticsResult = struct
     function_declarations: NodeRefBuffer,
 };
 
-pub fn analyze(allocator: *Allocator, parser_result: *ParserResult) SemanticsResult
+pub fn analyze(allocator: *Allocator, parser_result: *Parser.Module) SemanticsResult
 {
     log.debug("\n==============\nSEMANTICS\n==============\n\n", .{});
 
@@ -625,13 +624,13 @@ pub fn analyze(allocator: *Allocator, parser_result: *ParserResult) SemanticsRes
 
     for (parser_result.type_declarations.items) |typename|
     {
-        _ = analyze_type_declaration(allocator, typename, &types, &parser_result.node_buffer);
+        _ = analyze_type_declaration(allocator, typename, &types, parser_result.node_buffer);
     }
 
     // Check for function types
     for (parser_result.function_declarations.items) |function_decl|
     {
-        const function_type = analyze_type_declaration(allocator, function_decl.value.function_decl.type, &types, &parser_result.node_buffer);
+        const function_type = analyze_type_declaration(allocator, function_decl.value.function_decl.type, &types, parser_result.node_buffer);
         function_decl.type = function_type;
         for (function_decl.value.function_decl.arguments.items) |arg, i|
         {
@@ -643,7 +642,7 @@ pub fn analyze(allocator: *Allocator, parser_result: *ParserResult) SemanticsRes
     {
         const main_block = function_decl.value.function_decl.blocks.items[0];
 
-        _ = explore_expression(allocator, function_decl, main_block, main_block, &parser_result.function_declarations, &parser_result.node_buffer, &types);
+        _ = explore_expression(allocator, function_decl, main_block, main_block, &parser_result.function_declarations, parser_result.node_buffer, &types);
     }
 
     const semantics_result = SemanticsResult

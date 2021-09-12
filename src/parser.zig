@@ -15,12 +15,13 @@ const KeywordID = Lexer.KeywordID;
 const Token = Lexer.Token;
 const LexerResult = Lexer.LexerResult;
 
+const Compiler = @import("compiler.zig");
+
 const log = std.log.scoped(.parser);
 
 pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
 {
-    log.err(format, args);
-    panic("Error in the parser\n", .{});
+    panic(format, args);
 }
 
 pub const NodeRefBuffer = ArrayList(*Node);
@@ -73,84 +74,33 @@ const ReturnExpression = struct
     expression: ?*Node,
 };
 
-const IdentifierExpression = struct
+pub const UnresolvedType = []const u8;
+pub const PointerType = NodeID;
+pub const SliceType = NodeID;
+pub const FunctionType = struct
 {
-    name: []const u8,
+    argument_types: []NodeID,
+    return_type: NodeID,
+    attributes: u64,
 };
 
-pub const TypeIdentifier = struct
+pub const ArrayType = struct
 {
-    value: Value,
+    type: NodeID,
+    length_expression: NodeID,
+};
 
-    pub const Value = union(ID)
-    {
-        void,
-        simple: []const u8,
-        pointer: Pointer,
-        array: Array,
-        structure: Struct,
-        function: Function,
-        slice: Slice,
-    };
+pub const StructType = struct
+{
+    fields: []FieldType,
+    // @TODO: think if we should leave the name here or work everything as aliases to struct literal types
+    name: []const u8,
 
-    pub const ID = enum
+    pub const FieldType = struct
     {
-        void,
-        simple,
-        pointer,
-        array,
-        structure,
-        function,
-        slice,
-    };
-
-    pub const Slice = struct
-    {
-        type: *Node,
-    };
-
-    pub const Function = struct
-    {
-        arg_types: NodeRefBuffer,
-        return_type: ?*Node,
-    };
-
-    pub const Pointer = struct
-    {
-        type: *Node,
-    };
-
-    pub const Array = struct
-    {
-        type: *Node,
-        len_expr: *Node,
-    };
-
-    pub const Struct = struct
-    {
-        // @Info: struct fields are of type var_decl
-        fields: NodeRefBuffer,
         name: []const u8,
-
+        type: NodeID,
     };
-
-    //pub fn create_slice(type_identifier: *Type) void
-    //{
-        //@compileError("here\n");
-    //}
-
-    pub fn format(self: TypeIdentifier, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
-    {
-        _ = fmt;
-
-        switch (self.value)
-        {
-            TypeIdentifier.ID.simple => try std.fmt.format(writer, "{s}", .{self.value.simple}),
-            TypeIdentifier.ID.pointer => try std.fmt.format(writer, "&{}", .{self.value.pointer.type.value.type_identifier}),
-            TypeIdentifier.ID.array => try std.fmt.format(writer, "[]{}", .{self.value.array.type.value.type_identifier}),
-            else => panic("ni: {}\n", .{self.value}),
-        }
-    }
 };
 
 const BlockExpression = struct
@@ -168,14 +118,6 @@ const BlockExpression = struct
     };
 };
 
-const VariableDeclaration = struct
-{
-    name: []const u8,
-    var_type: *Node,
-    var_scope: *Node,
-    backend_ref: usize,
-    is_function_arg: bool,
-};
 
 const BranchExpression = struct
 {
@@ -208,11 +150,6 @@ const FunctionDeclaration = struct
     type: *Node,
 };
 
-const InvokeExpression = struct
-{
-    arguments: NodeRefBuffer,
-    expression: *Node,
-};
 
 const ArraySubscriptExpression = struct
 {
@@ -233,8 +170,1631 @@ const StructLiteral = struct
 
 const FieldAccessExpression = struct
 {
-    expression: *Node,
-    field_expr: *Node,
+    left_expression: NodeID,
+    field_expression: NodeID,
+};
+
+pub const NodeID = u64;
+pub const BuiltinID = enum(u64)
+{
+    os = 1,
+};
+
+pub const VariableDeclaration = struct
+{
+    name: []const u8,
+    type: NodeID,
+//const VariableDeclaration = struct
+//{
+    //name: []const u8,
+    //var_type: *Node,
+    //var_scope: *Node,
+    //backend_ref: usize,
+    //is_function_arg: bool,
+//};
+};
+
+pub const IdentifierExpression = struct
+{
+    name: []const u8,
+};
+
+pub const Scope = struct
+{
+    variable_declarations: []VariableDeclaration,
+    identifier_expressions: []IdentifierExpression,
+    invoke_expressions: []InvokeExpression,
+};
+
+pub const Function = struct
+{
+    argument_names: [][]const u8,
+    name: []const u8,
+    function_type: NodeID,
+
+    const Attribute = enum
+    {
+        @"noreturn",
+        @"extern",
+    };
+
+    const External = struct
+    {
+        base: Function,
+        library: []const u8,
+    };
+
+    const Internal = struct
+    {
+        base: Function,
+    };
+};
+
+pub const TokenTypeMap = blk:
+{
+    var ttm: [TokenTypeCount]type = undefined;
+
+    ttm[@enumToInt(Token.int_lit)] = Lexer.IntLiteral;
+    ttm[@enumToInt(Token.char_lit)] = Lexer.CharLiteral;
+    ttm[@enumToInt(Token.str_lit)] = Lexer.StringLiteral;
+    ttm[@enumToInt(Token.identifier)] = Lexer.Identifier;
+    ttm[@enumToInt(Token.keyword)] = Lexer.Keyword;
+    ttm[@enumToInt(Token.sign)] = Lexer.Sign;
+    ttm[@enumToInt(Token.operator)] = Lexer.Operator;
+
+    break :blk ttm;
+};
+
+pub const TokenTypeCount = std.enums.values(Lexer.Token).len; 
+
+pub const ModuleParser = struct
+{
+    lexer: TokenWalker,
+    scope_builder: ScopeBuilder,
+    function_builder: FunctionBuilder,
+    module_builder: ModuleBuilder,
+    allocator: *Allocator,
+
+    const Self = @This();
+    const CountersType = [TokenTypeCount]u32;
+
+    const TokenWalker = struct
+    {
+        next_index: u64,
+        counters: CountersType,
+        tokens: []Lexer.Token,
+        int_literals: []Lexer.IntLiteral,
+        char_literals: []Lexer.CharLiteral,
+        string_literals: []Lexer.StringLiteral,
+        identifiers: []Lexer.Identifier,
+        keywords: []Lexer.Keyword,
+        signs: []Lexer.Sign,
+        operators: []Lexer.Operator,
+    };
+
+    const ScopeBuilder = struct
+    {
+        statements: ArrayList(NodeID),
+        variable_declarations: ArrayList(VariableDeclaration),
+        identifier_expressions: ArrayList(IdentifierExpression),
+        invoke_expressions: ArrayList(InvokeExpression),
+        field_access_expressions: ArrayList(FieldAccessExpression),
+        integer_literals: ArrayList(IntegerLiteral),
+    };
+
+    const FunctionBuilder = struct
+    {
+    };
+
+    const ModuleBuilder = struct
+    {
+        internal_functions: ArrayList(Function.Internal),
+        external_functions: ArrayList(Function.External),
+        imported_modules: ArrayList(ImportedModule),
+        unresolved_types: ArrayList(UnresolvedType),
+        pointer_types: ArrayList(PointerType),
+        slice_types: ArrayList(SliceType),
+        function_types: ArrayList(FunctionType),
+        array_types: ArrayList(ArrayType),
+        struct_types: ArrayList(StructType),
+    };
+
+    fn get_and_consume_token(self: *Self, comptime token: Token) TokenTypeMap[@enumToInt(token)]
+    {
+        print("Getting and consuming {}...\n", .{token});
+        const token_to_consume = self.lexer.tokens[self.lexer.next_index];
+        print("Token to be consumed: {}\n", .{token_to_consume});
+        assert(token_to_consume == token);
+        const result = self.get_token(token);
+        if (token == .sign)
+        {
+            print("Sign: {c}\n", .{result.value});
+        }
+        self.consume_token(token);
+
+        return result;
+    }
+
+    fn get_token(self: *Self, comptime token: Token) callconv(.Inline) TokenTypeMap[@enumToInt(token)]
+    {
+        const index = self.lexer.counters[@enumToInt(token)];
+
+        comptime switch (token)
+        {
+            .int_lit => return self.lexer.int_literals[index],
+            .float_lit => return self.lexer.float_literals[index],
+            .char_lit => return self.lexer.char_literals[index],
+            .str_lit => return self.lexer.string_literals[index],
+            .identifier => return self.lexer.identifiers[index],
+            .keyword => return self.lexer.keywords[index],
+            .sign => return self.lexer.signs[index],
+            .operator => return self.lexer.operators[index],
+        };
+    }
+
+    fn consume_token(self: *Self, comptime token: Token) callconv(.Inline) void
+    {
+        print("Consuming {}...\n", .{token});
+        self.lexer.counters[@enumToInt(token)] += 1;
+        self.lexer.next_index += 1;
+    }
+
+    fn rectify(self: *Self, comptime token_to_rectify: Token) callconv(.Inline) void
+    {
+        print("Rectifying {}...\n", .{token_to_rectify});
+        self.lexer.counters[@enumToInt(token_to_rectify)] -= 1;
+        self.lexer.next_index -= 1;
+    }
+
+    fn parse_expression_identifier(self: *Self) NodeID
+    {
+        return self.parse_precedence_identifier(Precedence.Assignment);
+    }
+
+    fn parse_prefix_identifier(self: *Self) NodeID
+    {
+        const identifier_name = self.get_and_consume_token(.identifier).value;
+        const left_expression = self.scope_builder.identifier_expressions.items.len;
+        self.scope_builder.identifier_expressions.append(.{ .name = identifier_name }) catch unreachable;
+        return left_expression;
+    }
+
+    fn parse_precedence_identifier(self: *Self, comptime precedence: Precedence) NodeID
+    {
+        const identifier_name = self.get_and_consume_token(.identifier).value;
+        const left_expression = self.scope_builder.identifier_expressions.items.len;
+        self.scope_builder.identifier_expressions.append(.{ .name = identifier_name }) catch unreachable;
+        return self.parse_infix(precedence, left_expression);
+    }
+
+    fn parse_precedence(self: *Self, comptime precedence: Precedence) NodeID
+    {
+        // Parse prefix
+        const prefix_token = self.lexer.tokens[self.lexer.next_index];
+        const left_expression = blk:
+        {
+            switch (prefix_token)
+            {
+                .identifier => break :blk self.parse_prefix_identifier(),
+                .int_lit =>
+                {
+                    const integer_value = self.get_and_consume_token(.int_lit).value;
+                    const integer_literal_id = self.scope_builder.integer_literals.items.len;
+                    self.scope_builder.integer_literals.append(.
+                        {
+                            .value = integer_value,
+                            // @TODO: implement signedness parsing
+                            .signed = false,
+                        }) catch unreachable;
+
+                    break :blk integer_literal_id;
+                },
+                else => panic("ni: {}\n", .{prefix_token}),
+            }
+        };
+
+        return self.parse_infix(precedence, left_expression);
+    }
+
+    fn parse_expression(self: *Self) NodeID
+    {
+        return self.parse_precedence(Precedence.Assignment);
+    }
+
+    fn parse_infix(self: *Self, comptime precedence: Precedence, left_expr: NodeID) NodeID
+    {
+        var left_expression = left_expr;
+        var has_less_precedence = true;
+
+        while (has_less_precedence)
+        {
+            const token = self.lexer.tokens[self.lexer.next_index];
+            const new_precedence = switch (token)
+            {
+                .sign => sign_block:
+                {
+                    const sign = self.get_token(.sign);
+                    const sign_precedence = switch (sign.value)
+                    {
+                        '{', ';', ',', '}' => Precedence.None,
+                        else => panic("Precedence not implemented for sign '{c}'\n", .{sign}),
+                    };
+
+                    break :sign_block sign_precedence;
+                },
+                .operator => operator_block:
+                {
+                    const operator = self.get_token(.operator).value;
+                    const operator_precedence = switch (operator)
+                    {
+                        .RightParenthesis,
+                        .RightBracket, => Precedence.None,
+
+                        .Plus,
+                        .Minus => Precedence.LightArithmetic,
+
+                        .Multiplication,
+                        .Division => Precedence.HeavyArithmetic,
+
+                        .Equal,
+                        .GreaterThan,
+                        .LessThan => Precedence.Compare,
+
+                        .Assignment => Precedence.Assignment,
+
+                        .Declaration => Precedence.Declaration,
+
+                        .LeftParenthesis,
+                        .LeftBracket,
+                        .Dot, => Precedence.Call,
+
+                        else => panic("Precedence not implemented for {}\n", .{operator}),
+                    };
+
+                    break :operator_block operator_precedence;
+                },
+                else => panic("Precedence not implemented for token: {}\n", .{token}),
+            };
+
+            has_less_precedence = @enumToInt(precedence) <= @enumToInt(new_precedence);
+            if (has_less_precedence)
+            {
+                assert(token == .operator);
+                const operator = self.get_and_consume_token(.operator).value;
+                left_expression = blk:
+                {
+                    switch (operator)
+                    {
+                        .Equal,
+                        .GreaterThan,
+                        .Assignment,
+                        .Plus,
+                        .Minus,
+                        .Multiplication =>
+                        {
+                            //break :blk self.parse_binary_expression(allocator, self, parent_node, left_expr, operator, new_precedence);
+                            unreachable;
+                        },
+                        .LeftParenthesis =>
+                        {
+                            var arguments_left_to_parse = self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .RightParenthesis;
+
+                            var argument_list = ArrayList(NodeID).init(self.allocator);
+
+                            while (arguments_left_to_parse)
+                            {
+                                const argument_id = self.parse_expression();
+                                argument_list.append(argument_id) catch unreachable;
+
+                                arguments_left_to_parse = !(self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .RightParenthesis);
+                                if (arguments_left_to_parse and (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ','))
+                                {
+                                    parser_error("Expected comma after argument in argument list\n", .{});
+                                }
+                            }
+
+                            if (self.get_and_consume_token(.operator).value != .RightParenthesis)
+                            {
+                                parser_error("Expected right parenthesis to finish argument list\n", .{});
+                            }
+
+                            const invoke_expression_id = self.scope_builder.invoke_expressions.items.len;
+                            self.scope_builder.invoke_expressions.append(.
+                                {
+                                    .arguments = argument_list.items,
+                                    .expression = left_expression,
+                                }) catch unreachable;
+
+                            break :blk invoke_expression_id;
+                        },
+                        .Declaration => 
+                        {
+                            // break :blk self.parse_declaration(allocator, parser, parent_node, left_expr);
+                            unreachable;
+                        },
+                        .LeftBracket =>
+                        {
+                            //break :blk self.parse_array_subscript(allocator, parser, parent_node, left_expr);
+                            unreachable;
+                        },
+                        .Dot =>
+                        {
+                            const field_access_expression_id = self.scope_builder.field_access_expressions.items.len;
+                            self.scope_builder.field_access_expressions.append(
+                                .{
+                                    .left_expression = left_expression,
+                                    .field_expression = self.parse_precedence(comptime Precedence.Call.increment()),
+                                }) catch unreachable;
+
+                            break :blk field_access_expression_id;
+                        },
+                        else => panic("operator not implemented: {}\n", .{operator}),
+                    }
+                };
+            }
+        }
+
+        return left_expression;
+    }
+
+    //fn parse_precedence(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, precedence: Precedence) *Node
+    //{
+        //const prefix_node = self.parse_prefix(allocator, parser, parent_node);
+        //var left_expr = prefix_node;
+
+        //while (true)
+        //{
+            //const token = parser.peek();
+            //const new_precedence = switch (token.value)
+            //{
+                //Token.ID.sign => sign_block:
+                //{
+                    //const sign = token.value.sign;
+                    //const sign_precedence = switch (sign)
+                    //{
+                        //'{' => Precedence.None,
+                        //';' => Precedence.None,
+                        //',' => Precedence.None,
+                        //'}' => Precedence.None,
+                        //else => panic("Precedence not implemented for sign {c}\n", .{sign}),
+                    //};
+
+                    //break :sign_block sign_precedence;
+                //},
+                //else => panic("Precedence not implemented for {}\n", .{token.value}),
+            //};
+
+            //log.debug("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
+        //}
+
+        //return left_expr;
+    //}
+    
+    //fn parse_prefix(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //const token = parser.peek();
+        //parser.consume();
+
+        //switch (token.value)
+        //{
+            //Token.ID.identifier =>
+            //{
+                //const identifier_name = token.value.identifier;
+                //const id_expr_node_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.identifier_expr = IdentifierExpression {
+                            //.name = identifier_name,
+                        //},
+                    //},
+                    //.parent = parent_node,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+                //const id_expr_node = self.append_and_get(id_expr_node_value);
+                //return id_expr_node;
+            //},
+            //Token.ID.int_lit =>
+            //{
+            //},
+            //Token.ID.operator =>
+            //{
+                //const operator = token.value.operator;
+                //switch (operator)
+                //{
+                    //// @Info: this is not array subscript, but array literal constant
+                    //Operator.LeftBracket =>
+                    //{
+                        //const array_lit_expr = self.parse_array_literal(allocator, parser, parent_node);
+                        //return array_lit_expr;
+                    //},
+                    //Operator.AddressOf,
+                    //Operator.Dereference =>
+                    //{
+                        //const unary_expr = self.parse_unary_expression(allocator, parser, parent_node, operator);
+                        //return unary_expr;
+                    //},
+                    //else => panic("ni: {}\n", .{operator}),
+                //}
+            //},
+            //Token.ID.sign =>
+            //{
+                //const sign = token.value.sign;
+                //switch (sign)
+                //{
+                    //'{' =>
+                    //{
+                        //const struct_lit_expr = self.parse_struct_literal(allocator, parser, parent_node);
+                        //return struct_lit_expr;
+                    //},
+                    //else => panic("ni: {c}\n", .{sign}),
+                //}
+            //},
+            //else => panic("Prefix functionality not implemented for {}\n", .{token.value}),
+        //}
+    //}
+
+    fn parse_statement(self: *Self) void
+    {
+        const next_token = self.lexer.tokens[self.lexer.next_index];
+        switch (next_token)
+        {
+            .identifier =>
+            {
+                const token_to_maybe_rectify = Token.identifier;
+                const identifier_name = self.get_and_consume_token(token_to_maybe_rectify).value;
+                print("Identifier name: {s}\n", .{identifier_name});
+
+                if (self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .Declaration)
+                {
+                    self.consume_token(.operator);
+
+
+                    //var var_decl_node_value = Node
+                    //{
+                    //.value = Node.Value {
+                    //.var_decl = VariableDeclaration {
+                    //.name = identifier_name,
+                    //// Info: These are set later 
+                    //.var_type =  undefined,
+                    //.var_scope =  block_node,
+                    //.backend_ref =  0,
+                    //.is_function_arg = false,
+                    //},
+                    //},
+                    //.parent = block_node,
+                    //.value_type = Node.ValueType.LValue,
+                    //.type = undefined,
+                    //};
+
+                    //var var_decl_node = self.append_and_get(var_decl_node_value);
+                    //if (self.expect_and_consume_operator(Operator.Assignment) == null)
+                    //{
+                    //var_decl_node.value.var_decl.var_type = self.parse_type(allocator, self, block_node);
+
+                    //if (self.expect_and_consume_operator(Operator.Assignment) == null)
+                    //{
+                    //panic("expected assignment after type in variable declaration\n", .{});
+                    //}
+                    //}
+                    //else
+                    //{
+                    //// no type information
+                    //panic("not implemented: var declaration without type information\n", .{});
+                    //}
+
+                    //var initialization_assignment: ?*Node = null;
+                    //// @Info: separate variable declaration and initialization
+                    //if (self.expect_sign(';') == null)
+                    //{
+                    //const id_expr = Node 
+                    //{
+                    //.value = Node.Value {
+                    //.identifier_expr = IdentifierExpression {
+                    //.name = identifier_name,
+                    //},
+                    //},
+                    //.value_type = Node.ValueType.LValue,
+                    //.parent = block_node,
+                    //.type = undefined,
+                    //};
+
+                    //const id_expr_node = self.append_and_get(id_expr);
+
+                    //initialization_assignment = self.parse_binary_expression(allocator, self, block_node, id_expr_node, Operator.Assignment, Precedence.Assignment);
+                    //}
+                    //else
+                    //{
+                    //// no initialization
+                    //panic("not implemented: var declaration without initialization\n", .{});
+                    //}
+
+                    //if (parser.expect_and_consume_sign(';') == null)
+                    //{
+                    //parser_error("Expected semicolon at the end of the statement\n", .{});
+                    //}
+                    //block_node.value.block_expr.statements.append(var_decl_node) catch {
+                    //panic("Failed to allocate memory for statement", .{});
+                    //};
+                    //self.current_function.value.function_decl.variables.append(var_decl_node) catch {
+                    //panic("Error allocating variable reference to function variable list\n", .{});
+                    //};
+                    //if (initialization_assignment) |assignment|
+                    //{
+                    //block_node.value.block_expr.statements.append(assignment) catch {
+                    //panic("Failed to allocate memory for statement", .{});
+                    //};
+                    //}
+
+                    unreachable;
+                }
+                else
+                {
+                    self.rectify(token_to_maybe_rectify);
+                    const identifier_expression = self.parse_expression_identifier();
+                    _ = identifier_expression;
+                    if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != ';')
+                    {
+                        parser_error("Expected semicolon at the end of identifier expression\n", .{});
+                    }
+
+                    self.scope_builder.statements.append(identifier_expression) catch unreachable;
+                }
+            },
+            .operator =>
+            {
+                const operator = self.get_token(.operator).value;
+
+                switch (operator)
+                {
+                    .Dereference =>
+                    {
+                        // @TODO: speed up this because we know we have a dereference operator
+                        const dereference_statement = self.parse_expression();
+                        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != ';')
+                        {
+                            parser_error("Expected semicolon at the end of identifier expression\n", .{});
+                        }
+
+                        self.scope_builder.statements.append(dereference_statement) catch unreachable;
+                    },
+                    .CompilerIntrinsic =>
+                    {
+                        self.consume_token(.operator);
+                        const after_intrinsic_token = self.lexer.tokens[self.lexer.next_index];
+                        assert(after_intrinsic_token == .keyword);
+                        const keyword = self.get_and_consume_token(.keyword).value;
+                        assert(keyword == .@"switch");
+                        self.parse_compile_time_switch();
+                    },
+                    else => panic("ni: {}\n", .{operator}),
+                }
+            },
+            else => panic("ni: {}\n", .{next_token}),
+        }
+    }
+
+    fn parse_scope(self: *Self) void
+    {
+        self.scope_builder = ScopeBuilder
+        {
+            .statements = ArrayList(NodeID).init(self.allocator),
+            .variable_declarations = ArrayList(VariableDeclaration).init(self.allocator),
+            .identifier_expressions = ArrayList(IdentifierExpression).init(self.allocator),
+            .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
+            .field_access_expressions = ArrayList(FieldAccessExpression).init(self.allocator),
+            .integer_literals = ArrayList(IntegerLiteral).init(self.allocator),
+        };
+
+        // @TODO: should we move this outside the function?
+        const expected_left_brace = self.lexer.tokens[self.lexer.next_index];
+        if (expected_left_brace != .sign and self.get_token(.sign).value != '{')
+        {
+            parser_error("Expected left brace to open up the function body\n", .{});
+        }
+
+        self.consume_token(.sign);
+
+        var next_token = self.lexer.tokens[self.lexer.next_index];
+        var block_ends = next_token == .sign and self.get_token(.sign).value == '}';
+
+        while (!block_ends):
+        ({
+            next_token = self.lexer.tokens[self.lexer.next_index];
+            block_ends = next_token == .sign and self.get_token(.sign).value == '}';
+        })
+        {
+            self.parse_statement();
+        }
+
+        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
+        {
+            parser_error("Expected closing brace for scope\n", .{});
+        }
+
+        //while (should_keep_parsing)
+        //{
+            //const token = parser.peek();
+
+            //switch (token.value)
+            //{
+                //Token.ID.keyword =>
+                //{
+                    //const keyword = token.value.keyword;
+                    //switch (keyword)
+                    //{
+                        //KeywordID.@"return" =>
+                        //{
+                            //const return_statement = self.parse_return(allocator, parser, block_node);
+                            //if (parser.expect_and_consume_sign(';') == null)
+                            //{
+                                //parser_error("Expected semicolon at the end of the statement\n", .{});
+                            //}
+                            //block_node.value.block_expr.statements.append(return_statement) catch {
+                                //panic("Failed to allocate memory for statement", .{});
+                            //};
+                        //},
+                        //KeywordID.@"for" =>
+                        //{
+                            //const for_st = self.parse_for(allocator, parser, block_node);
+                            //block_node.value.block_expr.statements.append(for_st) catch {
+                                //panic("Failed to allocate memory for statement", .{});
+                            //};
+
+                        //},
+                        //KeywordID.@"if" =>
+                        //{
+                            //const if_st = self.parse_if(allocator, parser, block_node);
+                            //block_node.value.block_expr.statements.append(if_st) catch {
+                                //panic("Failed to allocate memory for statement", .{});
+                            //};
+                        //},
+                        //KeywordID.@"break" =>
+                        //{
+                            //const break_st = self.parse_break(parser, block_node);
+                            //if (parser.expect_and_consume_sign(';') == null)
+                            //{
+                                //parser_error("Expected semicolon at the end of the statement\n", .{});
+                            //}
+                            //block_node.value.block_expr.statements.append(break_st) catch {
+                                //panic("Failed to allocate memory for statement", .{});
+                            //};
+                        //},
+                        //else =>
+                        //{
+                            //panic("Keyword unhandled: {}\n", .{keyword});
+                        //},
+                    //}
+
+                //},
+                //else =>
+                //{
+                    //panic("ni: {}\n", .{token.value});
+                //},
+            //}
+
+            //should_keep_parsing = has_braces and parser.expect_sign('}') == null;
+        //}
+
+        //if (has_braces)
+        //{
+            //const end = parser.expect_and_consume_sign('}');
+            //if (end == null)
+            //{
+                //parser_error("Expected end sign at the end of the block", .{});
+            //}
+        //}
+    //}
+    }
+
+    fn parse_type(self: *Self) NodeID
+    {
+        const next_token = self.lexer.tokens[self.lexer.next_index];
+        switch (next_token)
+        {
+            .identifier =>
+            {
+                const type_identifier = self.get_and_consume_token(.identifier).value;
+                for (self.module_builder.unresolved_types.items) |t, i|
+                {
+                    if (std.mem.eql(u8, type_identifier, t))
+                    {
+                        return i;
+                    }
+                }
+                const index = self.module_builder.unresolved_types.items.len;
+                self.module_builder.unresolved_types.append(type_identifier) catch unreachable;
+                return index;
+            },
+            else => panic("ni: {}\n", .{next_token}),
+        }
+        //fn parse_type(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: ?*Node) *Node
+        //{
+        //log.debug("Parsing type...\n", .{});
+        //const next_token = parser.peek();
+        //parser.consume();
+
+        //switch (next_token.value)
+        //{
+        //Token.ID.identifier =>
+        //{
+        //const type_name = next_token.value.identifier;
+        //const type_node_value = Node {
+        //.value = Node.Value {
+        //.type_identifier = TypeIdentifier {
+        //.value = TypeIdentifier.Value {
+        //.simple = type_name,
+        //},
+        //},
+        //},
+        //.parent = parent_node,
+        //.value_type = Node.ValueType.LValue,
+        //.type = undefined,
+        //};
+
+        //const type_node = self.append_and_get(type_node_value);
+        //return type_node;
+        //},
+        //Token.ID.keyword =>
+        //{
+        //const keyword = next_token.value.keyword;
+
+        //switch (keyword)
+        //const 
+        //{
+        //KeywordID.@"struct" =>
+        //{
+        //if (parser.expect_and_consume_sign('{') == null)
+        //{
+        //parser_error("Error: expected '{c}' at the beginning of the struct\n", .{'{'});
+        //}
+
+        //const struct_type_node = Node
+        //{
+        //.value = Node.Value {
+        //.type_identifier = TypeIdentifier {
+        //.value = TypeIdentifier.Value {
+        //.structure = TypeIdentifier.Struct {
+        //.fields = NodeRefBuffer.init(allocator),
+        //.name = "",
+        //},
+        //},
+        //},
+        //},
+        //.parent = parent_node,
+        //.value_type = Node.ValueType.RValue,
+        //.type = undefined,
+        //};
+
+        //var result = self.append_and_get(struct_type_node);
+
+        //if (parser.expect_and_consume_sign('}') == null)
+        //{
+        //while (true)
+        //{
+        //const field = self.parse_expression(allocator, parser, result);
+        //result.value.type_identifier.value.structure.fields.append(field) catch {
+        //panic("Error allocating memory for struct field\n", .{});
+        //};
+
+        //const token = parser.peek();
+        //parser.consume();
+
+        //if (token.value == Token.ID.sign and token.value.sign == '}')
+        //{
+        //break;
+        //}
+        //else if (token.value == Token.ID.sign and token.value.sign != ',')
+        //{
+        //parser_error("Expected comma after argument. Found: {}\n", .{token.value});
+        //}
+        //else
+        //{
+        //if (parser.expect_and_consume_sign('}') != null)
+        //{
+        //break;
+        //}
+        //}
+        //}
+        //}
+        //else
+        //{
+        //parser_error("Empty struct is not allowed\n", .{});
+        //}
+
+        //return result;
+        //},
+        //else => panic("ni: {}\n", .{keyword}),
+        //}
+        //},
+        //Token.ID.operator =>
+        //{
+        //const operator = next_token.value.operator;
+        //switch (operator)
+        //{
+        //Operator.AddressOf =>
+        //{
+        //const type_node_value = Node {
+        //.value = Node.Value {
+        //.type_identifier = TypeIdentifier {
+        //.value = TypeIdentifier.Value {
+        //.pointer = TypeIdentifier.Pointer {
+        //.type = self.parse_type(allocator, parser, parent_node),
+        //},
+        //},
+        //},
+        //},
+        //.parent = parent_node,
+        //.value_type = Node.ValueType.LValue,
+        //.type = undefined,
+        //};
+
+        //const type_node = self.append_and_get(type_node_value);
+        //return type_node;
+        //},
+        //Operator.LeftBracket =>
+        //{
+        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
+        //{
+        //var type_node_value = Node {
+        //.value = Node.Value {
+        //.type_identifier = TypeIdentifier {
+        //.value = TypeIdentifier.Value {
+        //.array = TypeIdentifier.Array {
+        //.type = undefined,
+        //.len_expr = undefined,
+        //},
+        //},
+        //},
+        //},
+        //.parent = parent_node,
+        //.value_type = Node.ValueType.LValue,
+        //.type = undefined,
+        //};
+
+        //const type_node = self.append_and_get(type_node_value);
+
+        //type_node.value.type_identifier.value.array.len_expr = self.parse_expression(allocator, parser, type_node);
+
+        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
+        //{
+        //parser_error("Expected ']' in array type\n", .{});
+        //}
+
+        //type_node.value.type_identifier.value.array.type = self.parse_type(allocator, parser, parent_node);
+
+        //return type_node;
+        //}
+        //else
+        //{
+        //// Slice
+        //const slice_type = self.parse_type(allocator, parser, parent_node);
+        //panic("This is a slice of type: {}\n", .{slice_type});
+        //}
+        //},
+        //else => panic("ni: {}\n", .{operator}),
+        //}
+        //},
+        //else => panic("not implemented: {}\n", .{next_token.value}),
+        //}
+        //}
+    }
+    
+    fn parse_compile_time_switch(self: *Self) void
+    {
+        if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_and_consume_token(.operator).value != .LeftParenthesis)
+        {
+            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+        }
+
+        switch (self.lexer.tokens[self.lexer.next_index])
+        {
+            .operator =>
+            {
+                const operator = self.get_and_consume_token(.operator).value;
+                if (operator == .CompilerIntrinsic)
+                {
+                    if (self.parse_compile_time_expression() == @enumToInt(BuiltinID.os))
+                    {
+                        if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_and_consume_token(.operator).value != .RightParenthesis)
+                        {
+                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                        }
+
+                        const os = std.builtin.target.os.tag;
+                        _ = os;
+
+                        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '{')
+                        {
+                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                        }
+
+                        var right_brace_found = false;
+                        var found_right_case = false;
+
+                        while (!right_brace_found): (right_brace_found = self.lexer.tokens[self.lexer.next_index] == .sign and self.get_token(.sign).value == '}')
+                        {
+                            if (!found_right_case)
+                            {
+                                const first_case_token = self.lexer.tokens[self.lexer.next_index];
+                                if (!(first_case_token == .operator and self.get_and_consume_token(.operator).value == .Dot))
+                                {
+                                    parser_error("Expected dot operator\n", .{});
+                                }
+
+                                assert(self.lexer.tokens[self.lexer.next_index] == .identifier);
+                                const os_identifier = self.get_and_consume_token(.identifier).value;
+
+                                const os_enum = std.meta.stringToEnum(std.Target.Os.Tag, os_identifier) orelse
+                                {
+                                    parser_error("Unknown operating system: {s}\n", .{os_identifier});
+                                };
+
+
+                                if (os_enum == os)
+                                {
+                                    found_right_case = true;
+                                    const next_one = self.lexer.tokens[self.lexer.next_index];
+                                    if (!(next_one == .operator and self.get_and_consume_token(.operator).value == .Declaration))
+                                    {
+                                        parser_error("Expected colon after switch case identifier\n", .{});
+                                    }
+
+                                    // @TODO: we are trapping here. We should be parsing a new scope but we are not ready to do it yet
+                                    const found_lbrace = self.lexer.tokens[self.lexer.next_index] == .sign and self.get_token(.sign).value == '{';
+                                    if (found_lbrace)
+                                    {
+                                        self.consume_token(.sign);
+
+                                        var next_token = self.lexer.tokens[self.lexer.next_index];
+                                        var block_ends = next_token == .sign and self.get_token(.sign).value == '}';
+                                        while (!block_ends):
+                                            ({
+                                                next_token = self.lexer.tokens[self.lexer.next_index];
+                                                block_ends = next_token == .sign and self.get_token(.sign).value == '}';
+                                            })
+                                        {
+                                            self.parse_statement();
+                                        }
+
+                                        if (!(self.lexer.tokens[self.lexer.next_index] == .sign and self.get_and_consume_token(.sign).value == '}'))
+                                        {
+                                            parser_error("Expected right brace to close the switch case\n", .{});
+                                        }
+
+                                        if (!(self.lexer.tokens[self.lexer.next_index] == .sign and self.get_and_consume_token(.sign).value == ','))
+                                        {
+                                            parser_error("Expected right brace to close the switch case\n", .{});
+                                        }
+                                    }
+                                    else
+                                    {
+                                        self.parse_statement();
+                                    }
+                                }
+                                else
+                                {
+                                    unreachable;
+                                }
+                            }
+                            else
+                            {
+                                // @TODO: this is cheating, we should make this robust
+                                //
+                                var open_braces: u32 = 1;
+                                while (open_braces > 0)
+                                {
+                                    const next_token = self.lexer.tokens[self.lexer.next_index];
+                                    switch (next_token)
+                                    {
+                                        .operator => self.consume_token(.operator),
+                                        .identifier => self.consume_token(.identifier),
+                                        .keyword => self.consume_token(.keyword),
+                                        .sign =>
+                                        {
+                                            const sign = self.get_token(.sign).value;
+                                            if (sign == '}')
+                                            {
+                                                print("Closing braces...\n", .{});
+                                                open_braces -= 1;
+                                                if (open_braces > 0)
+                                                {
+                                                    self.consume_token(.sign);
+                                                }
+                                            }
+                                            else if (sign == '{')
+                                            {
+                                                print("Opening braces...\n", .{});
+                                                open_braces += 1;
+                                                self.consume_token(.sign);
+                                            }
+                                            else
+                                            {
+                                                self.consume_token(.sign);
+                                            }
+                                        },
+                                        else => panic("ni Token: {}\n", .{next_token}),
+                                    }
+                                }
+                            }
+                        }
+
+                        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
+                        {
+                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                        }
+                    }
+                    else
+                    {
+                        unreachable;
+                    }
+                }
+                else
+                {
+                    unreachable;
+                }
+            },
+            else => unreachable,
+        }
+    }
+
+    fn parse_compile_time_expression(self: *Self) NodeID
+    {
+        switch (self.lexer.tokens[self.lexer.next_index])
+        {
+            .identifier =>
+            {
+                const identifier = self.get_and_consume_token(.identifier).value;
+                if (std.mem.eql(u8, identifier, "os"))
+                {
+                    return @enumToInt(BuiltinID.os);
+                }
+                else unreachable;
+            },
+            else => unreachable,
+        }
+    }
+
+    fn get_function_type(self: *Self, return_type: NodeID, argument_types: []NodeID, attributes: u64) NodeID
+    {
+        outer_loop: for (self.module_builder.function_types.items) |ft, i|
+        {
+            if (return_type != ft.return_type) continue;
+            if (attributes != ft.attributes) continue;
+
+            for (ft.argument_types) |arg_type, arg_i|
+            {
+                const arg_t = argument_types[arg_i];
+                if (arg_type != arg_t)
+                {
+                    continue :outer_loop;
+                }
+            }
+
+            if (true) panic("deal with id generation properly\n", .{});
+            return i;
+        }
+
+        return 0;
+    }
+};
+
+pub const InvokeExpression = struct
+{
+    arguments: []NodeID,
+    expression: NodeID,
+};
+
+pub const ImportedModule = struct
+{
+    name: []const u8,
+    id: NodeID,
+};
+
+pub const Module = struct
+{
+    internal_functions: []Function.Internal,
+    external_functions: []Function.External,
+    imported_modules: []ImportedModule,
+    unresolved_types: []UnresolvedType,
+    pointer_types: []PointerType,
+    slice_types: []SliceType,
+    function_types: []FunctionType,
+    array_types: []ArrayType,
+    struct_types: []StructType,
+    name: []const u8,
+};
+
+pub const AST = struct
+{
+    modules: ArrayList(Module),
+    nb: NodeBuffer,
+
+    const Self = @This();
+
+    pub fn parse(allocator: *Allocator, source_filename: []const u8, target: std.Target) Self
+    {
+        log.debug("\n==============\nPARSER\n==============\n\n", .{});
+
+        var ast = AST
+        {
+            .nb = NodeBuffer.init(allocator) catch unreachable,
+            .modules = ArrayList(Module).init(allocator),
+        };
+
+        const runtime_index = ast.lex_and_parse_module(allocator, "lib/runtime.rns", target);
+        _ = runtime_index;
+        const main_module = ast.lex_and_parse_module(allocator, source_filename, target);
+        _ = main_module;
+
+        return ast;
+    }
+
+    pub fn lex_and_parse_module(self: *Self, allocator: *Allocator, source_file: []const u8, target: std.Target) NodeID
+    {
+        _ = target;
+
+        for (self.modules.items) |*module, i|
+        {
+            if (std.mem.eql(u8, module.name, source_file))
+            {
+                print("Already import module \"{s}\" with ID {}\n", .{source_file, i});
+                return i;
+            }
+        }
+
+        const module_index = self.modules.items.len;
+        self.modules.items.len += 1;
+        self.modules.ensureTotalCapacity(self.modules.items.len) catch unreachable;
+
+
+        print("Parsing module: \"{s}\" with ID {}...\n", .{source_file, module_index});
+
+        const file_content = std.fs.cwd().readFileAlloc(allocator, source_file, 0xffffffff) catch unreachable;
+        const lexer = Lexer.lexical_analyze(allocator, file_content);
+
+        var parser = ModuleParser
+        {
+            .lexer = .
+            {
+                .next_index = 0,
+                .counters = std.mem.zeroes(ModuleParser.CountersType),
+                .tokens = lexer.tokens,
+                .int_literals = lexer.int_literals,
+                .char_literals = lexer.char_literals,
+                .string_literals = lexer.string_literals,
+                .identifiers = lexer.identifiers,
+                .keywords = lexer.keywords,
+                .signs = lexer.signs,
+                .operators = lexer.operators,
+            },
+            // @TODO: substitute these for indices to concrete arrays
+            .function_builder = undefined,
+            // @TODO: substitute these for indices to concrete arrays
+            .scope_builder = undefined,
+            .allocator = allocator,
+            .module_builder = .
+            {
+                .internal_functions = ArrayList(Function.Internal).init(allocator),
+                .external_functions = ArrayList(Function.External).init(allocator),
+                .imported_modules = ArrayList(ImportedModule).init(allocator),
+                .unresolved_types = ArrayList(UnresolvedType).init(allocator),
+                .pointer_types = ArrayList(PointerType).init(allocator),
+                .slice_types = ArrayList(SliceType).init(allocator),
+                .function_types = ArrayList(FunctionType).init(allocator),
+                .array_types = ArrayList(ArrayType).init(allocator),
+                .struct_types = ArrayList(StructType).init(allocator),
+            },
+        };
+
+        const token_count = parser.lexer.tokens.len;
+        while (parser.lexer.next_index < token_count)
+        {
+            const tld_name_token = parser.lexer.tokens[parser.lexer.next_index];
+            if (tld_name_token != .identifier)
+            {
+                parser_error("Top level declarations must start with an identifier/name\n", .{});
+            }
+
+            const tld_name = parser.get_and_consume_token(.identifier).value;
+            _ = tld_name;
+
+            if (parser.lexer.next_index + 2 >= parser.lexer.tokens.len)
+            {
+                parser_error("End of the file while parsing top level declaration\n", .{});
+            }
+
+            const next_token = parser.lexer.tokens[parser.lexer.next_index];
+            if (next_token == .operator)
+            {
+                const operator = parser.get_and_consume_token(.operator);
+
+                if (operator.value == .Constant)
+                {
+                    const after_const_token = parser.lexer.tokens[parser.lexer.next_index];
+                    if (after_const_token == .operator)
+                    {
+                        const after_const_operator = parser.get_and_consume_token(.operator);
+                        if (after_const_operator.value == .LeftParenthesis)
+                        {
+                            print("Parsing function {s}...\n", .{tld_name});
+                            const left_parenthesis_next_token = parser.lexer.tokens[parser.lexer.next_index];
+                            var argument_name_list = ArrayList([]const u8).init(parser.allocator);
+                            var argument_type_list = ArrayList(NodeID).init(parser.allocator);
+                            var arguments_left_to_parse = blk:
+                            {
+                                if (left_parenthesis_next_token == .operator)
+                                {
+                                    const left_parenthesis_next_operator = parser.get_token(.operator);
+                                    if (left_parenthesis_next_operator.value == .RightParenthesis)
+                                    {
+                                        break :blk false;
+                                    }
+                                }
+
+                                break :blk true;
+                            };
+
+                            while (arguments_left_to_parse)
+                            {
+                                const arg_first_token = parser.lexer.tokens[parser.lexer.next_index];
+                                if (arg_first_token != .identifier)
+                                {
+                                    parser_error("Expected argument name; found: {}\n", .{arg_first_token});
+                                }
+
+                                const argument_name = parser.get_and_consume_token(.identifier).value;
+                                const expected_colon = parser.lexer.tokens[parser.lexer.next_index];
+                                if ((expected_colon == .operator and parser.get_token(.operator).value != .Declaration) or expected_colon != .operator)
+                                {
+                                    parser_error("Expected colon, found: {}\n", .{expected_colon});
+                                }
+                                parser.consume_token(.operator);
+
+                                const argument_type = parser.parse_type();
+                                argument_name_list.append(argument_name) catch unreachable;
+                                argument_type_list.append(argument_type) catch unreachable;
+
+                                const after_arg_token = parser.lexer.tokens[parser.lexer.next_index];
+                                arguments_left_to_parse = !(after_arg_token == .operator and parser.get_token(.operator).value == .RightParenthesis);
+                                if (arguments_left_to_parse)
+                                {
+                                    if (!(after_arg_token == .sign and parser.get_token(.sign).value == ','))
+                                    {
+                                        parser_error("Expected comma after function argument\n", .{});
+                                    }
+                                }
+                            }
+
+                            const expected_right_parenthesis = parser.lexer.tokens[parser.lexer.next_index];
+                            if (!(expected_right_parenthesis == .operator and parser.get_token(.operator).value == .RightParenthesis))
+                            {
+                                parser_error("Expected right parenthesis after function argument list\n", .{});
+                            }
+
+                            parser.consume_token(.operator);
+
+                            const arrow_or = parser.lexer.tokens[parser.lexer.next_index];
+                            const return_type: NodeID = if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow) parser.parse_type() else 0;
+                            print("Return type: {}\n", .{return_type});
+
+                            var next = parser.lexer.tokens[parser.lexer.next_index];
+                            var attributes: u64 = 0;
+                            var extern_library_name: []const u8 = undefined;
+
+                            // Loop around a different premise, this is error-prone
+                            while (next == .keyword) : (next = parser.lexer.tokens[parser.lexer.next_index])
+                            {
+                                const kw = parser.get_and_consume_token(.keyword).value;
+                                switch (kw)
+                                {
+                                    .@"noreturn" => attributes |= 1 << @enumToInt(Function.Attribute.@"noreturn"),
+                                    .@"extern" =>
+                                    {
+                                        print("Parsing extern function\n", .{});
+                                        attributes |= 1 << @enumToInt(Function.Attribute.@"extern");
+                                        if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .LeftParenthesis)
+                                        {
+                                            parser_error("In this language external symbols must be defined along with the library name they belong to\n", .{});
+                                        }
+
+                                        if (parser.lexer.tokens[parser.lexer.next_index] != .str_lit)
+                                        {
+                                            parser_error("Expected library name after the function being declared extern, found: {}\n", .{parser.lexer.tokens[parser.lexer.next_index]});
+                                        }
+
+                                        extern_library_name = parser.get_and_consume_token(.str_lit).value;
+                                        if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .RightParenthesis)
+                                        {
+                                            parser_error("Expected right parenthesis after extern declaration\n", .{});
+                                        }
+
+                                        print("Library name: {s}\n", .{extern_library_name});
+                                    },
+                                    else => panic("ni: {}\n", .{kw}),
+                                }
+                            }
+
+                            const has_body = (attributes & (1 << @enumToInt(Function.Attribute.@"extern"))) >> @enumToInt(Function.Attribute.@"extern") == 0;
+                            print("Attributes: {x}\n", .{attributes});
+                            print("Has body: {}\n", .{has_body});
+
+                            const function_type = parser.get_function_type(return_type, argument_type_list.items, attributes);
+
+                            if (has_body)
+                            {
+                                const current_function_index = parser.module_builder.internal_functions.items.len;
+                                _ = current_function_index;
+                                parser.module_builder.internal_functions.append(Function.Internal
+                                    {
+                                        .base = .
+                                        {
+                                            .argument_names = argument_name_list.items,
+                                            .name = tld_name,
+                                            .function_type = function_type,
+                                        },
+                                    }) catch unreachable;
+                                parser.function_builder = std.mem.zeroes(ModuleParser.FunctionBuilder);
+                                parser.parse_scope();
+                            }
+                            else
+                            {
+                                if (parser.lexer.tokens[parser.lexer.next_index] != .sign)
+                                {
+                                    parser_error("Expected semicolon after extern function declaration\n", .{});
+                                }
+                                const foo = parser.get_and_consume_token(.sign);
+                                print("Foo value: {c}\n", .{foo.value});
+                                if (foo.value != ';')
+                                {
+                                    parser_error("Expected semicolon after extern function declaration\n", .{});
+                                }
+
+                                parser.module_builder.external_functions.append(.{
+                                    .base = .
+                                    {
+                                        .argument_names = argument_name_list.items,
+                                        .name = tld_name,
+                                        .function_type = function_type,
+                                    },
+                                    .library = extern_library_name,
+                                }) catch unreachable;
+                            }
+                        }
+                        else if (after_const_operator.value == .CompilerIntrinsic)
+                        {
+                            const intrinsic_name_token = parser.lexer.tokens[parser.lexer.next_index];
+                            if (intrinsic_name_token != .identifier)
+                            {
+                                parser_error("Expected identifier after intrinsic operator\n", .{});
+                            }
+
+                            const intrinsic_name = parser.get_and_consume_token(.identifier).value;
+                            assert(std.mem.eql(u8, intrinsic_name, "import"));
+
+                            const expected_left_parenthesis = parser.lexer.tokens[parser.lexer.next_index];
+                            if (expected_left_parenthesis != .operator or parser.get_and_consume_token(.operator).value != .LeftParenthesis)
+                            {
+                                parser_error("Expected left parenthesis after import intrinsic\n", .{});
+                            }
+
+                            const file_name_token = parser.lexer.tokens[parser.lexer.next_index];
+                            if (file_name_token != .str_lit)
+                            {
+                                parser_error("Expected string literal with the file name to be imported\n", .{});
+                            }
+
+                            const import_file_name = parser.get_and_consume_token(.str_lit).value;
+                            print("File name to be imported: {s}\n", .{import_file_name});
+
+                            if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .RightParenthesis)
+                            {
+                                parser_error("Expected right parenthesis after import file name\n", .{});
+                            }
+
+                            if (parser.lexer.tokens[parser.lexer.next_index] != .sign or parser.get_and_consume_token(.sign).value != ';')
+                            {
+                                parser_error("Expected semicolon after import statement\n", .{});
+                            }
+
+                            const import_module_id = self.lex_and_parse_module(parser.allocator, import_file_name, target);
+                            parser.module_builder.imported_modules.append(.{
+                                .name = tld_name,
+                                .id = import_module_id,
+                            }) catch unreachable;
+                        }
+                        else 
+                        {
+                            parser_error("Unexpected operator after constant declaration: {}\n", .{after_const_operator});
+                        }
+                    }
+                    else if (after_const_token == .keyword)
+                    {
+                        const keyword = parser.get_and_consume_token(.keyword);
+                        if (keyword.value == .@"struct")
+                        {
+                    //const struct_type = self.parse_type(parser.allocator, parser, null);
+                    //struct_type.value.type_identifier.value.structure.name = name;
+                    //self.type_declarations.append(struct_type) catch {
+                        //panic("Error allocating memory for type declaration\n", .{});
+                    //};
+                            unreachable;
+                        }
+                        else
+                        {
+                            unreachable;
+                        }
+                    }
+                    else
+                    {
+                        unreachable;
+                    }
+                }
+                else if (operator.value == .Declaration)
+                {
+                    const decl_token = parser.lexer.tokens[parser.lexer.next_index];
+                    if (decl_token != .operator)
+                    {
+                        parser_error("Expected operator\n",.{});
+                    }
+                    const decl_operator = parser.get_and_consume_token(.operator);
+                    if (decl_operator.value != .CompilerIntrinsic)
+                    {
+                        parser_error("Expected compiler intrinsic operator\n", .{});
+                    }
+                    const intrinsic_token = parser.lexer.tokens[parser.lexer.next_index];
+                    _ = intrinsic_token;
+                    // @TODO: define the range of intrinsics which are valid here in order to get better performance
+                    panic("Here we should be parsing the intrinsic\n", .{});
+                }
+                else
+                {
+                    unreachable;
+                }
+            }
+            else
+            {
+                parser_error("unexpected token\n", .{});
+            }
+        }
+
+        self.modules.items[module_index] = Module
+        {
+            .internal_functions = parser.module_builder.internal_functions.items,
+            .external_functions = parser.module_builder.external_functions.items,
+            .imported_modules = parser.module_builder.imported_modules.items,
+            .unresolved_types = parser.module_builder.unresolved_types.items,
+            .pointer_types = parser.module_builder.pointer_types.items,
+            .slice_types = parser.module_builder.slice_types.items,
+            .function_types = parser.module_builder.function_types.items,
+            .array_types = parser.module_builder.array_types.items,
+            .struct_types = parser.module_builder.struct_types.items,
+            .name = source_file,
+        };
+
+        return module_index;
+    }
+
+    pub fn import_module(self: *Self, allocator: *Allocator, source_file: []const u8, target: std.Target) void
+    {
+        if (!not_found)
+        {
+            self.lex_and_parse_module(allocator, source_file, target);
+        }
+    }
+    
+    fn parse_function_declaration(self: *Parser, allocator: *Allocator, parser: *ModuleParser) !?*Node
+    {
+        var function_node_value = Node
+        {
+            .value = Node.Value
+            {
+                .function_decl = FunctionDeclaration
+                {
+                    .name = "",
+                    .arguments = ArrayList(*Node).init(allocator),
+                    .blocks = ArrayList(*Node).init(allocator),
+                    .variables = ArrayList(*Node).init(allocator),
+                    .type = undefined,
+                },
+                },
+            .parent = null,
+            .value_type = Node.ValueType.LValue,
+            .type = undefined,
+        };
+
+        var function_node = self.append_and_get(function_node_value);
+        self.current_function = function_node;
+
+        var next_token = parser.lexer.tokens[parser.lexer.next_index];
+        var arg_types = NodeRefBuffer.init(allocator);
+        var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
+
+        while (args_left_to_parse)
+        {
+            const arg_node = self.parse_expression(allocator, parser, function_node);
+            if (arg_node.value != Node.ID.var_decl)
+            {
+                parser_error("Error parsing argument\n", .{});
+            }
+
+            arg_types.append(arg_node.value.var_decl.var_type) catch {
+                panic("Error allocating memory for argument type\n", .{});
+            };
+
+            arg_node.value.var_decl.is_function_arg = true;
+            try function_node.value.function_decl.arguments.append(arg_node);
+
+            next_token = parser.lexer.tokens[parser.lexer.next_index];
+            args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
+
+            if (args_left_to_parse)
+            {
+                const comma = parser.expect_and_consume_sign(',');
+                if (comma == null)
+                {
+                    // print error
+                    parser_error("Expected comma after function argument", .{});
+                }
+            }
+        }
+
+        if (parser.expect_and_consume_operator(Operator.RightParenthesis) == null)
+        {
+            parser_error("Expected end of argument list\n", .{});
+        }
+
+        var return_type: ?*Node = null;
+        if (parser.expect_and_consume_operator(Operator.Arrow) != null)
+        {
+            return_type = self.parse_type(allocator, parser, null);
+        }
+
+        var function_type_node_value = Node
+        {
+            .value = Node.Value {
+                .type_identifier = TypeIdentifier {
+                    .value = TypeIdentifier.Value {
+                        .function = TypeIdentifier.Function {
+                            .arg_types = arg_types,
+                            .return_type = return_type,
+                        },
+                        },
+                    },
+                    },
+                .parent = function_node,
+                .value_type = Node.ValueType.RValue,
+                .type = undefined,
+            };
+
+        log.debug("arg type count in the parser: {}\n", .{arg_types.items.len});
+
+        function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
+
+        var block_node_value = Node
+        {
+            .value = Node.Value
+            {
+                .block_expr = BlockExpression
+                {
+                    .statements = NodeRefBuffer.init(allocator),
+                    .id = BlockExpression.ID.Function,
+                },
+                },
+            .parent = function_node,
+            .value_type = Node.ValueType.RValue,
+            .type = undefined,
+        };
+
+        var block_node = self.append_and_get(block_node_value);
+        self.current_function.value.function_decl.blocks.append(block_node) catch {
+            panic("Failed to allocate memory for block node reference\n", .{});
+        };
+
+        self.block(allocator, parser, block_node, false);
+
+        return function_node;
+    }
 };
 
 pub const Node = struct
@@ -255,7 +1815,6 @@ pub const Node = struct
         unary_expr: UnaryExpression,
         binary_expr: BinaryExpression,
         return_expr: ReturnExpression,
-        type_identifier: TypeIdentifier,
         identifier_expr: IdentifierExpression,
         resolved_identifier: *Node,
         field_expr: *Type.Struct.Field,
@@ -266,6 +1825,7 @@ pub const Node = struct
         break_expr: BreakExpression,
         array_subscript_expr: ArraySubscriptExpression,
         field_access_expr: FieldAccessExpression,
+        module: Module,
     };
 
     pub const ID = enum
@@ -280,7 +1840,6 @@ pub const Node = struct
         binary_expr,
         return_expr,
         identifier_expr,
-        type_identifier,
         resolved_identifier,
         field_expr,
         invoke_expr,
@@ -290,6 +1849,7 @@ pub const Node = struct
         break_expr,
         array_subscript_expr,
         field_access_expr,
+        module,
     };
 
     pub const ValueType = enum
@@ -526,109 +2086,14 @@ pub const Node = struct
             {
                 try std.fmt.format(writer, "{}", .{self.value.field_expr});
             },
+            Node.ID.module =>
+            {
+            },
             //else => panic("Not implemented: {}\n", .{self.value}),
         }
     }
 };
 
-const TokenConsumer = struct
-{
-    tokens: []const Token,
-    next_index: usize,
-
-    fn peek(self: *TokenConsumer) Token
-    {
-        const token = self.tokens[self.next_index];
-        return token;
-    }
-
-    fn consume(self: *TokenConsumer) void 
-    {
-        const consumed_token = self.tokens[self.next_index];
-        log.debug("Consuming {}\n", .{consumed_token});
-        self.next_index += 1;
-    }
-
-    fn expect_and_consume(self: *TokenConsumer, id: Token.ID) ?Token
-    {
-        const token = self.tokens[self.next_index];
-
-        if (token.value == id)
-        {
-            self.consume();
-            return token;
-        }
-
-        return null;
-    }
-
-    fn expect_operator(self: *TokenConsumer, operator: Operator) ?Token
-    {
-        const token = self.tokens[self.next_index];
-        if (token.value == Token.ID.operator and token.value.operator == operator)
-        {
-            return token;
-        }
-
-        return null;
-    }
-
-    fn expect_sign(self: *TokenConsumer, sign: u8) ?Token
-    {
-        const token = self.tokens[self.next_index];
-        if (token.value == Token.ID.sign and token.value.sign == sign)
-        {
-            return token;
-        }
-
-        return null;
-    }
-
-    fn expect_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token
-    {
-        const token = self.tokens[self.next_index];
-        if (token.value == Token.ID.keyword and token.value.keyword == keyword)
-        {
-            return token;
-        }
-
-        return null;
-    }
-
-    fn expect_and_consume_sign(self: *TokenConsumer, sign: u8) ?Token
-    {
-        const token = self.expect_sign(sign);
-        if (token != null)
-        {
-            self.consume();
-        }
-
-        return token;
-    }
-
-
-    fn expect_and_consume_keyword(self: *TokenConsumer, keyword: KeywordID) ?Token
-    {
-        const token = self.expect_keyword(keyword);
-        if (token != null)
-        {
-            self.consume();
-        }
-
-        return token;
-    }
-
-    fn expect_and_consume_operator(self: *TokenConsumer, operator: Operator) ?Token
-    {
-        const token = self.expect_operator(operator);
-        if (token != null)
-        {
-            self.consume();
-        }
-
-        return token;
-    }
-};
 
 const Intrinsic = struct
 {
@@ -658,1786 +2123,893 @@ const Intrinsic = struct
     };
 };
 
-const Parser = struct
+const Precedence = enum
 {
-    nb: NodeBuffer,
-    current_function: *Node,
-    current_block: *Node,
+    None,
+    Assignment,
+    Logical,
+    Compare,
+    LightArithmetic, // add, sub
+    HeavyArithmetic, // mul, div
+    Unary,
+    Call,
+    Declaration,
+    Primary,
 
-    function_declarations: NodeRefBuffer,
-    type_declarations: NodeRefBuffer,
-    syscalls: NodeRefBuffer,
-
-    fn append_and_get(self: *Parser, node: Node) *Node
+    fn increment(comptime self: Precedence) Precedence
     {
-        const result = self.nb.append(node) catch {
-            panic("Couldn't allocate memory for node", .{});
-        };
-        log.debug("new node:\n\n{s}\n\n", .{@tagName(result.value)});
-        return result;
+        return comptime @intToEnum(Precedence, (@enumToInt(self) + 1));
     }
+};
 
-    fn parse_type(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: ?*Node) *Node
-    {
-        log.debug("Parsing type...\n", .{});
-        const next_token = consumer.peek();
-        consumer.consume();
+//const Parser = struct
+//{
+    //current_function: *Node,
+    //current_block: *Node,
 
-        switch (next_token.value)
-        {
-            Token.ID.identifier =>
-            {
-                const type_name = next_token.value.identifier;
-                const type_node_value = Node {
-                    .value = Node.Value {
-                        .type_identifier = TypeIdentifier {
-                            .value = TypeIdentifier.Value {
-                                .simple = type_name,
-                            },
-                        },
-                    },
-                    .parent = parent_node,
-                    .value_type = Node.ValueType.LValue,
-                    .type = undefined,
-                };
+    //ast: *AST,
 
-                const type_node = self.append_and_get(type_node_value);
-                return type_node;
-            },
-            Token.ID.keyword =>
-            {
-                const keyword = next_token.value.keyword;
+    //const Self = @This();
 
-                switch (keyword)
-                {
-                    KeywordID.@"struct" =>
-                    {
-                        if (consumer.expect_and_consume_sign('{') == null)
-                        {
-                            parser_error("Error: expected '{c}' at the beginning of the struct\n", .{'{'});
-                        }
 
-                        const struct_type_node = Node
-                        {
-                            .value = Node.Value {
-                                .type_identifier = TypeIdentifier {
-                                    .value = TypeIdentifier.Value {
-                                        .structure = TypeIdentifier.Struct {
-                                            .fields = NodeRefBuffer.init(allocator),
-                                            .name = "",
-                                        },
-                                    },
-                                },
-                            },
-                            .parent = parent_node,
-                            .value_type = Node.ValueType.RValue,
-                            .type = undefined,
-                        };
 
-                        var result = self.append_and_get(struct_type_node);
+    //fn parse_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //const result = self.parse_precedence(allocator, parser, parent_node, Precedence.Assignment);
+        //return result;
+    //}
 
-                        if (consumer.expect_and_consume_sign('}') == null)
-                        {
-                            while (true)
-                            {
-                                const field = self.parse_expression(allocator, consumer, result);
-                                result.value.type_identifier.value.structure.fields.append(field) catch {
-                                    panic("Error allocating memory for struct field\n", .{});
-                                };
+    //fn parse_unary_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, operator: Operator) *Node
+    //{
+        //const unary_expr_id = switch (operator)
+        //{
+            //Operator.AddressOf => UnaryExpression.ID.AddressOf,
+            //Operator.Dereference => UnaryExpression.ID.Dereference,
+            //else => panic("ni: {}\n", .{operator}),
+        //};
 
-                                const token = consumer.peek();
-                                consumer.consume();
+        //const unary_expr_node = Node {
+            //.value = Node.Value {
+                //.unary_expr = UnaryExpression 
+                //{
+                    //.node_ref = undefined,
+                    //.id = unary_expr_id,
+                //},
+            //},
+            //.value_type = Node.ValueType.RValue,
+            //.parent = parent_node,
+            //.type = undefined,
+        //};
 
-                                if (token.value == Token.ID.sign and token.value.sign == '}')
-                                {
-                                    break;
-                                }
-                                else if (token.value == Token.ID.sign and token.value.sign != ',')
-                                {
-                                    parser_error("Expected comma after argument. Found: {}\n", .{token.value});
-                                }
-                                else
-                                {
-                                    if (consumer.expect_and_consume_sign('}') != null)
-                                    {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        else
-                        {
-                            parser_error("Empty struct is not allowed\n", .{});
-                        }
+        //const unary_expr = self.append_and_get(unary_expr_node);
+        //unary_expr.value.unary_expr.node_ref = self.parse_precedence(allocator, parser, unary_expr, Precedence.Unary);
 
-                        return result;
-                    },
-                    else => panic("ni: {}\n", .{keyword}),
-                }
-            },
-            Token.ID.operator =>
-            {
-                const operator = next_token.value.operator;
-                switch (operator)
-                {
-                    Operator.AddressOf =>
-                    {
-                        const type_node_value = Node {
-                            .value = Node.Value {
-                                .type_identifier = TypeIdentifier {
-                                    .value = TypeIdentifier.Value {
-                                        .pointer = TypeIdentifier.Pointer {
-                                            .type = self.parse_type(allocator, consumer, parent_node),
-                                        },
-                                    },
-                                },
-                            },
-                            .parent = parent_node,
-                            .value_type = Node.ValueType.LValue,
-                            .type = undefined,
-                        };
+        //return unary_expr;
+    //}
 
-                        const type_node = self.append_and_get(type_node_value);
-                        return type_node;
-                    },
-                    Operator.LeftBracket =>
-                    {
-                        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
-                        {
-                            var type_node_value = Node {
-                                .value = Node.Value {
-                                    .type_identifier = TypeIdentifier {
-                                        .value = TypeIdentifier.Value {
-                                            .array = TypeIdentifier.Array {
-                                                .type = undefined,
-                                                .len_expr = undefined,
-                                            },
-                                            },
-                                        },
-                                        },
-                                    .parent = parent_node,
-                                    .value_type = Node.ValueType.LValue,
-                                    .type = undefined,
-                                };
+    //fn parse_array_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //const array_literal_node = Node
+        //{
+            //.value = Node.Value {
+                //.array_lit = ArrayLiteral {
+                    //.elements = NodeRefBuffer.init(allocator),
+                //},
+            //},
+            //.value_type = Node.ValueType.RValue,
+            //.parent = parent_node,
+            //.type = undefined,
+        //};
 
-                            const type_node = self.append_and_get(type_node_value);
-
-                            type_node.value.type_identifier.value.array.len_expr = self.parse_expression(allocator, consumer, type_node);
-
-                            if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
-                            {
-                                parser_error("Expected ']' in array type\n", .{});
-                            }
-
-                            type_node.value.type_identifier.value.array.type = self.parse_type(allocator, consumer, parent_node);
-
-                            return type_node;
-                        }
-                        else
-                        {
-                            // Slice
-                            const slice_type = self.parse_type(allocator, consumer, parent_node);
-                            panic("This is a slice of type: {}\n", .{slice_type});
-                        }
-                    },
-                    else => panic("ni: {}\n", .{operator}),
-                }
-            },
-            else => panic("not implemented: {}\n", .{next_token.value}),
-        }
-    }
-
-    const Precedence = enum
-    {
-        None,
-        Assignment,
-        Logical,
-        Compare,
-        LightArithmetic, // add, sub
-        HeavyArithmetic, // mul, div
-        Unary,
-        Call,
-        Declaration,
-        Primary,
-
-        fn increment(self: Precedence) Precedence
-        {
-            return @intToEnum(Precedence, (@enumToInt(self) + 1));
-        }
-    };
-
-    fn parse_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        const result = self.parse_precedence(allocator, consumer, parent_node, Precedence.Assignment);
-        return result;
-    }
-
-    fn parse_unary_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, operator: Operator) *Node
-    {
-        const unary_expr_id = switch (operator)
-        {
-            Operator.AddressOf => UnaryExpression.ID.AddressOf,
-            Operator.Dereference => UnaryExpression.ID.Dereference,
-            else => panic("ni: {}\n", .{operator}),
-        };
-
-        const unary_expr_node = Node {
-            .value = Node.Value {
-                .unary_expr = UnaryExpression 
-                {
-                    .node_ref = undefined,
-                    .id = unary_expr_id,
-                },
-            },
-            .value_type = Node.ValueType.RValue,
-            .parent = parent_node,
-            .type = undefined,
-        };
-
-        const unary_expr = self.append_and_get(unary_expr_node);
-        unary_expr.value.unary_expr.node_ref = self.parse_precedence(allocator, consumer, unary_expr, Precedence.Unary);
-
-        return unary_expr;
-    }
-
-    fn parse_array_literal(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        const array_literal_node = Node
-        {
-            .value = Node.Value {
-                .array_lit = ArrayLiteral {
-                    .elements = NodeRefBuffer.init(allocator),
-                },
-            },
-            .value_type = Node.ValueType.RValue,
-            .parent = parent_node,
-            .type = undefined,
-        };
-
-        const array_literal = self.append_and_get(array_literal_node);
+        //const array_literal = self.append_and_get(array_literal_node);
             
-        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
-        {
-            while (true)
-            {
-                const array_elem = self.parse_expression(allocator, consumer, parent_node);
-                array_literal.value.array_lit.elements.append(array_elem) catch {
-                    panic("Error allocating memory for array literal element\n", .{});
-                };
+        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
+        //{
+            //while (true)
+            //{
+                //const array_elem = self.parse_expression(allocator, parser, parent_node);
+                //array_literal.value.array_lit.elements.append(array_elem) catch {
+                    //panic("Error allocating memory for array literal element\n", .{});
+                //};
                 
-                const next_token = consumer.peek();
-                consumer.consume();
-
-                if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightBracket)
-                {
-                    break;
-                }
-                else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
-                {
-                    parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
-                }
-            }
-        }
-        else
-        {
-            parser_error("Empty array literal is not allowed\n", .{});
-        }
-
-        return array_literal;
-    }
-
-    fn parse_struct_literal(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        var struct_lit_node_value = Node
-        {
-            .value = Node.Value {
-                .struct_lit = StructLiteral {
-                    .field_names = NodeRefBuffer.init(allocator),
-                    .field_expressions = NodeRefBuffer.init(allocator),
-                },
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var struct_lit_node = self.append_and_get(struct_lit_node_value);
-
-        if (consumer.expect_and_consume_sign('}') != null)
-        {
-            panic("Empty struct initialization is not implemented yet\n", .{});
-        }
-
-        while (true)
-        {
-            if (consumer.expect_and_consume_operator(Operator.Dot) != null)
-            {
-                if (consumer.expect_and_consume(Token.ID.identifier)) |field_identifier_token|
-                {
-                    const field_identifier = field_identifier_token.value.identifier;
-                    const field_id_node = Node {
-                        .value = Node.Value {
-                            .identifier_expr = IdentifierExpression {
-                                .name = field_identifier,
-                            },
-                        },
-                        .parent = struct_lit_node,
-                        .value_type = Node.ValueType.RValue,
-                        .type = undefined,
-                    };
-
-                    struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch {
-                        panic("Error appending field identifier in struct literal node\n", .{});
-                    };
-
-                    if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
-                    {
-                        panic("Error: expected assignment token '='\n", .{});
-                    }
-
-                    struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, consumer, struct_lit_node)) catch {
-                        panic("Error appending field initialization expression in struct literal node\n", .{});
-                    };
-
-                    if (consumer.expect_and_consume_sign('}') != null)
-                    {
-                        break;
-                    }
-                    else if (consumer.expect_and_consume_sign(',') != null)
-                    {
-                        if (consumer.expect_and_consume_sign('}') != null)
-                        {
-                            log.debug("end of struct initializer\n", .{});
-                            break;
-                        }
-                    }
-                    else
-                    {
-                        panic("Not implemented\n", .{});
-                    }
-                }
-                else
-                {
-                    panic("Expecting identifier token\n", .{});
-                }
-            }
-            else
-            {
-                panic("No Dot\n", .{});
-            }
-        }
-
-        return struct_lit_node;
-    }
-
-    fn parse_prefix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        const token = consumer.peek();
-        consumer.consume();
-
-        switch (token.value)
-        {
-            Token.ID.int_lit =>
-            {
-                const int_value = token.value.int_lit;
-                //print("Found int literal: {}\n", .{int_value});
-                const int_lit_node = Node
-                {
-                    .value = Node.Value{
-                        .int_lit = IntegerLiteral{
-                            .value = int_value,
-                            .signed = false,
-                        },
-                    },
-                    .value_type = Node.ValueType.RValue,
-                    .parent = parent_node,
-                    .type = undefined,
-                };
-
-                return self.append_and_get(int_lit_node);
-            },
-            Token.ID.identifier =>
-            {
-                const identifier_name = token.value.identifier;
-                const id_expr_node_value = Node
-                {
-                    .value = Node.Value {
-                        .identifier_expr = IdentifierExpression {
-                            .name = identifier_name,
-                        },
-                    },
-                    .parent = parent_node,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-                const id_expr_node = self.append_and_get(id_expr_node_value);
-                return id_expr_node;
-            },
-            Token.ID.operator =>
-            {
-                const operator = token.value.operator;
-                switch (operator)
-                {
-                    // @Info: this is not array subscript, but array literal constant
-                    Operator.LeftBracket =>
-                    {
-                        const array_lit_expr = self.parse_array_literal(allocator, consumer, parent_node);
-                        return array_lit_expr;
-                    },
-                    Operator.AddressOf,
-                    Operator.Dereference =>
-                    {
-                        const unary_expr = self.parse_unary_expression(allocator, consumer, parent_node, operator);
-                        return unary_expr;
-                    },
-                    else => panic("ni: {}\n", .{operator}),
-                }
-            },
-            Token.ID.sign =>
-            {
-                const sign = token.value.sign;
-                switch (sign)
-                {
-                    '{' =>
-                    {
-                        const struct_lit_expr = self.parse_struct_literal(allocator, consumer, parent_node);
-                        return struct_lit_expr;
-                    },
-                    else => panic("ni: {c}\n", .{sign}),
-                }
-            },
-            else => panic("Prefix functionality not implemented for {}\n", .{token.value}),
-        }
-    }
-
-    fn parse_invoke_expr(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
-    {
-        log.debug("Parsing argument list\n", .{});
-        var args_left_to_parse = consumer.expect_and_consume_operator(Operator.RightParenthesis) == null;
-        var arg_list = NodeRefBuffer.init(allocator);
-        var is_function_declaration = false;
-
-        if (args_left_to_parse)
-        {
-            while (true)
-            {
-                const arg = self.parse_expression(allocator, consumer, parent_node);
-                arg_list.append(arg) catch {
-                    panic("Error allocating memory for argument node\n", .{});
-                };
-
-                const next_token = consumer.peek();
-                consumer.consume();
-
-                if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis)
-                {
-                    break;
-                }
-                else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
-                {
-                    parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
-                }
-                const first_arg = arg_list.items[0];
-                is_function_declaration = first_arg.value == Node.ID.var_decl;
-            }
-        }
-
-        var return_type_node: ?*Node = null;
-        // @Info: in case this is a function declaration
-        if (consumer.expect_and_consume_operator(Operator.Arrow) != null)
-        {
-            is_function_declaration = true;
-            return_type_node = self.parse_type(allocator, consumer, parent_node);
-        }
-
-        var result: *Node = undefined;
-        if (consumer.expect_and_consume_sign('{') != null)
-        {
-            log.debug("Parsing function declaration\n", .{});
-            panic("not implemented yet\n", .{});
-        }
-        else
-        {
-            log.debug("Parsing function call expression\n", .{});
-            const function_call = Node
-            {
-                .value = Node.Value {
-                    .invoke_expr = InvokeExpression {
-                        .arguments = arg_list,
-                        .expression = left_expr,
-                    },
-                },
-                .value_type = Node.ValueType.RValue,
-                .parent = parent_node,
-                .type = undefined,
-            };
-
-            result = self.append_and_get(function_call);
-        }
-
-        return result;
-    }
-
-    fn parse_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
-    {
-        const type_expr = self.parse_type(allocator, consumer, parent_node);
-
-        assert(left_expr.value == Node.ID.identifier_expr);
-        const var_name = left_expr.value.identifier_expr.name;
-
-        const declaration_node = Node
-        {
-            .value = Node.Value {
-                .var_decl = VariableDeclaration 
-                {
-                    .name = var_name,
-                    .var_type = type_expr,
-                    .var_scope = parent_node,
-                    .backend_ref = 0,
-                    .is_function_arg = false,
-                },
-            },
-            .value_type = Node.ValueType.LValue,
-            .parent = parent_node,
-            .type = undefined,
-        };
-
-        const declaration = self.append_and_get(declaration_node);
-        return declaration;
-    }
-
-    fn parse_array_subscript(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
-    {
-        const subscript_node_value = Node
-        {
-            .value = Node.Value {
-                .array_subscript_expr = ArraySubscriptExpression {
-                    .expression = left_expr,
-                    .index = undefined,
-                },
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var subscript_node = self.append_and_get(subscript_node_value);
-        subscript_node.value.array_subscript_expr.index = self.parse_expression(allocator, consumer, parent_node);
-
-        if (consumer.expect_and_consume_operator(Operator.RightBracket) == null)
-        {
-            parser_error("Expected ']' in array subscript expression", .{});
-        }
-
-        return subscript_node;
-    }
-
-    fn parse_field_access(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node) *Node
-    {
-        const field_acces_value = Node
-        {
-            .value = Node.Value {
-                .field_access_expr = FieldAccessExpression {
-                    .expression = left_expr,
-                    .field_expr = undefined,
-                },
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var field_access_node = self.append_and_get(field_acces_value);
-        field_access_node.value.field_access_expr.field_expr = self.parse_precedence(allocator, consumer, field_access_node, Precedence.Call.increment());
-        assert(field_access_node.value.field_access_expr.field_expr.value == Node.ID.identifier_expr);
-
-        return field_access_node;
-    }
-
-    fn parse_infix(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
-    {
-        switch (operator)
-        {
-            Operator.Equal,
-            Operator.GreaterThan,
-            Operator.Assignment,
-            Operator.Plus,
-            Operator.Minus,
-            Operator.Multiplication =>
-            {
-                const binary_expr = self.parse_binary_expression(allocator, consumer, parent_node, left_expr, operator, precedence);
-                return binary_expr;
-            },
-
-            Operator.LeftParenthesis =>
-            {
-                const call_expr = self.parse_invoke_expr(allocator, consumer, parent_node, left_expr);
-                return call_expr;
-            },
-            Operator.Declaration => 
-            {
-                const declaration_expr = self.parse_declaration(allocator, consumer, parent_node, left_expr);
-                return declaration_expr;
-            },
-            Operator.LeftBracket =>
-            {
-                const array_subscript_expr = self.parse_array_subscript(allocator, consumer, parent_node, left_expr);
-                return array_subscript_expr;
-            },
-            Operator.Dot =>
-            {
-                const field_access_expr = self.parse_field_access(allocator, consumer, parent_node, left_expr);
-                return field_access_expr;
-            },
-            else => panic("operator not implemented: {}\n", .{operator}),
-        }
-    }
-
-    fn parse_precedence(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, precedence: Precedence) *Node
-    {
-        const prefix_node = self.parse_prefix(allocator, consumer, parent_node);
-        var left_expr = prefix_node;
-
-        while (true)
-        {
-            const token = consumer.peek();
-            const new_precedence = switch (token.value)
-            {
-                Token.ID.sign => sign_block:
-                {
-                    const sign = token.value.sign;
-                    const sign_precedence = switch (sign)
-                    {
-                        '{' => Precedence.None,
-                        ';' => Precedence.None,
-                        ',' => Precedence.None,
-                        '}' => Precedence.None,
-                        else => panic("Precedence not implemented for sign {c}\n", .{sign}),
-                    };
-
-                    break :sign_block sign_precedence;
-                },
-                Token.ID.operator => operator_block:
-                {
-                    const operator = token.value.operator;
-                    const operator_precedence = switch (operator)
-                    {
-                        Operator.RightParenthesis,
-                        Operator.RightBracket, => Precedence.None,
-
-                        Operator.Plus,
-                        Operator.Minus => Precedence.LightArithmetic,
-
-                        Operator.Multiplication,
-                        Operator.Division => Precedence.HeavyArithmetic,
-
-                        Operator.Equal,
-                        Operator.GreaterThan,
-                        Operator.LessThan => Precedence.Compare,
-
-                        Operator.Assignment => Precedence.Assignment,
-
-                        Operator.Declaration => Precedence.Declaration,
-
-                        Operator.LeftParenthesis,
-                        Operator.LeftBracket,
-                        Operator.Dot, => Precedence.Call,
-
-                        else => panic("Precedence not implemented for {}\n", .{operator}),
-                    };
-
-                    break :operator_block operator_precedence;
-                },
-                else => panic("Precedence not implemented for {}\n", .{token.value}),
-            };
-
-            log.debug("Old precedence: {}, new precedence: {}\n", .{precedence, new_precedence});
-            if (@enumToInt(precedence) <= @enumToInt(new_precedence))
-            {
-                consumer.consume();
-                assert(token.value == Token.ID.operator);
-                const operator = token.value.operator;
-                left_expr = self.parse_infix(allocator, consumer, parent_node, left_expr, operator, new_precedence);
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        return left_expr;
-    }
-
-    fn parse_binary_expression(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
-    {
-        const binary_node_value = Node
-        {
-            .value = Node.Value {
-                .binary_expr = BinaryExpression {
-                    .left = left_expr,
-                    .right = undefined,
-                    .id = undefined,
-                    .parenthesis = false,
-                },
-                },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        const binary_node = self.append_and_get(binary_node_value);
-
-        const right_expr = self.parse_precedence(allocator, consumer, binary_node, precedence.increment());
-        log.debug("Right expr: {}\n", .{right_expr});
-        binary_node.value.binary_expr.right = right_expr;
-
-        const binary_op: BinaryExpression.ID = switch (operator)
-        {
-            Operator.Assignment => BinaryExpression.ID.Assignment,
-            Operator.Plus => BinaryExpression.ID.Plus,
-            Operator.Minus => BinaryExpression.ID.Minus,
-            Operator.Multiplication => BinaryExpression.ID.Multiplication,
-            Operator.Equal => BinaryExpression.ID.Compare_Equal,
-            Operator.GreaterThan => BinaryExpression.ID.Compare_GreaterThan,
-            else => panic("not implemented: {}\n", .{operator}),
-        };
-        binary_node.value.binary_expr.id = binary_op;
-
-        if (binary_op == BinaryExpression.ID.Assignment)
-        {
-            left_expr.value_type = Node.ValueType.LValue;
-        }
-
-        log.debug("New binary expression: {}\n", .{binary_node});
-        return binary_node;
-    }
-
-    fn parse_return(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        consumer.consume();
-        var return_node_value = Node{
-            .value = Node.Value{
-                .return_expr = ReturnExpression{
-                    .expression = null,
-                },
-            },
-            .value_type = Node.ValueType.RValue,
-            .parent = parent_node,
-            .type = undefined,
-        };
-
-        var return_node = self.append_and_get(return_node_value);
-
-        if (consumer.expect_sign(';') == null)
-        {
-            const ret_expr = self.parse_expression(allocator, consumer, return_node);
-            return_node.value.return_expr.expression = ret_expr;
-        }
-
-        return return_node;
-    }
-
-    fn _create_loop_block(self: *Parser, allocator: *Allocator, for_node: *Node, block_type : BlockExpression.ID) *Node
-    {
-        const loop_block_value = Node
-        {
-            .value = Node.Value {
-                .block_expr = BlockExpression {
-                    .statements = NodeRefBuffer.init(allocator),
-                    .id = block_type,
-                },
-                },
-            .parent = for_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-        const loop_block_node = self.append_and_get(loop_block_value);
-        self.current_function.value.function_decl.blocks.append(loop_block_node) catch {
-            panic("Failed to allocate a block reference to function block list\n", .{});
-        };
-        return loop_block_node;
-    }
-
-    fn parse_for(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        if (consumer.expect_and_consume_keyword(KeywordID.@"for") == null)
-        {
-            panic("Internal compiler error: expected 'for' keyword\n", .{});
-        }
-
-        const for_loop_node_value = Node
-        {
-            .value = Node.Value {
-                .loop_expr = LoopExpression {
-                    .prefix = undefined,
-                    .body = undefined,
-                    .postfix = undefined,
-                    .exit_block_ref = undefined,
-                    .continue_block_ref = undefined,
-                },
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var for_node = self.append_and_get(for_loop_node_value);
-        const parent_scope = self.current_block;
-
-        for_node.value.loop_expr.prefix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPrefix);
-        for_node.value.loop_expr.body = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopBody);
-        for_node.value.loop_expr.postfix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPostfix);
-
-        if (consumer.expect_and_consume(Token.ID.identifier)) |it_identifier|
-        {
-            const it_decl_decl_value = Node
-            {
-                .value = Node.Value {
-                    .int_lit = IntegerLiteral {
-                        .value = 0,
-                        .signed = false,
-                    }
-                },
-                // @Info: this is set later
-                .parent = undefined,
-                .value_type = Node.ValueType.RValue,
-                .type = undefined,
-            };
-
-            const value_type = Node
-            {
-                .value = Node.Value {
-                    .type_identifier = TypeIdentifier {
-                        .value = TypeIdentifier.Value {
-                            .simple = "s32",
-                        },
-                    },
-                },
-                .parent = parent_node,
-                .value_type = Node.ValueType.RValue,
-                .type = undefined,
-            };
-
-            var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
-            const it_decl_type_node = self.append_and_get(value_type);
-            const it_decl_value = Node
-            {
-                .value = Node.Value {
-                    .var_decl = VariableDeclaration {
-                        .name = it_identifier.value.identifier,
-                        .is_function_arg = false,
-                        .var_scope = self.current_block,
-                        .var_type = it_decl_type_node,
-                        .backend_ref = 0,
-                    },
-                },
-                .parent = parent_node,
-                .value_type = Node.ValueType.LValue,
-                .type = undefined,
-            };
-
-            const it_decl_node = self.append_and_get(it_decl_value);
-            it_decl_literal_node.parent = it_decl_node;
-
-            self.current_function.value.function_decl.variables.append(it_decl_node) catch {
-                panic("Error allocating variable reference to function variable list\n", .{});
-            };
-            self.current_block.value.block_expr.statements.append(it_decl_node) catch {
-                panic("Error allocating statement reference to block statement list\n", .{});
-            };
-
-            const it_decl_ref = Node {
-                .value = Node.Value {
-                    .identifier_expr = IdentifierExpression {
-                        .name = it_decl_node.value.var_decl.name,
-                    },
-                },
-                .value_type = Node.ValueType.LValue,
-                .parent = parent_node,
-                .type = undefined,
-            };
-
-            const it_decl_var_ref_node = self.append_and_get(it_decl_ref);
-
-            const assignment = Node
-            {
-                .value = Node.Value {
-                    .binary_expr = BinaryExpression {
-                        .left = it_decl_var_ref_node,
-                        .right = it_decl_literal_node,
-                        .id = BinaryExpression.ID.Assignment,
-                        .parenthesis = false,
-                    }
-                },
-                .value_type = Node.ValueType.RValue,
-                .parent = parent_node,
-                .type = undefined,
-            };
-
-            const assignment_node = self.append_and_get(assignment);
-            self.current_block.value.block_expr.statements.append(assignment_node) catch {
-                panic("Error allocating statement reference to block statement list\n", .{});
-            };
-
-            // Prefix
-            {
-                self.current_block = for_node.value.loop_expr.prefix;
-                if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
-                {
-                    panic("Expected colon after a loop variable declaration\n", .{});
-                }
-                const right_token = consumer.peek();
-                consumer.consume();
-
-                var right_node : *Node = undefined;
-
-                switch (right_token.value)
-                {
-                    Token.ID.int_lit =>
-                    {
-                        const literal_value = right_token.value.int_lit;
-                        const literal_node_value = Node {
-                            .value = Node.Value {
-                                .int_lit = IntegerLiteral {
-                                    .value = literal_value,
-                                    .signed = false,
-                                }
-                            },
-                            .parent = self.current_block,
-                            .value_type = Node.ValueType.RValue,
-                            .type = undefined,
-                        };
-
-                        right_node = self.append_and_get(literal_node_value);
-                    },
-                    else =>
-                    {
-                        panic("Right token not implemented: {}\n", .{right_token.value});
-                    }
-                }
-
-                const iterator_ref_expr_value = Node
-                {
-                    .value = Node.Value {
-                        .identifier_expr = IdentifierExpression {
-                            .name = it_identifier.value.identifier,
-                        }
-                    },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-
-                const iterator_ref_expr = self.append_and_get(iterator_ref_expr_value);
-
-                const prefix_comparison_value = Node
-                {
-                    .value = Node.Value {
-                        .binary_expr = BinaryExpression {
-                            .left = iterator_ref_expr,
-                            .right =  right_node,
-                            .id = BinaryExpression.ID.Compare_LessThan,
-                            .parenthesis = false,
-                        }
-                    },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-
-                const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
-                // @Info: in other kind of loops we should support multiple statements
-                self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch {
-                    panic("Couldn't allocate prefix statement\n", .{});
-                };
-            }
-
-            // Block
-            {
-                // @Info: this sets the target block as current block, so no need here to set it in advance
-                self.block(allocator, consumer, for_node.value.loop_expr.body, true);
-            }
-
-            // Postfix
-            {
-                self.current_block = for_node.value.loop_expr.postfix;
-                const identifier_expr_lvalue = Node
-                {
-                    .value = Node.Value {
-                        .identifier_expr = IdentifierExpression {
-                            .name = it_identifier.value.identifier,
-                        }
-                    },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.LValue,
-                    .type = undefined,
-                };
-                var identifier_expr_rvalue = identifier_expr_lvalue;
-                identifier_expr_rvalue.value_type = Node.ValueType.RValue;
-                const identifier_lvalue = self.append_and_get(identifier_expr_lvalue);
-                const identifier_rvalue = self.append_and_get(identifier_expr_rvalue);
-
-                const one_lit_value = Node
-                {
-                    .value = Node.Value {
-                        .int_lit = IntegerLiteral {
-                            .value = 1,
-                            .signed = false,
-                        }
-                    },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-                const one_lit_node = self.append_and_get(one_lit_value);
-
-                const postfix_increment_value = Node
-                {
-                    .value = Node.Value {
-                        .binary_expr = BinaryExpression {
-                            .left = identifier_rvalue,
-                            .right =  one_lit_node,
-                            .id =  BinaryExpression.ID.Plus,
-                            .parenthesis = false,
-                        },
-                        },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-
-                const postfix_increment_node = self.append_and_get(postfix_increment_value);
-
-                const postfix_assignment_value = Node
-                {
-                    .value = Node.Value {
-                        .binary_expr = BinaryExpression {
-                            .left = identifier_lvalue,
-                            .right =  postfix_increment_node,
-                            .id =  BinaryExpression.ID.Assignment,
-                            .parenthesis = false,
-                        },
-                        },
-                    .parent = self.current_block,
-                    .value_type = Node.ValueType.RValue,
-                    .type = undefined,
-                };
-
-                const postfix_assignment_node = self.append_and_get(postfix_assignment_value);
-                self.current_block.value.block_expr.statements.append(postfix_assignment_node) catch {
-                    panic("Couldn't allocate postfix statement\n", .{});
-                };
-            }
-
-            self.current_block = parent_scope;
-            return for_node;
-        }
-        else
-        {
-            panic("Expected identifier declaration for loop iteration\n", .{});
-        }
-    }
-
-    fn parse_if(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        // consume if keyword
-        consumer.consume();
-
-        const branch_node_value = Node
-        {
-            .value = Node.Value {
-                .branch_expr = BranchExpression {
-                    .condition = undefined,
-                    .if_block = undefined,
-                    .else_block = null,
-                    .exit_block_ref = 0,
-                }
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var branch_node = self.append_and_get(branch_node_value);
-        const condition_node = self.parse_expression(allocator, consumer, parent_node);
-        branch_node.value.branch_expr.condition = condition_node;
-        const if_block_value = Node
-        {
-            .value = Node.Value {
-                .block_expr = BlockExpression {
-                    .statements = NodeRefBuffer.init(allocator),
-                    .id = BlockExpression.ID.IfBlock,
-                }
-            },
-            .parent = branch_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-        const if_block_node = self.append_and_get(if_block_value);
-        self.block(allocator, consumer, if_block_node, true);
-        branch_node.value.branch_expr.if_block = if_block_node;
-
-        self.current_block = parent_node;
-
-        if (consumer.expect_and_consume_keyword(KeywordID.@"else") != null)
-        {
-            const else_block_value = Node
-            {
-                .value = Node.Value {
-                    .block_expr = BlockExpression {
-                        .statements = NodeRefBuffer.init(allocator),
-                        .id = BlockExpression.ID.ElseBlock,
-                    }
-                },
-                .parent = branch_node,
-                .value_type = Node.ValueType.RValue,
-                .type = undefined,
-            };
-            const else_block_node = self.append_and_get(else_block_value);
-            self.block(allocator, consumer, else_block_node, true);
-            branch_node.value.branch_expr.else_block = else_block_node;
-        }
-
-        return branch_node;
-    }
-
-    fn parse_break(self: *Parser, consumer: *TokenConsumer, parent_node: *Node) *Node
-    {
-        // consuming break keyword
-        consumer.consume();
-        var target = self.current_block;
-
-        while (target.value != Node.ID.loop_expr)
-        {
-            if (target.parent) |parent|
-            {
-                target = parent;
-            }
-            else
-            {
-                panic("Couldn't find any parent\n", .{});
-            }
-        }
-
-        const break_value = Node
-        {
-            .value = Node.Value {
-                .break_expr = BreakExpression {
-                    .target = target, 
-                }
-            },
-            .parent = parent_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        const result = self.append_and_get(break_value);
-        return result;
-    }
-
-    fn block(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, block_node: *Node, allow_no_braces: bool) void
-    {
-        self.current_block = block_node;
-
-        const has_braces = consumer.expect_and_consume_sign('{') != null;
-
-        if (!has_braces and !allow_no_braces)
-        {
-            parser_error("Expected braces in block\n", .{});
-        }
-
-        var should_keep_parsing = true;
-        if (has_braces)
-        {
-            should_keep_parsing = consumer.expect_sign('}') == null;
-        }
-
-        while (should_keep_parsing)
-        {
-            const token = consumer.peek();
-
-            switch (token.value)
-            {
-                Token.ID.keyword =>
-                {
-                    const keyword = token.value.keyword;
-                    switch (keyword)
-                    {
-                        KeywordID.@"return" =>
-                        {
-                            const return_statement = self.parse_return(allocator, consumer, block_node);
-                            if (consumer.expect_and_consume_sign(';') == null)
-                            {
-                                parser_error("Expected semicolon at the end of the statement\n", .{});
-                            }
-                            block_node.value.block_expr.statements.append(return_statement) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-                        },
-                        KeywordID.@"for" =>
-                        {
-                            const for_st = self.parse_for(allocator, consumer, block_node);
-                            block_node.value.block_expr.statements.append(for_st) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-
-                        },
-                        KeywordID.@"if" =>
-                        {
-                            const if_st = self.parse_if(allocator, consumer, block_node);
-                            block_node.value.block_expr.statements.append(if_st) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-                        },
-                        KeywordID.@"break" =>
-                        {
-                            const break_st = self.parse_break(consumer, block_node);
-                            if (consumer.expect_and_consume_sign(';') == null)
-                            {
-                                parser_error("Expected semicolon at the end of the statement\n", .{});
-                            }
-                            block_node.value.block_expr.statements.append(break_st) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-                        },
-                        else =>
-                        {
-                            panic("Keyword unhandled: {}\n", .{keyword});
-                        },
-                    }
-
-                },
-                Token.ID.identifier =>
-                {
-                    const identifier_name = token.value.identifier;
-                    consumer.consume();
-                    if (consumer.expect_and_consume_operator(Operator.Declaration) != null)
-                    {
-                        var var_decl_node_value = Node
-                        {
-                            .value = Node.Value {
-                                .var_decl = VariableDeclaration {
-                                    .name = identifier_name,
-                                    // Info: These are set later 
-                                    .var_type =  undefined,
-                                    .var_scope =  block_node,
-                                    .backend_ref =  0,
-                                    .is_function_arg = false,
-                                },
-                            },
-                            .parent = block_node,
-                            .value_type = Node.ValueType.LValue,
-                            .type = undefined,
-                        };
-
-                        var var_decl_node = self.append_and_get(var_decl_node_value);
-                        if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
-                        {
-                            var_decl_node.value.var_decl.var_type = self.parse_type(allocator, consumer, block_node);
-
-                            if (consumer.expect_and_consume_operator(Operator.Assignment) == null)
-                            {
-                                panic("expected assignment after type in variable declaration\n", .{});
-                            }
-                        }
-                        else
-                        {
-                            // no type information
-                            panic("not implemented: var declaration without type information\n", .{});
-                        }
-
-                        var initialization_assignment: ?*Node = null;
-                        // @Info: separate variable declaration and initialization
-                        if (consumer.expect_sign(';') == null)
-                        {
-                            const id_expr = Node 
-                            {
-                                .value = Node.Value {
-                                    .identifier_expr = IdentifierExpression {
-                                        .name = identifier_name,
-                                    },
-                                },
-                                .value_type = Node.ValueType.LValue,
-                                .parent = block_node,
-                                .type = undefined,
-                            };
-
-                            const id_expr_node = self.append_and_get(id_expr);
-
-                            initialization_assignment = self.parse_binary_expression(allocator, consumer, block_node, id_expr_node, Operator.Assignment, Precedence.Assignment);
-                        }
-                        else
-                        {
-                            // no initialization
-                            panic("not implemented: var declaration without initialization\n", .{});
-                        }
-
-                        if (consumer.expect_and_consume_sign(';') == null)
-                        {
-                            parser_error("Expected semicolon at the end of the statement\n", .{});
-                        }
-                        block_node.value.block_expr.statements.append(var_decl_node) catch {
-                            panic("Failed to allocate memory for statement", .{});
-                        };
-                        self.current_function.value.function_decl.variables.append(var_decl_node) catch {
-                            panic("Error allocating variable reference to function variable list\n", .{});
-                        };
-                        if (initialization_assignment) |assignment|
-                        {
-                            block_node.value.block_expr.statements.append(assignment) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-                        }
-                    }
-                    else
-                    {
-                        log.debug("Rectifying and parsing identifier expression...\n", .{});
-                        consumer.next_index -= 1;
-                        const identifier_expr = self.parse_expression(allocator, consumer, block_node);
-                        if (consumer.expect_and_consume_sign(';') == null)
-                        {
-                            parser_error("Expected semicolon at the end of the statement\n", .{});
-                        }
-                        block_node.value.block_expr.statements.append(identifier_expr) catch {
-                            panic("Failed to allocate memory for statement", .{});
-                        };
-                    }
-                },
-                Token.ID.operator =>
-                {
-                    const operator = token.value.operator;
-                    switch (operator)
-                    {
-                        Operator.Dereference =>
-                        {
-                            const deref_st = self.parse_expression(allocator, consumer, block_node);
-                            if (consumer.expect_and_consume_sign(';') == null)
-                            {
-                                parser_error("Expected semicolon at the end of the statement\n", .{});
-                            }
-                            block_node.value.block_expr.statements.append(deref_st) catch {
-                                panic("Failed to allocate memory for statement", .{});
-                            };
-                        },
-                        else => panic("ni: {}\n", .{token.value}),
-                    }
-                },
-                else =>
-                {
-                    panic("ni: {}\n", .{token.value});
-                },
-            }
-
-            should_keep_parsing = has_braces and consumer.expect_sign('}') == null;
-        }
-
-        if (has_braces)
-        {
-            const end = consumer.expect_and_consume_sign('}');
-            if (end == null)
-            {
-                parser_error("Expected end sign at the end of the block", .{});
-            }
-        }
-    }
-
-    fn parse_intrinsic(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer, intrinsic_name: []const u8) void
-    {
-        if (std.meta.stringToEnum(Intrinsic.ID, intrinsic_name)) |intrinsic_id|
-        {
-            print("Intrinsic found: {}\n", .{intrinsic_id});
-            switch (intrinsic_id)
-            {
-                Intrinsic.ID.syscall =>
-                {
-                    if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) == null)
-                    {
-                        panic("expected left parenthesis to indicate system call id\n", .{});
-                    }
-
-                    if (consumer.expect_and_consume(Token.ID.int_lit)) |syscall_id_token|
-                    {
-                        const syscall_id = syscall_id_token.value.int_lit;
-                        if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
-                        {
-                            panic("expected right parenthesis\n", .{});
-                        }
-
-                        if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
-                        {
-                            panic("expected colon\n", .{});
-                        }
-
-                        if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) == null)
-                        {
-                            panic("expected left parenthesis\n", .{});
-                        }
-
-                        var syscall = std.mem.zeroes(Intrinsic.Syscall);
-                        syscall.id = syscall_id;
-                        var argument_count: u64 = 0;
-
-                        while (true) : (argument_count += 1)
-                        {
-                            if (argument_count >= 6)
-                            {
-                                panic("Too many arguments for syscall {}: {}\n", .{syscall_id, argument_count});
-                            }
-                            if (consumer.expect_and_consume(Token.ID.identifier) == null)
-                            {
-                                panic("expected identifier\n", .{});
-                            }
-
-                            if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
-                            {
-                                panic("expected colon\n", .{});
-                            }
-
-                            const arg_type = self.parse_type(allocator, consumer, null);
-                            const byte_count: u8 = blk:
-                            {
-                                switch (arg_type.value)
-                                {
-                                    Node.ID.type_identifier =>
-                                    {
-                                        const type_identifier = arg_type.value.type_identifier;
-                                        const type_kind = type_identifier.value;
-                                        switch (type_kind)
-                                        {
-                                            TypeIdentifier.ID.simple =>
-                                            {
-                                                const type_str = type_kind.simple;
-                                                if (std.mem.eql(u8, type_str, "u8") or std.mem.eql(u8, type_str, "s8"))
-                                                {
-                                                    break :blk 1;
-                                                }
-                                                else if (std.mem.eql(u8, type_str, "u16") or std.mem.eql(u8, type_str, "s16"))
-                                                {
-                                                    break :blk 2;
-                                                }
-                                                else if (std.mem.eql(u8, type_str, "u32") or std.mem.eql(u8, type_str, "s32"))
-                                                {
-                                                    break :blk 4;
-                                                }
-                                                else if (std.mem.eql(u8, type_str, "u64") or std.mem.eql(u8, type_str, "s64"))
-                                                {
-                                                    break :blk 8;
-                                                }
-                                            },
-                                            TypeIdentifier.ID.pointer =>
-                                            {
-                                                break :blk 8;
-                                            },
-                                            else => panic("ni: {}\n", .{type_kind}),
-                                        }
-                                    },
-                                    else => panic("ni: {}\n", .{arg_type.value}),
-                                }
-
-                                panic("byte count couldn't be figured out\n", .{});
-                            };
-
-                            syscall.arg_bytes[argument_count] = byte_count;
-                            print("Byte count: {}\n", .{byte_count});
-
-                            const next_token = consumer.peek();
-                            consumer.consume();
-                            switch (next_token.value)
-                            {
-                                Token.ID.sign =>
-                                {
-                                    const sign = next_token.value.sign;
-                                    switch (sign)
-                                    {
-                                        ',' => {},
-                                        else => panic("ni: {c}\n", .{sign}),
-                                    }
-                                },
-                                Token.ID.operator =>
-                                {
-                                    const operator = next_token.value.operator;
-                                    switch (operator)
-                                    {
-                                        Operator.RightParenthesis =>
-                                        {
-                                            break;
-                                        },
-                                        else => panic("ni: {}\n", .{operator}),
-                                    }
-                                },
-                                else => panic("ni: {}\n", .{next_token.value}),
-                            }
-                        }
-
-                        if (consumer.expect_and_consume_sign(';') == null)
-                        {
-                            panic("expected ';' at the end of syscall statement", .{});
-                        }
-
-                        const syscall_value = Node
-                        {
-                            .value = Node.Value {
-                                .syscall_decl = syscall,
-                            },
-                            .parent = null,
-                            .value_type = Node.ValueType.RValue,
-                            .type = undefined,
-                        };
-
-                        const syscall_node = self.append_and_get(syscall_value);
-
-                        self.syscalls.append(syscall_node) catch {
-                            panic("Error appending syscall\n", .{});
-                        };
-                    }
-                    else
-                    {
-                        panic("Expected syscall id\n", .{});
-                    }
-                },
-            }
-        }
-        else
-        {
-            panic("Intrinsic not found: {s}\n", .{intrinsic_name});
-        }
-    }
-
-    fn parse_function_declaration(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer) !?*Node
-    {
-        var function_node_value = Node
-        {
-            .value = Node.Value
-            {
-                .function_decl = FunctionDeclaration
-                {
-                    .name = "",
-                    .arguments = ArrayList(*Node).init(allocator),
-                    .blocks = ArrayList(*Node).init(allocator),
-                    .variables = ArrayList(*Node).init(allocator),
-                    .type = undefined,
-                },
-            },
-            .parent = null,
-            .value_type = Node.ValueType.LValue,
-            .type = undefined,
-        };
-
-        var function_node = self.append_and_get(function_node_value);
-        self.current_function = function_node;
-
-        var next_token = consumer.tokens[consumer.next_index];
-        var arg_types = NodeRefBuffer.init(allocator);
-        var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
-
-        while (args_left_to_parse)
-        {
-            const arg_node = self.parse_expression(allocator, consumer, function_node);
-            if (arg_node.value != Node.ID.var_decl)
-            {
-                parser_error("Error parsing argument\n", .{});
-            }
-
-            arg_types.append(arg_node.value.var_decl.var_type) catch {
-                panic("Error allocating memory for argument type\n", .{});
-            };
-
-            arg_node.value.var_decl.is_function_arg = true;
-            try function_node.value.function_decl.arguments.append(arg_node);
-
-            next_token = consumer.tokens[consumer.next_index];
-            args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
-
-            if (args_left_to_parse)
-            {
-                const comma = consumer.expect_and_consume_sign(',');
-                if (comma == null)
-                {
-                    // print error
-                    parser_error("Expected comma after function argument", .{});
-                }
-            }
-        }
-
-        if (consumer.expect_and_consume_operator(Operator.RightParenthesis) == null)
-        {
-            parser_error("Expected end of argument list\n", .{});
-        }
-
-        var return_type: ?*Node = null;
-        if (consumer.expect_and_consume_operator(Operator.Arrow) != null)
-        {
-            return_type = self.parse_type(allocator, consumer, null);
-        }
-
-        var function_type_node_value = Node
-        {
-            .value = Node.Value {
-                .type_identifier = TypeIdentifier {
-                    .value = TypeIdentifier.Value {
-                        .function = TypeIdentifier.Function {
-                            .arg_types = arg_types,
-                            .return_type = return_type,
-                        },
-                    },
-                },
-            },
-            .parent = function_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        log.debug("arg type count in the parser: {}\n", .{arg_types.items.len});
-
-        function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
-
-        var block_node_value = Node
-        {
-            .value = Node.Value
-            {
-                .block_expr = BlockExpression
-                {
-                    .statements = NodeRefBuffer.init(allocator),
-                    .id = BlockExpression.ID.Function,
-                },
-            },
-            .parent = function_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
-        };
-
-        var block_node = self.append_and_get(block_node_value);
-        self.current_function.value.function_decl.blocks.append(block_node) catch {
-            panic("Failed to allocate memory for block node reference\n", .{});
-        };
-
-        self.block(allocator, consumer, block_node, false);
-
-        return function_node;
-    }
-
-    fn tld(self: *Parser, allocator: *Allocator, consumer: *TokenConsumer) !void
-    {
-        const name_token = consumer.expect_and_consume(Token.ID.identifier);
-        if (name_token == null)
-        {
-            parser_error("Top level declarations must start with an identifier/name\n", .{});
-        }
-        const name = name_token.?.value.identifier;
-
-        //print("Name found: {s}\n", .{function_name.?.value.identifier});
-
-        if (consumer.next_index + 2 >= consumer.tokens.len)
-        {
-            parser_error("End of the file while parsing top level declaration\n", .{});
-        }
-
-        const constant = consumer.expect_and_consume_operator(Operator.Constant);
-        if (constant == null)
-        {
-            if (consumer.expect_and_consume_operator(Operator.Declaration) == null)
-            {
-                panic("This is not a declaration\n", .{});
-            }
-
-            if (consumer.expect_and_consume_operator(Operator.CompilerIntrinsic) == null)
-            {
-                panic("Expected compiler intrinsic\n", .{});
-            }
-
-            if (consumer.expect_and_consume(Token.ID.identifier)) |intrinsic_identifier|
-            {
-                self.parse_intrinsic(allocator, consumer, intrinsic_identifier.value.identifier);
-            }
-        }
-        else
-        {
-            if (consumer.expect_and_consume_operator(Operator.LeftParenthesis) != null)
-            {
-                const function_result = self.parse_function_declaration(allocator, consumer) catch {
-                    parser_error("Couldn't parse the function\n", .{});
-                };
-                if (function_result) |function_node|
-                {
-                    function_node.value.function_decl.name = name;
-                    self.function_declarations.append(function_node) catch {
-                        panic("Failed to allocate node reference for top-level declaration\n", .{});
-                    };
-                }
-                else
-                {
-                    parser_error("Couldn't parse the function\n", .{});
-                }
-            }
-            else if (consumer.expect_keyword(KeywordID.@"struct") != null)
-            {
-                const struct_type = self.parse_type(allocator, consumer, null);
-                struct_type.value.type_identifier.value.structure.name = name;
-                self.type_declarations.append(struct_type) catch {
-                    panic("Error allocating memory for type declaration\n", .{});
-                };
-            }
-            else
-            {
-                panic("Couldn't parse top level declaration\n", .{});
-            }
-        }
-    }
-};
-
-pub const ParserResult = struct
-{
-    function_declarations: NodeRefBuffer,
-    node_buffer: NodeBuffer,
-    type_declarations: NodeRefBuffer,
-    syscalls: NodeRefBuffer,
-};
-
-pub fn parse(allocator: *Allocator, lexer_result: LexerResult) ParserResult
-{
-    log.debug("\n==============\nPARSER\n==============\n\n", .{});
-
-    const token_count = lexer_result.tokens.len;
-    assert(token_count > 0);
-
-    var token_consumer = TokenConsumer
-    {
-        .tokens = lexer_result.tokens,
-        .next_index = 0,
-    };
-
-    var parser = Parser
-    {
-        .nb = NodeBuffer.init(allocator) catch {
-            panic("Couldn't allocate the bucket node buffer\n", .{});
-        },
-        .current_function = undefined,
-        .current_block = undefined,
-        .function_declarations = NodeRefBuffer.init(allocator),
-        .type_declarations = NodeRefBuffer.init(allocator),
-        .syscalls = NodeRefBuffer.init(allocator),
-    };
-
-    while (token_consumer.next_index < token_count)
-    {
-        parser.tld(allocator, &token_consumer) catch {
-            panic("Couldn't parse TLD\n", .{});
-        };
-    }
-
-    const result = ParserResult
-    {
-        .function_declarations = parser.function_declarations,
-        .type_declarations = parser.type_declarations,
-        .node_buffer = parser.nb,
-        .syscalls = parser.syscalls,
-    };
-
-    log.debug("Printing AST:\n\n", .{});
-    for (result.function_declarations.items) |function|
-    {
-        log.info("{}", .{function});
-    }
-
-    return result;
-}
+                //const next_token = parser.peek();
+                //parser.consume();
+
+                //if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightBracket)
+                //{
+                    //break;
+                //}
+                //else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
+                //{
+                    //parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
+                //}
+            //}
+        //}
+        //else
+        //{
+            //parser_error("Empty array literal is not allowed\n", .{});
+        //}
+
+        //return array_literal;
+    //}
+
+    //fn parse_struct_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //var struct_lit_node_value = Node
+        //{
+            //.value = Node.Value {
+                //.struct_lit = StructLiteral {
+                    //.field_names = NodeRefBuffer.init(allocator),
+                    //.field_expressions = NodeRefBuffer.init(allocator),
+                //},
+            //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //var struct_lit_node = self.append_and_get(struct_lit_node_value);
+
+        //if (parser.expect_and_consume_sign('}') != null)
+        //{
+            //panic("Empty struct initialization is not implemented yet\n", .{});
+        //}
+
+        //while (true)
+        //{
+            //if (parser.expect_and_consume_operator(Operator.Dot) != null)
+            //{
+                //if (parser.expect_and_consume(Token.ID.identifier)) |field_identifier_token|
+                //{
+                    //const field_identifier = field_identifier_token.value.identifier;
+                    //const field_id_node = Node {
+                        //.value = Node.Value {
+                            //.identifier_expr = IdentifierExpression {
+                                //.name = field_identifier,
+                            //},
+                        //},
+                        //.parent = struct_lit_node,
+                        //.value_type = Node.ValueType.RValue,
+                        //.type = undefined,
+                    //};
+
+                    //struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch {
+                        //panic("Error appending field identifier in struct literal node\n", .{});
+                    //};
+
+                    //if (parser.expect_and_consume_operator(Operator.Assignment) == null)
+                    //{
+                        //panic("Error: expected assignment token '='\n", .{});
+                    //}
+
+                    //struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, parser, struct_lit_node)) catch {
+                        //panic("Error appending field initialization expression in struct literal node\n", .{});
+                    //};
+
+                    //if (parser.expect_and_consume_sign('}') != null)
+                    //{
+                        //break;
+                    //}
+                    //else if (parser.expect_and_consume_sign(',') != null)
+                    //{
+                        //if (parser.expect_and_consume_sign('}') != null)
+                        //{
+                            //log.debug("end of struct initializer\n", .{});
+                            //break;
+                        //}
+                    //}
+                    //else
+                    //{
+                        //panic("Not implemented\n", .{});
+                    //}
+                //}
+                //else
+                //{
+                    //panic("Expecting identifier token\n", .{});
+                //}
+            //}
+            //else
+            //{
+                //panic("No Dot\n", .{});
+            //}
+        //}
+
+        //return struct_lit_node;
+    //}
+
+
+
+    //fn parse_declaration(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node) *Node
+    //{
+        //const type_expr = self.parse_type(allocator, parser, parent_node);
+
+        //assert(left_expr.value == Node.ID.identifier_expr);
+        //const var_name = left_expr.value.identifier_expr.name;
+
+        //const declaration_node = Node
+        //{
+            //.value = Node.Value {
+                //.var_decl = VariableDeclaration 
+                //{
+                    //.name = var_name,
+                    //.var_type = type_expr,
+                    //.var_scope = parent_node,
+                    //.backend_ref = 0,
+                    //.is_function_arg = false,
+                //},
+            //},
+            //.value_type = Node.ValueType.LValue,
+            //.parent = parent_node,
+            //.type = undefined,
+        //};
+
+        //const declaration = self.append_and_get(declaration_node);
+        //return declaration;
+    //}
+
+    //fn parse_array_subscript(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node) *Node
+    //{
+        //const subscript_node_value = Node
+        //{
+            //.value = Node.Value {
+                //.array_subscript_expr = ArraySubscriptExpression {
+                    //.expression = left_expr,
+                    //.index = undefined,
+                //},
+            //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //var subscript_node = self.append_and_get(subscript_node_value);
+        //subscript_node.value.array_subscript_expr.index = self.parse_expression(allocator, parser, parent_node);
+
+        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
+        //{
+            //parser_error("Expected ']' in array subscript expression", .{});
+        //}
+
+        //return subscript_node;
+    //}
+
+
+    //fn parse_infix(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    //{
+    //}
+
+
+    //fn parse_binary_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node, operator: Operator, precedence: Precedence) *Node
+    //{
+        //const binary_node_value = Node
+        //{
+            //.value = Node.Value {
+                //.binary_expr = BinaryExpression {
+                    //.left = left_expr,
+                    //.right = undefined,
+                    //.id = undefined,
+                    //.parenthesis = false,
+                //},
+                //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //const binary_node = self.append_and_get(binary_node_value);
+
+        //const right_expr = self.parse_precedence(allocator, parser, binary_node, precedence.increment());
+        //log.debug("Right expr: {}\n", .{right_expr});
+        //binary_node.value.binary_expr.right = right_expr;
+
+        //const binary_op: BinaryExpression.ID = switch (operator)
+        //{
+            //Operator.Assignment => BinaryExpression.ID.Assignment,
+            //Operator.Plus => BinaryExpression.ID.Plus,
+            //Operator.Minus => BinaryExpression.ID.Minus,
+            //Operator.Multiplication => BinaryExpression.ID.Multiplication,
+            //Operator.Equal => BinaryExpression.ID.Compare_Equal,
+            //Operator.GreaterThan => BinaryExpression.ID.Compare_GreaterThan,
+            //else => panic("not implemented: {}\n", .{operator}),
+        //};
+        //binary_node.value.binary_expr.id = binary_op;
+
+        //if (binary_op == BinaryExpression.ID.Assignment)
+        //{
+            //left_expr.value_type = Node.ValueType.LValue;
+        //}
+
+        //log.debug("New binary expression: {}\n", .{binary_node});
+        //return binary_node;
+    //}
+
+    //fn parse_return(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //parser.consume();
+        //var return_node_value = Node{
+            //.value = Node.Value{
+                //.return_expr = ReturnExpression{
+                    //.expression = null,
+                //},
+            //},
+            //.value_type = Node.ValueType.RValue,
+            //.parent = parent_node,
+            //.type = undefined,
+        //};
+
+        //var return_node = self.append_and_get(return_node_value);
+
+        //if (parser.expect_sign(';') == null)
+        //{
+            //const ret_expr = self.parse_expression(allocator, parser, return_node);
+            //return_node.value.return_expr.expression = ret_expr;
+        //}
+
+        //return return_node;
+    //}
+
+    //fn _create_loop_block(self: *Parser, allocator: *Allocator, for_node: *Node, block_type : BlockExpression.ID) *Node
+    //{
+        //const loop_block_value = Node
+        //{
+            //.value = Node.Value {
+                //.block_expr = BlockExpression {
+                    //.statements = NodeRefBuffer.init(allocator),
+                    //.id = block_type,
+                //},
+                //},
+            //.parent = for_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+        //const loop_block_node = self.append_and_get(loop_block_value);
+        //self.current_function.value.function_decl.blocks.append(loop_block_node) catch {
+            //panic("Failed to allocate a block reference to function block list\n", .{});
+        //};
+        //return loop_block_node;
+    //}
+
+    //fn parse_for(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //if (parser.expect_and_consume_keyword(KeywordID.@"for") == null)
+        //{
+            //panic("Internal compiler error: expected 'for' keyword\n", .{});
+        //}
+
+        //const for_loop_node_value = Node
+        //{
+            //.value = Node.Value {
+                //.loop_expr = LoopExpression {
+                    //.prefix = undefined,
+                    //.body = undefined,
+                    //.postfix = undefined,
+                    //.exit_block_ref = undefined,
+                    //.continue_block_ref = undefined,
+                //},
+            //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //var for_node = self.append_and_get(for_loop_node_value);
+        //const parent_scope = self.current_block;
+
+        //for_node.value.loop_expr.prefix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPrefix);
+        //for_node.value.loop_expr.body = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopBody);
+        //for_node.value.loop_expr.postfix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPostfix);
+
+        //if (parser.expect_and_consume(Token.ID.identifier)) |it_identifier|
+        //{
+            //const it_decl_decl_value = Node
+            //{
+                //.value = Node.Value {
+                    //.int_lit = IntegerLiteral {
+                        //.value = 0,
+                        //.signed = false,
+                    //}
+                //},
+                //// @Info: this is set later
+                //.parent = undefined,
+                //.value_type = Node.ValueType.RValue,
+                //.type = undefined,
+            //};
+
+            //const value_type = Node
+            //{
+                //.value = Node.Value {
+                    //.type_identifier = TypeIdentifier {
+                        //.value = TypeIdentifier.Value {
+                            //.simple = "s32",
+                        //},
+                    //},
+                //},
+                //.parent = parent_node,
+                //.value_type = Node.ValueType.RValue,
+                //.type = undefined,
+            //};
+
+            //var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
+            //const it_decl_type_node = self.append_and_get(value_type);
+            //const it_decl_value = Node
+            //{
+                //.value = Node.Value {
+                    //.var_decl = VariableDeclaration {
+                        //.name = it_identifier.value.identifier,
+                        //.is_function_arg = false,
+                        //.var_scope = self.current_block,
+                        //.var_type = it_decl_type_node,
+                        //.backend_ref = 0,
+                    //},
+                //},
+                //.parent = parent_node,
+                //.value_type = Node.ValueType.LValue,
+                //.type = undefined,
+            //};
+
+            //const it_decl_node = self.append_and_get(it_decl_value);
+            //it_decl_literal_node.parent = it_decl_node;
+
+            //self.current_function.value.function_decl.variables.append(it_decl_node) catch {
+                //panic("Error allocating variable reference to function variable list\n", .{});
+            //};
+            //self.current_block.value.block_expr.statements.append(it_decl_node) catch {
+                //panic("Error allocating statement reference to block statement list\n", .{});
+            //};
+
+            //const it_decl_ref = Node {
+                //.value = Node.Value {
+                    //.identifier_expr = IdentifierExpression {
+                        //.name = it_decl_node.value.var_decl.name,
+                    //},
+                //},
+                //.value_type = Node.ValueType.LValue,
+                //.parent = parent_node,
+                //.type = undefined,
+            //};
+
+            //const it_decl_var_ref_node = self.append_and_get(it_decl_ref);
+
+            //const assignment = Node
+            //{
+                //.value = Node.Value {
+                    //.binary_expr = BinaryExpression {
+                        //.left = it_decl_var_ref_node,
+                        //.right = it_decl_literal_node,
+                        //.id = BinaryExpression.ID.Assignment,
+                        //.parenthesis = false,
+                    //}
+                //},
+                //.value_type = Node.ValueType.RValue,
+                //.parent = parent_node,
+                //.type = undefined,
+            //};
+
+            //const assignment_node = self.append_and_get(assignment);
+            //self.current_block.value.block_expr.statements.append(assignment_node) catch {
+                //panic("Error allocating statement reference to block statement list\n", .{});
+            //};
+
+            //// Prefix
+            //{
+                //self.current_block = for_node.value.loop_expr.prefix;
+                //if (parser.expect_and_consume_operator(Operator.Declaration) == null)
+                //{
+                    //panic("Expected colon after a loop variable declaration\n", .{});
+                //}
+                //const right_token = parser.peek();
+                //parser.consume();
+
+                //var right_node : *Node = undefined;
+
+                //switch (right_token.value)
+                //{
+                    //Token.ID.int_lit =>
+                    //{
+                        //const literal_value = right_token.value.int_lit;
+                        //const literal_node_value = Node {
+                            //.value = Node.Value {
+                                //.int_lit = IntegerLiteral {
+                                    //.value = literal_value,
+                                    //.signed = false,
+                                //}
+                            //},
+                            //.parent = self.current_block,
+                            //.value_type = Node.ValueType.RValue,
+                            //.type = undefined,
+                        //};
+
+                        //right_node = self.append_and_get(literal_node_value);
+                    //},
+                    //else =>
+                    //{
+                        //panic("Right token not implemented: {}\n", .{right_token.value});
+                    //}
+                //}
+
+                //const iterator_ref_expr_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.identifier_expr = IdentifierExpression {
+                            //.name = it_identifier.value.identifier,
+                        //}
+                    //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+
+                //const iterator_ref_expr = self.append_and_get(iterator_ref_expr_value);
+
+                //const prefix_comparison_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.binary_expr = BinaryExpression {
+                            //.left = iterator_ref_expr,
+                            //.right =  right_node,
+                            //.id = BinaryExpression.ID.Compare_LessThan,
+                            //.parenthesis = false,
+                        //}
+                    //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+
+                //const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
+                //// @Info: in other kind of loops we should support multiple statements
+                //self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch {
+                    //panic("Couldn't allocate prefix statement\n", .{});
+                //};
+            //}
+
+            //// Block
+            //{
+                //// @Info: this sets the target block as current block, so no need here to set it in advance
+                //self.block(allocator, parser, for_node.value.loop_expr.body, true);
+            //}
+
+            //// Postfix
+            //{
+                //self.current_block = for_node.value.loop_expr.postfix;
+                //const identifier_expr_lvalue = Node
+                //{
+                    //.value = Node.Value {
+                        //.identifier_expr = IdentifierExpression {
+                            //.name = it_identifier.value.identifier,
+                        //}
+                    //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.LValue,
+                    //.type = undefined,
+                //};
+                //var identifier_expr_rvalue = identifier_expr_lvalue;
+                //identifier_expr_rvalue.value_type = Node.ValueType.RValue;
+                //const identifier_lvalue = self.append_and_get(identifier_expr_lvalue);
+                //const identifier_rvalue = self.append_and_get(identifier_expr_rvalue);
+
+                //const one_lit_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.int_lit = IntegerLiteral {
+                            //.value = 1,
+                            //.signed = false,
+                        //}
+                    //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+                //const one_lit_node = self.append_and_get(one_lit_value);
+
+                //const postfix_increment_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.binary_expr = BinaryExpression {
+                            //.left = identifier_rvalue,
+                            //.right =  one_lit_node,
+                            //.id =  BinaryExpression.ID.Plus,
+                            //.parenthesis = false,
+                        //},
+                        //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+
+                //const postfix_increment_node = self.append_and_get(postfix_increment_value);
+
+                //const postfix_assignment_value = Node
+                //{
+                    //.value = Node.Value {
+                        //.binary_expr = BinaryExpression {
+                            //.left = identifier_lvalue,
+                            //.right =  postfix_increment_node,
+                            //.id =  BinaryExpression.ID.Assignment,
+                            //.parenthesis = false,
+                        //},
+                        //},
+                    //.parent = self.current_block,
+                    //.value_type = Node.ValueType.RValue,
+                    //.type = undefined,
+                //};
+
+                //const postfix_assignment_node = self.append_and_get(postfix_assignment_value);
+                //self.current_block.value.block_expr.statements.append(postfix_assignment_node) catch {
+                    //panic("Couldn't allocate postfix statement\n", .{});
+                //};
+            //}
+
+            //self.current_block = parent_scope;
+            //return for_node;
+        //}
+        //else
+        //{
+            //panic("Expected identifier declaration for loop iteration\n", .{});
+        //}
+    //}
+
+    //fn parse_if(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //// consume if keyword
+        //parser.consume();
+
+        //const branch_node_value = Node
+        //{
+            //.value = Node.Value {
+                //.branch_expr = BranchExpression {
+                    //.condition = undefined,
+                    //.if_block = undefined,
+                    //.else_block = null,
+                    //.exit_block_ref = 0,
+                //}
+            //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //var branch_node = self.append_and_get(branch_node_value);
+        //const condition_node = self.parse_expression(allocator, parser, parent_node);
+        //branch_node.value.branch_expr.condition = condition_node;
+        //const if_block_value = Node
+        //{
+            //.value = Node.Value {
+                //.block_expr = BlockExpression {
+                    //.statements = NodeRefBuffer.init(allocator),
+                    //.id = BlockExpression.ID.IfBlock,
+                //}
+            //},
+            //.parent = branch_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+        //const if_block_node = self.append_and_get(if_block_value);
+        //self.block(allocator, parser, if_block_node, true);
+        //branch_node.value.branch_expr.if_block = if_block_node;
+
+        //self.current_block = parent_node;
+
+        //if (parser.expect_and_consume_keyword(KeywordID.@"else") != null)
+        //{
+            //const else_block_value = Node
+            //{
+                //.value = Node.Value {
+                    //.block_expr = BlockExpression {
+                        //.statements = NodeRefBuffer.init(allocator),
+                        //.id = BlockExpression.ID.ElseBlock,
+                    //}
+                //},
+                //.parent = branch_node,
+                //.value_type = Node.ValueType.RValue,
+                //.type = undefined,
+            //};
+            //const else_block_node = self.append_and_get(else_block_value);
+            //self.block(allocator, parser, else_block_node, true);
+            //branch_node.value.branch_expr.else_block = else_block_node;
+        //}
+
+        //return branch_node;
+    //}
+
+    //fn parse_break(self: *Parser, parser: *ModuleParser, parent_node: *Node) *Node
+    //{
+        //// consuming break keyword
+        //parser.consume();
+        //var target = self.current_block;
+
+        //while (target.value != Node.ID.loop_expr)
+        //{
+            //if (target.parent) |parent|
+            //{
+                //target = parent;
+            //}
+            //else
+            //{
+                //panic("Couldn't find any parent\n", .{});
+            //}
+        //}
+
+        //const break_value = Node
+        //{
+            //.value = Node.Value {
+                //.break_expr = BreakExpression {
+                    //.target = target, 
+                //}
+            //},
+            //.parent = parent_node,
+            //.value_type = Node.ValueType.RValue,
+            //.type = undefined,
+        //};
+
+        //const result = self.append_and_get(break_value);
+        //return result;
+    //}
+
+
+    //fn parse_intrinsic(self: *Parser, allocator: *Allocator, parser: *ModuleParser, intrinsic_name: []const u8) void
+    //{
+        //if (std.meta.stringToEnum(Intrinsic.ID, intrinsic_name)) |intrinsic_id|
+        //{
+            //print("Intrinsic found: {}\n", .{intrinsic_id});
+            //switch (intrinsic_id)
+            //{
+                //Intrinsic.ID.syscall =>
+                //{
+                    //if (parser.expect_and_consume_operator(Operator.LeftParenthesis) == null)
+                    //{
+                        //panic("expected left parenthesis to indicate system call id\n", .{});
+                    //}
+
+                    //if (parser.expect_and_consume(Token.ID.int_lit)) |syscall_id_token|
+                    //{
+                        //const syscall_id = syscall_id_token.value.int_lit;
+                        //if (parser.expect_and_consume_operator(Operator.RightParenthesis) == null)
+                        //{
+                            //panic("expected right parenthesis\n", .{});
+                        //}
+
+                        //if (parser.expect_and_consume_operator(Operator.Declaration) == null)
+                        //{
+                            //panic("expected colon\n", .{});
+                        //}
+
+                        //if (parser.expect_and_consume_operator(Operator.LeftParenthesis) == null)
+                        //{
+                            //panic("expected left parenthesis\n", .{});
+                        //}
+
+                        //var syscall = std.mem.zeroes(Intrinsic.Syscall);
+                        //syscall.id = syscall_id;
+                        //var argument_count: u64 = 0;
+
+                        //while (true) : (argument_count += 1)
+                        //{
+                            //if (argument_count >= 6)
+                            //{
+                                //panic("Too many arguments for syscall {}: {}\n", .{syscall_id, argument_count});
+                            //}
+                            //if (parser.expect_and_consume(Token.ID.identifier) == null)
+                            //{
+                                //panic("expected identifier\n", .{});
+                            //}
+
+                            //if (parser.expect_and_consume_operator(Operator.Declaration) == null)
+                            //{
+                                //panic("expected colon\n", .{});
+                            //}
+
+                            //const arg_type = self.parse_type(allocator, parser, null);
+                            //const byte_count: u8 = blk:
+                            //{
+                                //switch (arg_type.value)
+                                //{
+                                    //Node.ID.type_identifier =>
+                                    //{
+                                        //const type_identifier = arg_type.value.type_identifier;
+                                        //const type_kind = type_identifier.value;
+                                        //switch (type_kind)
+                                        //{
+                                            //TypeIdentifier.ID.simple =>
+                                            //{
+                                                //const type_str = type_kind.simple;
+                                                //if (std.mem.eql(u8, type_str, "u8") or std.mem.eql(u8, type_str, "s8"))
+                                                //{
+                                                    //break :blk 1;
+                                                //}
+                                                //else if (std.mem.eql(u8, type_str, "u16") or std.mem.eql(u8, type_str, "s16"))
+                                                //{
+                                                    //break :blk 2;
+                                                //}
+                                                //else if (std.mem.eql(u8, type_str, "u32") or std.mem.eql(u8, type_str, "s32"))
+                                                //{
+                                                    //break :blk 4;
+                                                //}
+                                                //else if (std.mem.eql(u8, type_str, "u64") or std.mem.eql(u8, type_str, "s64"))
+                                                //{
+                                                    //break :blk 8;
+                                                //}
+                                            //},
+                                            //TypeIdentifier.ID.pointer =>
+                                            //{
+                                                //break :blk 8;
+                                            //},
+                                            //else => panic("ni: {}\n", .{type_kind}),
+                                        //}
+                                    //},
+                                    //else => panic("ni: {}\n", .{arg_type.value}),
+                                //}
+
+                                //panic("byte count couldn't be figured out\n", .{});
+                            //};
+
+                            //syscall.arg_bytes[argument_count] = byte_count;
+                            //print("Byte count: {}\n", .{byte_count});
+
+                            //const next_token = parser.peek();
+                            //parser.consume();
+                            //switch (next_token.value)
+                            //{
+                                //Token.ID.sign =>
+                                //{
+                                    //const sign = next_token.value.sign;
+                                    //switch (sign)
+                                    //{
+                                        //',' => {},
+                                        //else => panic("ni: {c}\n", .{sign}),
+                                    //}
+                                //},
+                                //Token.ID.operator =>
+                                //{
+                                    //const operator = next_token.value.operator;
+                                    //switch (operator)
+                                    //{
+                                        //Operator.RightParenthesis =>
+                                        //{
+                                            //break;
+                                        //},
+                                        //else => panic("ni: {}\n", .{operator}),
+                                    //}
+                                //},
+                                //else => panic("ni: {}\n", .{next_token.value}),
+                            //}
+                        //}
+
+                        //if (parser.expect_and_consume_sign(';') == null)
+                        //{
+                            //panic("expected ';' at the end of syscall statement", .{});
+                        //}
+
+                        //const syscall_value = Node
+                        //{
+                            //.value = Node.Value {
+                                //.syscall_decl = syscall,
+                            //},
+                            //.parent = null,
+                            //.value_type = Node.ValueType.RValue,
+                            //.type = undefined,
+                        //};
+
+                        //const syscall_node = self.append_and_get(syscall_value);
+
+                        //self.syscalls.append(syscall_node) catch {
+                            //panic("Error appending syscall\n", .{});
+                        //};
+                    //}
+                    //else
+                    //{
+                        //panic("Expected syscall id\n", .{});
+                    //}
+                //},
+            //}
+        //}
+        //else
+        //{
+            //panic("Intrinsic not found: {s}\n", .{intrinsic_name});
+        //}
+    //}
+
+
+
+//};
+

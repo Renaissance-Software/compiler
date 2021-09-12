@@ -1,0 +1,17 @@
+windows :: #import("lib/runtime_windows.rns");
+
+entry :: () noreturn
+{
+    main();
+    #switch (#os)
+    {
+        .windows:
+        {
+            windows.ExitProcess(0);
+        },
+        .linux: unreachable,
+        .macos: unreachable,
+        else: unreachable,
+    }
+}
+
