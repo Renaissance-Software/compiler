@@ -1,4 +1,4 @@
-windows :: #import("lib/runtime_windows.rns");
+windows :: #import("runtime_windows.rns");
 
 entry :: () noreturn
 {

@@ -616,40 +616,72 @@ pub const SemanticsResult = struct
     function_declarations: NodeRefBuffer,
 };
 
-pub fn analyze(allocator: *Allocator, parser_result: *Parser.Module) SemanticsResult
+pub fn analyze(allocator: *Allocator, ast: Parser.AST) SemanticsResult
 {
+    _ = allocator;
     log.debug("\n==============\nSEMANTICS\n==============\n\n", .{});
 
-    var types = Types.init(allocator);
+    //var types = Types.init(allocator);
+    if (true) unreachable;
 
-    for (parser_result.type_declarations.items) |typename|
+    for (ast.modules) |*module|
     {
-        _ = analyze_type_declaration(allocator, typename, &types, parser_result.node_buffer);
-    }
 
-    // Check for function types
-    for (parser_result.function_declarations.items) |function_decl|
-    {
-        const function_type = analyze_type_declaration(allocator, function_decl.value.function_decl.type, &types, parser_result.node_buffer);
-        function_decl.type = function_type;
-        for (function_decl.value.function_decl.arguments.items) |arg, i|
+        for (module.unresolved_types) |t|
         {
-            arg.type = function_type.value.function.arg_types.items[i];
+            _ = t;
         }
+        for (module.pointer_types) |t|
+        {
+            _ = t;
+        }
+        for (module.slice_types) |t|
+        {
+            _ = t;
+        }
+        for (module.function_types) |t|
+        {
+            _ = t;
+        }
+        for (module.array_types) |t|
+        {
+            _ = t;
+        }
+        for (module.struct_types) |t|
+        {
+            _ = t;
+        }
+
+        //for (module.type_declarations.items) |typename|
+        //{
+            //_ = analyze_type_declaration(allocator, typename, &types, module.node_buffer);
+        //}
+
+        // Check for function types
+        //for (module.function_declarations.items) |function_decl|
+        //{
+            //const function_type = analyze_type_declaration(allocator, function_decl.value.function_decl.type, &types, module.node_buffer);
+            //function_decl.type = function_type;
+            //for (function_decl.value.function_decl.arguments.items) |arg, i|
+            //{
+                //arg.type = function_type.value.function.arg_types.items[i];
+            //}
+        //}
+
+        //for (module.function_declarations.items) |function_decl|
+        //{
+            //const main_block = function_decl.value.function_decl.blocks.items[0];
+
+            //_ = explore_expression(allocator, function_decl, main_block, main_block, &module.function_declarations, module.node_buffer, &types);
+        //}
     }
 
-    for (parser_result.function_declarations.items) |function_decl|
-    {
-        const main_block = function_decl.value.function_decl.blocks.items[0];
+    //const semantics_result = SemanticsResult
+    //{
+        //.types = types,
+        //.function_declarations = module.function_declarations,
+    //};
 
-        _ = explore_expression(allocator, function_decl, main_block, main_block, &parser_result.function_declarations, parser_result.node_buffer, &types);
-    }
-
-    const semantics_result = SemanticsResult
-    {
-        .types = types,
-        .function_declarations = parser_result.function_declarations,
-    };
-
-    return semantics_result;
+    //return semantics_result;
+    unreachable;
 }

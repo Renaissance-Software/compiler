@@ -4,6 +4,7 @@ const print = std.debug.print;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+const Atomic = std.atomic.Atomic;
 
 const Types = @import("ast_types.zig");
 const BucketArrayList = @import("bucket_array.zig").BucketArrayList;
@@ -75,19 +76,19 @@ const ReturnExpression = struct
 };
 
 pub const UnresolvedType = []const u8;
-pub const PointerType = NodeID;
-pub const SliceType = NodeID;
+pub const PointerType = Identifier;
+pub const SliceType = Identifier;
 pub const FunctionType = struct
 {
-    argument_types: []NodeID,
-    return_type: NodeID,
+    argument_types: []Identifier,
+    return_type: Identifier,
     attributes: u64,
 };
 
 pub const ArrayType = struct
 {
-    type: NodeID,
-    length_expression: NodeID,
+    type: Identifier,
+    length_expression: Identifier,
 };
 
 pub const StructType = struct
@@ -99,7 +100,7 @@ pub const StructType = struct
     pub const FieldType = struct
     {
         name: []const u8,
-        type: NodeID,
+        type: Identifier,
     };
 };
 
@@ -170,11 +171,10 @@ const StructLiteral = struct
 
 const FieldAccessExpression = struct
 {
-    left_expression: NodeID,
-    field_expression: NodeID,
+    left_expression: Identifier,
+    field_expression: Identifier,
 };
 
-pub const NodeID = u64;
 pub const BuiltinID = enum(u64)
 {
     os = 1,
@@ -183,7 +183,7 @@ pub const BuiltinID = enum(u64)
 pub const VariableDeclaration = struct
 {
     name: []const u8,
-    type: NodeID,
+    type: Identifier,
 //const VariableDeclaration = struct
 //{
     //name: []const u8,
@@ -210,7 +210,7 @@ pub const Function = struct
 {
     argument_names: [][]const u8,
     name: []const u8,
-    function_type: NodeID,
+    function_type: Identifier,
 
     const Attribute = enum
     {
@@ -274,7 +274,7 @@ pub const ModuleParser = struct
 
     const ScopeBuilder = struct
     {
-        statements: ArrayList(NodeID),
+        statements: ArrayList(Identifier),
         variable_declarations: ArrayList(VariableDeclaration),
         identifier_expressions: ArrayList(IdentifierExpression),
         invoke_expressions: ArrayList(InvokeExpression),
@@ -346,28 +346,28 @@ pub const ModuleParser = struct
         self.lexer.next_index -= 1;
     }
 
-    fn parse_expression_identifier(self: *Self) NodeID
+    fn parse_expression_identifier(self: *Self) Identifier
     {
         return self.parse_precedence_identifier(Precedence.Assignment);
     }
 
-    fn parse_prefix_identifier(self: *Self) NodeID
+    fn parse_prefix_identifier(self: *Self) Identifier
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
-        const left_expression = self.scope_builder.identifier_expressions.items.len;
+        const left_expression = Identifier.new(self.scope_builder.identifier_expressions.items.len, Identifier.ArrayID.ScopeID.identifier_expressions, @boolToInt(false));
         self.scope_builder.identifier_expressions.append(.{ .name = identifier_name }) catch unreachable;
         return left_expression;
     }
 
-    fn parse_precedence_identifier(self: *Self, comptime precedence: Precedence) NodeID
+    fn parse_precedence_identifier(self: *Self, comptime precedence: Precedence) Identifier
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
-        const left_expression = self.scope_builder.identifier_expressions.items.len;
+        const left_expression = Identifier.new(self.scope_builder.identifier_expressions.items.len, Identifier.ArrayID.ScopeID.identifier_expressions, @boolToInt(false));
         self.scope_builder.identifier_expressions.append(.{ .name = identifier_name }) catch unreachable;
         return self.parse_infix(precedence, left_expression);
     }
 
-    fn parse_precedence(self: *Self, comptime precedence: Precedence) NodeID
+    fn parse_precedence(self: *Self, comptime precedence: Precedence) Identifier
     {
         // Parse prefix
         const prefix_token = self.lexer.tokens[self.lexer.next_index];
@@ -379,7 +379,7 @@ pub const ModuleParser = struct
                 .int_lit =>
                 {
                     const integer_value = self.get_and_consume_token(.int_lit).value;
-                    const integer_literal_id = self.scope_builder.integer_literals.items.len;
+                    const integer_literal_id = Identifier.new(self.scope_builder.integer_literals.items.len, Identifier.ArrayID.ScopeID.integer_literals, @boolToInt(false));
                     self.scope_builder.integer_literals.append(.
                         {
                             .value = integer_value,
@@ -396,12 +396,12 @@ pub const ModuleParser = struct
         return self.parse_infix(precedence, left_expression);
     }
 
-    fn parse_expression(self: *Self) NodeID
+    fn parse_expression(self: *Self) Identifier
     {
         return self.parse_precedence(Precedence.Assignment);
     }
 
-    fn parse_infix(self: *Self, comptime precedence: Precedence, left_expr: NodeID) NodeID
+    fn parse_infix(self: *Self, comptime precedence: Precedence, left_expr: Identifier) Identifier
     {
         var left_expression = left_expr;
         var has_less_precedence = true;
@@ -479,7 +479,7 @@ pub const ModuleParser = struct
                         {
                             var arguments_left_to_parse = self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .RightParenthesis;
 
-                            var argument_list = ArrayList(NodeID).init(self.allocator);
+                            var argument_list = ArrayList(Identifier).init(self.allocator);
 
                             while (arguments_left_to_parse)
                             {
@@ -498,7 +498,7 @@ pub const ModuleParser = struct
                                 parser_error("Expected right parenthesis to finish argument list\n", .{});
                             }
 
-                            const invoke_expression_id = self.scope_builder.invoke_expressions.items.len;
+                            const invoke_expression_id = Identifier.new(self.scope_builder.invoke_expressions.items.len, Identifier.ArrayID.ScopeID.invoke_expressions, @boolToInt(false));
                             self.scope_builder.invoke_expressions.append(.
                                 {
                                     .arguments = argument_list.items,
@@ -519,7 +519,7 @@ pub const ModuleParser = struct
                         },
                         .Dot =>
                         {
-                            const field_access_expression_id = self.scope_builder.field_access_expressions.items.len;
+                            const field_access_expression_id = Identifier.new(self.scope_builder.field_access_expressions.items.len, Identifier.ArrayID.ScopeID.field_access_expressions, @boolToInt(false));
                             self.scope_builder.field_access_expressions.append(
                                 .{
                                     .left_expression = left_expression,
@@ -778,7 +778,7 @@ pub const ModuleParser = struct
     {
         self.scope_builder = ScopeBuilder
         {
-            .statements = ArrayList(NodeID).init(self.allocator),
+            .statements = ArrayList(Identifier).init(self.allocator),
             .variable_declarations = ArrayList(VariableDeclaration).init(self.allocator),
             .identifier_expressions = ArrayList(IdentifierExpression).init(self.allocator),
             .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
@@ -886,8 +886,22 @@ pub const ModuleParser = struct
         //}
     //}
     }
+    
+    fn add_type(self: *Self, type_identifier: []const u8) Identifier
+    {
+        for (self.module_builder.unresolved_types.items) |t, i|
+        {
+            if (std.mem.eql(u8, type_identifier, t))
+            {
+                return Identifier.new(i, Identifier.ArrayID.ModuleID.unresolved_types, @boolToInt(false));
+            }
+        }
+        const i = self.module_builder.unresolved_types.items.len;
+        self.module_builder.unresolved_types.append(type_identifier) catch unreachable;
+        return Identifier.new(i, Identifier.ArrayID.ModuleID.unresolved_types, @boolToInt(false));
+    }
 
-    fn parse_type(self: *Self) NodeID
+    fn parse_type(self: *Self) Identifier
     {
         const next_token = self.lexer.tokens[self.lexer.next_index];
         switch (next_token)
@@ -895,16 +909,7 @@ pub const ModuleParser = struct
             .identifier =>
             {
                 const type_identifier = self.get_and_consume_token(.identifier).value;
-                for (self.module_builder.unresolved_types.items) |t, i|
-                {
-                    if (std.mem.eql(u8, type_identifier, t))
-                    {
-                        return i;
-                    }
-                }
-                const index = self.module_builder.unresolved_types.items.len;
-                self.module_builder.unresolved_types.append(type_identifier) catch unreachable;
-                return index;
+                return self.add_type(type_identifier);
             },
             else => panic("ni: {}\n", .{next_token}),
         }
@@ -1094,7 +1099,8 @@ pub const ModuleParser = struct
                 const operator = self.get_and_consume_token(.operator).value;
                 if (operator == .CompilerIntrinsic)
                 {
-                    if (self.parse_compile_time_expression() == @enumToInt(BuiltinID.os))
+                    const compile_time_expression = self.parse_compile_time_expression();
+                    if (compile_time_expression.compare(Identifier.from_builtin_id(BuiltinID.os)))
                     {
                         if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_and_consume_token(.operator).value != .RightParenthesis)
                         {
@@ -1238,7 +1244,7 @@ pub const ModuleParser = struct
         }
     }
 
-    fn parse_compile_time_expression(self: *Self) NodeID
+    fn parse_compile_time_expression(self: *Self) Identifier
     {
         switch (self.lexer.tokens[self.lexer.next_index])
         {
@@ -1247,7 +1253,7 @@ pub const ModuleParser = struct
                 const identifier = self.get_and_consume_token(.identifier).value;
                 if (std.mem.eql(u8, identifier, "os"))
                 {
-                    return @enumToInt(BuiltinID.os);
+                    return Identifier.from_builtin_id(BuiltinID.os);
                 }
                 else unreachable;
             },
@@ -1255,41 +1261,44 @@ pub const ModuleParser = struct
         }
     }
 
-    fn get_function_type(self: *Self, return_type: NodeID, argument_types: []NodeID, attributes: u64) NodeID
+    fn get_function_type(self: *Self, return_type: Identifier, argument_types: []Identifier, attributes: u64) Identifier
     {
         outer_loop: for (self.module_builder.function_types.items) |ft, i|
         {
-            if (return_type != ft.return_type) continue;
+            if (!return_type.compare(ft.return_type)) continue;
             if (attributes != ft.attributes) continue;
 
             for (ft.argument_types) |arg_type, arg_i|
             {
                 const arg_t = argument_types[arg_i];
-                if (arg_type != arg_t)
+                if (!arg_type.compare(arg_t))
                 {
                     continue :outer_loop;
                 }
             }
 
-            if (true) panic("deal with id generation properly\n", .{});
-            return i;
+            return Identifier.new(i, Identifier.ArrayID.ModuleID.function_types, @boolToInt(false));
         }
 
-        return 0;
+        const function_type_id = self.module_builder.function_types.items.len;
+
+        self.module_builder.function_types.append(.{
+            .return_type = return_type,
+            .argument_types = argument_types,
+            .attributes = attributes,
+        }) catch unreachable;
+
+        return Identifier.new(function_type_id, Identifier.ArrayID.ModuleID.function_types, @boolToInt(false));
     }
 };
 
 pub const InvokeExpression = struct
 {
-    arguments: []NodeID,
-    expression: NodeID,
+    arguments: []Identifier,
+    expression: Identifier,
 };
 
-pub const ImportedModule = struct
-{
-    name: []const u8,
-    id: NodeID,
-};
+pub const ImportedModule = Identifier;
 
 pub const Module = struct
 {
@@ -1302,13 +1311,15 @@ pub const Module = struct
     function_types: []FunctionType,
     array_types: []ArrayType,
     struct_types: []StructType,
-    name: []const u8,
 };
 
 pub const AST = struct
 {
-    modules: ArrayList(Module),
-    nb: NodeBuffer,
+    modules: [*]Module,
+    module_names: [*][]const u8, // @INFO: used to know if a module is already imported and get unique and atomic indices
+    module_directories: [*][]const u8,
+    module_len: u64,
+    module_cap: u64,
 
     const Self = @This();
 
@@ -1316,41 +1327,72 @@ pub const AST = struct
     {
         log.debug("\n==============\nPARSER\n==============\n\n", .{});
 
+        const minimal_module_count = 3;
         var ast = AST
         {
-            .nb = NodeBuffer.init(allocator) catch unreachable,
-            .modules = ArrayList(Module).init(allocator),
+            .modules = (allocator.alloc(Module, minimal_module_count) catch unreachable).ptr,
+            .module_names = (allocator.alloc([]const u8, minimal_module_count) catch unreachable).ptr,
+            .module_directories = (allocator.alloc([]const u8, minimal_module_count) catch unreachable).ptr,
+            .module_len = 0,
+            .module_cap = minimal_module_count,
         };
 
-        const runtime_index = ast.lex_and_parse_module(allocator, "lib/runtime.rns", target);
-        _ = runtime_index;
-        const main_module = ast.lex_and_parse_module(allocator, source_filename, target);
-        _ = main_module;
+        _ = ast.lex_and_parse_module(allocator, "lib/runtime.rns", target, null);
+        _ = ast.lex_and_parse_module(allocator, source_filename, target, null);
 
         return ast;
     }
 
-    pub fn lex_and_parse_module(self: *Self, allocator: *Allocator, source_file: []const u8, target: std.Target) NodeID
+    // @TODO: make this thread-safe
+    pub fn lex_and_parse_module(self: *AST, allocator: *Allocator, source_file: []const u8, target: std.Target, parent_module: ?Identifier) Identifier
     {
-        _ = target;
+        const module_index = self.module_len;
 
-        for (self.modules.items) |*module, i|
+        // @TODO: should this be atomic too?
         {
-            if (std.mem.eql(u8, module.name, source_file))
+            // ensure total capacity
+            const new_capacity = module_index + 1;
+            var better_capacity = self.module_cap;
+            if (new_capacity > better_capacity)
             {
-                print("Already import module \"{s}\" with ID {}\n", .{source_file, i});
-                return i;
+                while (new_capacity > better_capacity)
+                {
+                    better_capacity += better_capacity / 2 + 8;
+                }
+
+                self.modules = (allocator.reallocAtLeast(self.modules[0..self.module_len], better_capacity) catch unreachable).ptr;
+                self.module_names = (allocator.reallocAtLeast(self.module_names[0..self.module_len], better_capacity) catch unreachable).ptr;
+                self.module_directories = (allocator.reallocAtLeast(self.module_directories[0..self.module_len], better_capacity) catch unreachable).ptr;
+                self.module_cap = better_capacity;
             }
         }
 
-        const module_index = self.modules.items.len;
-        self.modules.items.len += 1;
-        self.modules.ensureTotalCapacity(self.modules.items.len) catch unreachable;
+        print("Parsing module #{} \"{s}\"\n", .{module_index, source_file});
+        const module_id = Identifier.new(module_index, Identifier.ArrayID.GlobalID.modules, @boolToInt(false));
 
+        const file_content = if (parent_module) |parent_module_id| blk:
+        {
+            const parent_directory_name = self.module_directories[parent_module_id.index];
+            var parent_directory_handle = std.fs.openDirAbsolute(parent_directory_name, .{}) catch unreachable;
+            defer parent_directory_handle.close();
+            const absolute_path = parent_directory_handle.realpathAlloc(allocator, source_file) catch unreachable;
+            self.module_directories[module_index] = std.fs.path.dirname(absolute_path).?;
+            const file_handle = std.fs.openFileAbsolute(absolute_path, .{}) catch unreachable;
+            defer file_handle.close();
+            break :blk file_handle.readToEndAlloc(allocator, 0xffffffff) catch unreachable;
+        }
+        else blk:
+        {
+            print("Source file: {s}\n", .{source_file});
+            const absolute_path = std.fs.realpathAlloc(allocator, source_file) catch unreachable;
+            print("Absolute path: {s}\n", .{absolute_path});
+            self.module_directories[module_index] = std.fs.path.dirname(absolute_path).?;
+            print("Current module directory: {s}\n", .{self.module_directories[module_index]});
+            const file_handle = std.fs.openFileAbsolute(absolute_path, .{}) catch unreachable;
+            defer file_handle.close();
+            break :blk file_handle.readToEndAlloc(allocator, 0xffffffff) catch unreachable;
+        };
 
-        print("Parsing module: \"{s}\" with ID {}...\n", .{source_file, module_index});
-
-        const file_content = std.fs.cwd().readFileAlloc(allocator, source_file, 0xffffffff) catch unreachable;
         const lexer = Lexer.lexical_analyze(allocator, file_content);
 
         var parser = ModuleParser
@@ -1420,7 +1462,7 @@ pub const AST = struct
                             print("Parsing function {s}...\n", .{tld_name});
                             const left_parenthesis_next_token = parser.lexer.tokens[parser.lexer.next_index];
                             var argument_name_list = ArrayList([]const u8).init(parser.allocator);
-                            var argument_type_list = ArrayList(NodeID).init(parser.allocator);
+                            var argument_type_list = ArrayList(Identifier).init(parser.allocator);
                             var arguments_left_to_parse = blk:
                             {
                                 if (left_parenthesis_next_token == .operator)
@@ -1475,7 +1517,7 @@ pub const AST = struct
                             parser.consume_token(.operator);
 
                             const arrow_or = parser.lexer.tokens[parser.lexer.next_index];
-                            const return_type: NodeID = if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow) parser.parse_type() else 0;
+                            const return_type = if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow) parser.parse_type() else parser.add_type("void");
                             print("Return type: {}\n", .{return_type});
 
                             var next = parser.lexer.tokens[parser.lexer.next_index];
@@ -1533,7 +1575,7 @@ pub const AST = struct
                                             .name = tld_name,
                                             .function_type = function_type,
                                         },
-                                    }) catch unreachable;
+                                        }) catch unreachable;
                                 parser.function_builder = std.mem.zeroes(ModuleParser.FunctionBuilder);
                                 parser.parse_scope();
                             }
@@ -1597,11 +1639,8 @@ pub const AST = struct
                                 parser_error("Expected semicolon after import statement\n", .{});
                             }
 
-                            const import_module_id = self.lex_and_parse_module(parser.allocator, import_file_name, target);
-                            parser.module_builder.imported_modules.append(.{
-                                .name = tld_name,
-                                .id = import_module_id,
-                            }) catch unreachable;
+                            const import_module_id = self.import_module(parser.allocator, import_file_name, target, module_id);
+                            parser.module_builder.imported_modules.append(import_module_id) catch unreachable;
                         }
                         else 
                         {
@@ -1613,11 +1652,11 @@ pub const AST = struct
                         const keyword = parser.get_and_consume_token(.keyword);
                         if (keyword.value == .@"struct")
                         {
-                    //const struct_type = self.parse_type(parser.allocator, parser, null);
-                    //struct_type.value.type_identifier.value.structure.name = name;
-                    //self.type_declarations.append(struct_type) catch {
-                        //panic("Error allocating memory for type declaration\n", .{});
-                    //};
+                            //const struct_type = self.parse_type(parser.allocator, parser, null);
+                            //struct_type.value.type_identifier.value.structure.name = name;
+                            //self.type_declarations.append(struct_type) catch {
+                            //panic("Error allocating memory for type declaration\n", .{});
+                            //};
                             unreachable;
                         }
                         else
@@ -1658,7 +1697,7 @@ pub const AST = struct
             }
         }
 
-        self.modules.items[module_index] = Module
+        self.modules[module_index] = Module
         {
             .internal_functions = parser.module_builder.internal_functions.items,
             .external_functions = parser.module_builder.external_functions.items,
@@ -1669,131 +1708,150 @@ pub const AST = struct
             .function_types = parser.module_builder.function_types.items,
             .array_types = parser.module_builder.array_types.items,
             .struct_types = parser.module_builder.struct_types.items,
-            .name = source_file,
         };
 
-        return module_index;
+        self.module_names[module_index] = source_file;
+        self.module_len += 1;
+
+        return module_id;
     }
 
-    pub fn import_module(self: *Self, allocator: *Allocator, source_file: []const u8, target: std.Target) void
+    pub fn import_module(self: *Self, allocator: *Allocator, source_file: []const u8, target: std.Target, parent_module: Identifier) Identifier
     {
-        if (!not_found)
+        for (self.module_names[0..self.module_len]) |module_name, i|
         {
-            self.lex_and_parse_module(allocator, source_file, target);
-        }
-    }
-    
-    fn parse_function_declaration(self: *Parser, allocator: *Allocator, parser: *ModuleParser) !?*Node
-    {
-        var function_node_value = Node
-        {
-            .value = Node.Value
+            if (std.mem.eql(u8, module_name, source_file))
             {
-                .function_decl = FunctionDeclaration
-                {
-                    .name = "",
-                    .arguments = ArrayList(*Node).init(allocator),
-                    .blocks = ArrayList(*Node).init(allocator),
-                    .variables = ArrayList(*Node).init(allocator),
-                    .type = undefined,
-                },
-                },
-            .parent = null,
-            .value_type = Node.ValueType.LValue,
-            .type = undefined,
-        };
-
-        var function_node = self.append_and_get(function_node_value);
-        self.current_function = function_node;
-
-        var next_token = parser.lexer.tokens[parser.lexer.next_index];
-        var arg_types = NodeRefBuffer.init(allocator);
-        var args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
-
-        while (args_left_to_parse)
-        {
-            const arg_node = self.parse_expression(allocator, parser, function_node);
-            if (arg_node.value != Node.ID.var_decl)
-            {
-                parser_error("Error parsing argument\n", .{});
-            }
-
-            arg_types.append(arg_node.value.var_decl.var_type) catch {
-                panic("Error allocating memory for argument type\n", .{});
-            };
-
-            arg_node.value.var_decl.is_function_arg = true;
-            try function_node.value.function_decl.arguments.append(arg_node);
-
-            next_token = parser.lexer.tokens[parser.lexer.next_index];
-            args_left_to_parse = !(next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightParenthesis);
-
-            if (args_left_to_parse)
-            {
-                const comma = parser.expect_and_consume_sign(',');
-                if (comma == null)
-                {
-                    // print error
-                    parser_error("Expected comma after function argument", .{});
-                }
+                print("Already import module \"{s}\" with ID {}\n", .{source_file, i});
+                return Identifier.new(i, Identifier.ArrayID.GlobalID.modules, @boolToInt(false));
             }
         }
 
-        if (parser.expect_and_consume_operator(Operator.RightParenthesis) == null)
+        return self.lex_and_parse_module(allocator, source_file, target, parent_module);
+    }
+};
+
+const Identifier = packed struct
+{
+    index: u32 = 0,
+    array_id: ArrayID = undefined,
+    level: Level = @intToEnum(Level, 0),
+    resolved: u1 = 0,
+
+    const Self = @This();
+
+    const Level = enum(u2)
+    {
+        global,
+        module,
+        //function,
+        scope,
+    };
+
+    const ArrayID = packed union
+    {
+        global: GlobalID,
+        module: ModuleID,
+        //function: Function,
+        scope: ScopeID,
+
+        const MaxType = u29;
+
+        comptime
         {
-            parser_error("Expected end of argument list\n", .{});
+            assert(@bitSizeOf(ArrayID) == @bitSizeOf(MaxType));
         }
 
-        var return_type: ?*Node = null;
-        if (parser.expect_and_consume_operator(Operator.Arrow) != null)
+        const GlobalID = enum(MaxType)
         {
-            return_type = self.parse_type(allocator, parser, null);
-        }
-
-        var function_type_node_value = Node
-        {
-            .value = Node.Value {
-                .type_identifier = TypeIdentifier {
-                    .value = TypeIdentifier.Value {
-                        .function = TypeIdentifier.Function {
-                            .arg_types = arg_types,
-                            .return_type = return_type,
-                        },
-                        },
-                    },
-                    },
-                .parent = function_node,
-                .value_type = Node.ValueType.RValue,
-                .type = undefined,
-            };
-
-        log.debug("arg type count in the parser: {}\n", .{arg_types.items.len});
-
-        function_node.value.function_decl.type = self.append_and_get(function_type_node_value);
-
-        var block_node_value = Node
-        {
-            .value = Node.Value
-            {
-                .block_expr = BlockExpression
-                {
-                    .statements = NodeRefBuffer.init(allocator),
-                    .id = BlockExpression.ID.Function,
-                },
-                },
-            .parent = function_node,
-            .value_type = Node.ValueType.RValue,
-            .type = undefined,
+            modules,
         };
 
-        var block_node = self.append_and_get(block_node_value);
-        self.current_function.value.function_decl.blocks.append(block_node) catch {
-            panic("Failed to allocate memory for block node reference\n", .{});
+        const ModuleID = enum(MaxType)
+        {
+            internal_functions,
+            external_functions,
+            imported_modules,
+            unresolved_types,
+            pointer_types,
+            slice_types,
+            function_types,
+            array_types,
+            struct_types,
         };
 
-        self.block(allocator, parser, block_node, false);
+        //const Function = enum
+        //{
+        //};
 
-        return function_node;
+        const ScopeID = enum(MaxType)
+        {
+            statements,
+            variable_declarations,
+            identifier_expressions,
+            invoke_expressions,
+            field_access_expressions,
+            integer_literals,
+        };
+    };
+
+    comptime
+    {
+        assert(@sizeOf(Identifier) == @sizeOf(u64));
+    }
+
+    fn new(base_index: u64, comptime array_id: anytype, resolved: u1) Identifier
+    {
+        const level = comptime switch (@TypeOf(array_id))
+        {
+            ArrayID.GlobalID => .global,
+            ArrayID.ModuleID => .module,
+            ArrayID.ScopeID => .scope,
+            else => unreachable,
+        };
+
+        const array_id_def: ArrayID = comptime switch (level)
+        {
+            .global => ArrayID { .global = array_id },
+            .module => ArrayID { .module = array_id },
+            .scope => ArrayID { .scope = array_id },
+            else => unreachable,
+        };
+
+        return Identifier
+        {
+            .index = @intCast(u32, base_index),
+            .array_id = array_id_def,
+            .level = level,
+            .resolved = resolved,
+        };
+    }
+
+    fn compare(self: Self, other: Self) bool
+    {
+        return std.mem.eql(u8, std.mem.asBytes(&self), std.mem.asBytes(&other));
+    }
+
+    // @TODO: make this compile time and fast
+    fn from_builtin_id(id: BuiltinID) Identifier
+    {
+        return @ptrCast(*const Identifier, &id).*;
+        //return blk:
+        //{
+            //const id_integer = @enumToInt(id);
+            //const base_index = id_integer & 0xffffffff;
+            //const array_id = (id_integer & 0x5ffffff00000000) >> 32;
+            //const level_id = (id_integer & 0x600000000000000) >> 61;
+            //const resolved_bit = (id_integer & 0x800000000000000) >> 63;
+
+            //break :blk Identifier
+            //{
+                //.index = @truncate(u32, base_index),
+                //.array_id = .{ .max = @truncate(u29, array_id), },
+                //.level = @intToEnum(Level, @truncate(u2, level_id)),
+                //.resolved = @truncate(u1, resolved_bit),
+            //};
+        //};
     }
 };
 

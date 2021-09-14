@@ -17,14 +17,10 @@ pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, 
     const allocator = &arena.allocator;
 
     const ast = Parser.AST.parse(allocator, source_filename, target);
-    _ = ast;
 
-    if (true)
-    {
-        panic("We should merge modules\n", .{});
-    }
+    _ = Semantics.analyze(allocator, ast);
 
-    Codegen.encode(allocator, &module, target);
+    //Codegen.encode(allocator, &module, target);
 }
 
 //pub fn load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
