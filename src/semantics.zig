@@ -7,17 +7,11 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 
 const Parser = @import("parser.zig");
-const Node = Parser.Node;
-const NodeBuffer = Parser.NodeBuffer;
-const NodeRefBuffer = Parser.NodeRefBuffer;
 const TypeIdentifier = Parser.TypeIdentifier;
 const BinaryExpression = Parser.BinaryExpression;
 const UnaryExpression = Parser.UnaryExpression;
 
-const Types = @import("ast_types.zig");
-const TypeBuffer = Types.TypeBuffer;
-const Type = Types.Type;
-const TypeRefBuffer = Types.TypeRefBuffer;
+const Type = @import("type.zig");
 
 const log = std.log.scoped(.semantics);
 
@@ -610,46 +604,210 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
     return node;
 }
 
-pub const SemanticsResult = struct 
+
+fn analyze_type(ast: Parser.AST, module_index: u64, unresolved_type: Type) Type
 {
-    types: TypeBuffer,
-    function_declarations: NodeRefBuffer,
+    _ = ast;
+    _ = module_index;
+    const type_id = unresolved_type.get_ID();
+    switch (type_id)
+    {
+        .builtin => return unresolved_type,
+        else => panic("Type ID: {}\n", .{type_id}),
+    }
+    //const array_index = unresolved_type.get_array_index();
+    //switch (type_level)
+    //{
+        //.builtin =>
+        //{
+            //const builtin_id = @intToEnum(Parser.Identifier.BuiltinID, array_index);
+            //return switch (builtin_id)
+            //{
+                //.void_type => BuiltinType.void_type,
+                //.noreturn_type => BuiltinType.noreturn_type,
+                //else => unreachable,
+            //};
+        //},
+        //.global =>
+        //{
+            //unreachable;
+        //},
+        //.module =>
+        //{
+            //const module_id = @intToEnum(Parser.Identifier.ModuleID, array_index);
+            //switch (module_id)
+            //{
+                //.unresolved_types =>
+                //{
+                    //const base_index = unresolved_type.index;
+                    //const t = ast.modules[module_index].unresolved_types[base_index];
+                    //panic("T: {s}\n", .{t});
+                //},
+                //else => panic("ni: {}\n", .{module_id}),
+            //}
+        //},
+        //else => panic("ni: {}\n", .{type_level}),
+    //}
+}
+
+
+
+const TypeStore = struct
+{
+    function_types: []Type.Function,
+    array_types: []Type.Array,
+    pointer_types: []Type.Pointer,
+    structure_types: []Type.Struct,
 };
 
-pub fn analyze(allocator: *Allocator, ast: Parser.AST) SemanticsResult
+const ResolvedTypeCounters = struct
+{
+    counters: [std.enums.values(ID).len]u64,
+
+    const ID = enum
+    {
+        pointer,
+        slice,
+        function,
+        array,
+        structure,
+    };
+};
+
+pub const Result = struct
+{
+    function_definitions: []Parser.Function.Internal,
+    external_functions: []Parser.Function.External,
+    function_types: []Type.Function,
+};
+
+pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 {
     _ = allocator;
     log.debug("\n==============\nSEMANTICS\n==============\n\n", .{});
 
+    print("{}\n", .{ast});
+
     //var types = Types.init(allocator);
-    if (true) unreachable;
+    //
 
-    for (ast.modules) |*module|
+    var module_array = ast.modules[0..ast.module_len];
+    var resolved = std.mem.zeroes(ResolvedTypeCounters);
+
+    var function_definition_count: u64 = 0;
+    var external_function_count: u64 = 0;
+
+    for (module_array) |module|
     {
+        resolved.counters[@enumToInt(ResolvedTypeCounters.ID.pointer)] += module.pointer_types.len;
+        resolved.counters[@enumToInt(ResolvedTypeCounters.ID.slice)]+= module.slice_types.len;
+        resolved.counters[@enumToInt(ResolvedTypeCounters.ID.function)]+= module.function_types.len;
+        resolved.counters[@enumToInt(ResolvedTypeCounters.ID.array)]+= module.array_types.len;
+        resolved.counters[@enumToInt(ResolvedTypeCounters.ID.structure)] += module.struct_types.len;
+        function_definition_count += module.internal_functions.len;
+        external_function_count += module.external_functions.len;
+    }
 
-        for (module.unresolved_types) |t|
+    var resolved_function_types = ArrayList(Type.Function).initCapacity(allocator, resolved.counters[@enumToInt(ResolvedTypeCounters.ID.function)]) catch unreachable;
+    var functions = ArrayList(Parser.Function.Internal).initCapacity(allocator, function_definition_count) catch unreachable;
+    var external_functions = ArrayList(Parser.Function.External).initCapacity(allocator, external_function_count) catch unreachable;
+
+    for (ast.modules[0..ast.module_len]) |*module, module_i|
+    {
+        const module_name = ast.module_names[module_i];
+        print("Module name: {s}\n", .{module_name});
+
+        //var unresolved_types_to_be_resolved = ArrayList(u32).init(allocator);
+        //for (module.unresolved_types) |t|
+        //{
+            //if (t[0] == 'u')
+            //{
+                //const bit_count = std.fmt.parseUnsigned(u16, t[1..], 10);
+                //if (bit_count)
+                //{
+                    //print("Parsed unsigned integer type\n", .{});
+                    //continue;
+                //}
+                //else |_| { }
+            //}
+            //else if (t[0] == 's')
+            //{
+                //const bit_count = std.fmt.parseUnsigned(u16, t[1..], 10);
+                //if (bit_count)
+                //{
+                    //print("Parsed signed integer type\n", .{});
+                    //continue;
+                //}
+                //else |_| { }
+            //}
+            //else unreachable;
+        //}
+
+        //assert(unresolved_types_to_be_resolved.items.len == 0);
+
+        //for (module.pointer_types) |t|
+        //{
+            //panic("Type: {s}\n", .{t});
+        //}
+
+        //for (module.slice_types) |t|
+        //{
+            //panic("Type: {s}\n", .{t});
+        //}
+
+        //for (module.array_types) |t|
+        //{
+            //panic("Type: {s}\n", .{t});
+        //}
+
+        //for (module.struct_types) |t|
+        //{
+            //panic("Type: {s}\n", .{t});
+        //}
+        //
+        
+        for (module.internal_functions) |*function|
         {
-            _ = t;
+            print("Processing {s}...\n", .{function.declaration.name});
+            const function_type_id = function.declaration.function_type;
+            const function_type_index = function_type_id.get_index();
+            const function_type = &module.function_types[function_type_index];
+
+            function_type.return_type = analyze_type(ast, module_i, function_type.return_type);
+            for (function_type.argument_types) |*argument_type|
+            {
+                argument_type.* = analyze_type(ast, module_i, argument_type.*);
+            }
+
+            f_t_blk: for (resolved_function_types.items) |resolved_function_type|
+            {
+                if (function_type.attributes != resolved_function_type.attributes) continue;
+                if (function_type.return_type.value != resolved_function_type.return_type.value) continue;
+
+                for (resolved_function_type.argument_types) |resolved_argument, arg_i|
+                {
+                    const new_argument_type = function_type.argument_types[arg_i];
+                    if (new_argument_type.value != resolved_argument.value) continue :f_t_blk;
+                }
+
+                panic("Function type found\n", .{});
+            }
+
+            function.declaration.function_type = Type.Function.append(&resolved_function_types, function_type.*);
+            function.declaration.function_type.mark_as_resolved();
         }
-        for (module.pointer_types) |t|
+
+        const resolved_function_type_count = resolved_function_types.items.len;
+        print("Resolved function type count: {}\n", .{resolved_function_type_count});
+
+        for (module.external_functions) |function|
         {
-            _ = t;
+            external_functions.append(function) catch unreachable;
         }
-        for (module.slice_types) |t|
+
+        for (module.internal_functions) |function|
         {
-            _ = t;
-        }
-        for (module.function_types) |t|
-        {
-            _ = t;
-        }
-        for (module.array_types) |t|
-        {
-            _ = t;
-        }
-        for (module.struct_types) |t|
-        {
-            _ = t;
+            functions.append(function) catch unreachable;
         }
 
         //for (module.type_declarations.items) |typename|
@@ -675,6 +833,12 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) SemanticsResult
             //_ = explore_expression(allocator, function_decl, main_block, main_block, &module.function_declarations, module.node_buffer, &types);
         //}
     }
+        return Result
+        {
+            .function_definitions = functions.items,
+            .external_functions = external_functions.items,
+            .function_types = resolved_function_types.items,
+        };
 
     //const semantics_result = SemanticsResult
     //{
@@ -683,5 +847,6 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) SemanticsResult
     //};
 
     //return semantics_result;
-    unreachable;
+    //
+    //
 }

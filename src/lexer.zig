@@ -17,18 +17,19 @@ pub const Keyword = struct
 
     pub const ID = enum
     {
-        @"if",
-        @"else",
-        @"for",
-        @"while",
         @"break",
         @"continue",
-        @"return",
-        @"noreturn",
+        @"else",
         @"extern",
+        @"for",
+        @"if",
+        @"noreturn",
+        @"return",
         @"struct",
         @"switch",
         @"unreachable",
+        @"void",
+        @"while",
     };
 };
 
