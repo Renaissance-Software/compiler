@@ -1,5 +1,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const print = std.debug.print;
+const panic = std.debug.panic;
 
 pub const Entity = packed struct
 {
@@ -10,10 +12,11 @@ pub const Entity = packed struct
     const Self = @This();
     comptime
     {
-        assert(@sizeOf(Self) == @sizeOf(u64));
+        assert(@sizeOf(Self) == @sizeOf(Type));
     }
 
     const resolved_position = @bitSizeOf(Self) - 1;
+    // @TODO: compute this better
 
     pub const Level = enum(IntType)
     {
@@ -26,16 +29,19 @@ pub const Entity = packed struct
         const IntType = u2;
     };
 
+    const array_id_position = @bitSizeOf(Type) >> 1;
+    const ArrayIDEnumType = std.meta.Int(.unsigned, Level.position - array_id_position);
+
     pub const BuiltinID = enum
     {
-        void_type,
-        noreturn_type,
         os,
     };
 
     pub const GlobalID = enum
     {
         modules,
+        resolved_internal_functions,
+        resolved_external_functions,
     };
 
     pub const ModuleID = enum
@@ -55,6 +61,24 @@ pub const Entity = packed struct
         integer_literals,
     };
 
+    const LevelToArrayIDMap = blk:
+    {
+        const levels = std.enums.values(Level);
+        var array_ids: [levels.len]type = undefined;
+        inline for (levels) |level, i|
+        {
+            array_ids[i] = switch(level)
+            {
+                .builtin => BuiltinID,
+                .global => GlobalID,
+                .module => ModuleID,
+                .scope => ScopeID,
+            };
+        }
+
+        break :blk array_ids;
+    };
+
     pub fn new(base_index: u64, comptime array_id: anytype) Self
     {
         const level = comptime switch(@TypeOf(array_id))
@@ -68,7 +92,7 @@ pub const Entity = packed struct
 
         const result = Self
         {
-            .value = (@intCast(Self.Type, base_index) >> 32) | (@intCast(Self.Type, @enumToInt(level)) << Level.position) | @enumToInt(array_id),
+            .value = (@intCast(Self.Type, @enumToInt(level)) << Level.position) | (@intCast(Self.Type, @enumToInt(array_id)) << array_id_position) | base_index,
         };
 
         const type_match = (@TypeOf(array_id) == ModuleID);
@@ -115,12 +139,12 @@ pub const Entity = packed struct
 
     pub fn get_level(self: Self) Level
     {
-        return @intToEnum(Level, (self.features & (std.math.maxInt(Level.IntType) << Level.position)) >> Level.position);
+        return @intToEnum(Level, (self.value & (std.math.maxInt(Level.IntType) << Level.position)) >> Level.position);
     }
 
-    pub fn get_array_index(self: Self) ArrayIDEnumType
+    pub fn get_array_index(self: Self, comptime level: Level) LevelToArrayIDMap[@enumToInt(level)]
     {
-        return @truncate(ArrayIDEnumType, self.features);
+        return @intToEnum(LevelToArrayIDMap[@enumToInt(level)], (self.value & (std.math.maxInt(ArrayIDEnumType) << array_id_position)) >> array_id_position);
     }
 
     pub fn is_resolved(self: Self) callconv(.Inline) bool
