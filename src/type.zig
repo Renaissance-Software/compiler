@@ -7,7 +7,8 @@ const Type = @This();
 value: u64,
 
 pub const unresolved_type = Type { .value = 0 };
-const ID = enum(IntType)
+
+pub const ID = enum(IntType)
 {
     unresolved,
     builtin,

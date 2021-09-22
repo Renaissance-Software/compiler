@@ -6,7 +6,11 @@ const panic = std.debug.panic;
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 
-const log = std.log.scoped(.lexer);
+const Compiler = @import("compiler.zig");
+pub fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.lexer, format, arguments);
+}
 
 pub const Keyword = struct
 {
@@ -167,7 +171,7 @@ pub const StringLiteral = Identifier;
 
 pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
 {
-    log.debug("\n==============\nLEXER\n==============\n\n", .{});
+    log("\n==============\nLEXER\n==============\n\n", .{});
 
     var tokenizer = Tokenizer
     {

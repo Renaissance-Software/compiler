@@ -1,5 +1,4 @@
 const std = @import("std");
-const print = std.debug.print;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
@@ -13,88 +12,11 @@ const Codegen = @import("codegen.zig");
 const Types = @import("ast_types.zig");
 const Type = Types.Type;
 const TypeBuffer = Types.TypeBuffer;
-const logger = std.log.scoped(.general);
+const log_general = Compiler.log;
 
-pub fn log(comptime _: std.log.Level, comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, args: anytype) void
+fn log(comptime format: []const u8, arguments: anytype) void
 {
-    switch (scope)
-    {
-        .general =>
-        {
-            if (!log_general)
-            {
-                return;
-            }
-        },
-        .lexer =>
-        {
-            if (!log_lexer)
-            {
-                return;
-            }
-        },
-        .parser =>
-        {
-            if (!log_parser)
-            {
-                return;
-            }
-        },
-        .semantics =>
-        {
-            if (!log_semantics)
-            {
-                return;
-            }
-        },
-        .bytecode =>
-        {
-            if (!log_bytecode)
-            {
-                return;
-            }
-        },
-        .x86_64_codegen =>
-        {
-            if (!log_x86_64)
-            {
-                return;
-            }
-        },
-        .x86_64_codegen_enc =>
-        {
-            if (!log_x86_64_encoding)
-            {
-                return;
-            }
-        },
-        .x86_64_codegen_enc =>
-        {
-            if (!log_x86_64_encoding)
-            {
-                return;
-            }
-        },
-        .compiler =>
-        {
-            if (!log_compiler)
-            {
-                return;
-            }
-        },
-        else => panic("ni: {}\n", .{scope}),
-    }
-    //switch (scope)
-    //{
-        //.default => print("Logging default: ", .{}),
-        //else => panic("not implemented: {}\n", .{scope}),
-    //}
-
-    // Print the message to stderr, silently ignoring any errors
-    const held = std.debug.getStderrMutex().acquire();
-    defer held.release();
-    const stderr = std.io.getStdErr().writer();
-    nosuspend stderr.print(format, args) catch return;
+    log_general(.main, format, arguments);
 }
 
 const test_dir = "tests/";
@@ -129,16 +51,6 @@ const test_files_linux = [_][]const u8
     test_dir ++ "linux_hello_world.rns",
 };
 
-pub const log_level: std.log.Level = .debug;
-pub const log_general = true;
-pub const log_lexer = false;
-pub const log_parser = false;
-pub const log_semantics = false;
-pub const log_bytecode = true;
-pub const log_x86_64 = true;
-pub const log_x86_64_encoding = false;
-pub const log_compiler = true;
-
 pub fn main() anyerror!void
 {
     const all_tests = false;
@@ -167,7 +79,7 @@ pub fn main() anyerror!void
     {
         for (test_files) |test_file, i|
         {
-            print("[Test #{}] {s}\n", .{i, test_file});
+            log("[Test #{}] {s}\n", .{i, test_file});
             Compiler.make_executable(page_allocator, test_file, target);
         }
     }

@@ -1,6 +1,5 @@
 const std = @import("std");
 const assert = std.debug.assert;
-const print = std.debug.print;
 const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
@@ -17,11 +16,14 @@ const Compiler = @import("compiler.zig");
 const Type = @import("type.zig");
 usingnamespace @import("entity.zig");
 
-const log = std.log.scoped(.parser);
-
 pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
 {
     panic(format, args);
+}
+
+pub fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.parser, format, arguments);
 }
 
 const IntegerLiteral = struct
@@ -162,9 +164,9 @@ pub const ModuleParser = struct
 
     fn get_and_consume_token(self: *Self, comptime token: Token) TokenTypeMap[@enumToInt(token)]
     {
-        //print("Getting and consuming {}...\n", .{token});
+        //log("Getting and consuming {}...\n", .{token});
         const token_to_consume = self.lexer.tokens[self.lexer.next_index];
-        //print("Token to be consumed: {}\n", .{token_to_consume});
+        //log("Token to be consumed: {}\n", .{token_to_consume});
         assert(token_to_consume == token);
         const result = self.get_token(token);
         self.consume_token(token);
@@ -191,14 +193,14 @@ pub const ModuleParser = struct
 
     fn consume_token(self: *Self, comptime token: Token) callconv(.Inline) void
     {
-        //print("Consuming {}...\n", .{token});
+        //log("Consuming {}...\n", .{token});
         self.lexer.counters[@enumToInt(token)] += 1;
         self.lexer.next_index += 1;
     }
 
     fn rectify(self: *Self, comptime token_to_rectify: Token) callconv(.Inline) void
     {
-        //print("Rectifying {}...\n", .{token_to_rectify});
+        //log("Rectifying {}...\n", .{token_to_rectify});
         self.lexer.counters[@enumToInt(token_to_rectify)] -= 1;
         self.lexer.next_index -= 1;
     }
@@ -713,7 +715,7 @@ pub const ModuleParser = struct
         }
 
         const i = self.module_builder.unresolved_types.items.len;
-        print("INDEX: {}\n", .{i});
+        log("INDEX: {}\n", .{i});
         self.module_builder.unresolved_types.append(type_identifier) catch unreachable;
         return Type.new_unresolved_type(i, self.module_builder.index);
     }
@@ -1018,7 +1020,7 @@ pub const ModuleParser = struct
                                             const sign = self.get_token(.sign).value;
                                             if (sign == '}')
                                             {
-                                                print("Closing braces...\n", .{});
+                                                log("Closing braces...\n", .{});
                                                 open_braces -= 1;
                                                 if (open_braces > 0)
                                                 {
@@ -1027,7 +1029,7 @@ pub const ModuleParser = struct
                                             }
                                             else if (sign == '{')
                                             {
-                                                print("Opening braces...\n", .{});
+                                                log("Opening braces...\n", .{});
                                                 open_braces += 1;
                                                 self.consume_token(.sign);
                                             }
@@ -1144,7 +1146,7 @@ pub const AST = struct
 
     pub fn parse(allocator: *Allocator, source_filename: []const u8, target: std.Target) Self
     {
-        log.debug("\n==============\nPARSER\n==============\n\n", .{});
+        log("\n==============\nPARSER\n==============\n\n", .{});
 
         const minimal_module_count = 3;
         var ast = AST
@@ -1187,7 +1189,7 @@ pub const AST = struct
             }
         }
 
-        print("Parsing module #{} \"{s}\"\n", .{module_index, source_file});
+        log("Parsing module #{} \"{s}\"\n", .{module_index, source_file});
         const module_id = Entity.new(module_index, Entity.GlobalID.modules);
 
         const file_content = if (parent_module) |parent_module_id| blk:
@@ -1275,7 +1277,7 @@ pub const AST = struct
                         const after_const_operator = parser.get_and_consume_token(.operator);
                         if (after_const_operator.value == .LeftParenthesis)
                         {
-                            print("Parsing function {s}...\n", .{tld_name});
+                            log("Parsing function {s}...\n", .{tld_name});
                             const left_parenthesis_next_token = parser.lexer.tokens[parser.lexer.next_index];
                             var argument_name_list = ArrayList([]const u8).init(parser.allocator);
                             var argument_type_list = ArrayList(Type).init(parser.allocator);
@@ -1335,7 +1337,7 @@ pub const AST = struct
 
                             const arrow_or = parser.lexer.tokens[parser.lexer.next_index];
                             var return_type = if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow) parser.parse_type() else Type.Builtin.void_type;
-                            print("Return type: {}\n", .{return_type});
+                            log("Return type: {}\n", .{return_type});
 
                             var next = parser.lexer.tokens[parser.lexer.next_index];
                             var attributes: u64 = 0;
@@ -1350,7 +1352,7 @@ pub const AST = struct
                                     .@"noreturn" => attributes |= 1 << @enumToInt(Type.Function.Attribute.@"noreturn"),
                                     .@"extern" =>
                                     {
-                                        print("Parsing extern function\n", .{});
+                                        log("Parsing extern function\n", .{});
                                         attributes |= 1 << @enumToInt(Type.Function.Attribute.@"extern");
                                         if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .LeftParenthesis)
                                         {
@@ -1368,7 +1370,7 @@ pub const AST = struct
                                             parser_error("Expected right parenthesis after extern declaration\n", .{});
                                         }
 
-                                        print("Library name: {s}\n", .{extern_library_name});
+                                        log("Library name: {s}\n", .{extern_library_name});
                                     },
                                     else => panic("ni: {}\n", .{kw}),
                                 }
@@ -1381,7 +1383,7 @@ pub const AST = struct
                             if (is_no_return) return_type = Type.Builtin.noreturn_type;
                             const function_type = parser.get_function_type(return_type, argument_type_list.items, attributes);
 
-                            print("Return type for \"{s}\": {}\n", .{tld_name, function_type});
+                            log("Return type for \"{s}\": {}\n", .{tld_name, function_type});
 
                             if (has_body)
                             {
@@ -1405,7 +1407,7 @@ pub const AST = struct
                                         },
                                         .scopes = parser.function_builder.scopes.items,
                                     }) catch unreachable;
-                                print("[#############] Scope count: {}\n", .{parser.function_builder.scopes.items.len});
+                                log("[#############] Scope count: {}\n", .{parser.function_builder.scopes.items.len});
                             }
                             else
                             {
@@ -1414,7 +1416,7 @@ pub const AST = struct
                                     parser_error("Expected semicolon after extern function declaration\n", .{});
                                 }
                                 const foo = parser.get_and_consume_token(.sign);
-                                print("Foo value: {c}\n", .{foo.value});
+                                log("Foo value: {c}\n", .{foo.value});
                                 if (foo.value != ';')
                                 {
                                     parser_error("Expected semicolon after extern function declaration\n", .{});
@@ -1455,7 +1457,7 @@ pub const AST = struct
                             }
 
                             const import_file_name = parser.get_and_consume_token(.str_lit).value;
-                            print("File name to be imported: {s}\n", .{import_file_name});
+                            log("File name to be imported: {s}\n", .{import_file_name});
 
                             if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .RightParenthesis)
                             {
@@ -1542,7 +1544,7 @@ pub const AST = struct
             .struct_types = parser.module_builder.struct_types.items,
         };
 
-        print("Module #{} just parsed: {}\n", .{module_index, self.modules[module_index].imported_modules.len});
+        log("Module #{} just parsed: {}\n", .{module_index, self.modules[module_index].imported_modules.len});
 
         self.module_names[module_index] = source_file;
 
@@ -1555,7 +1557,7 @@ pub const AST = struct
         {
             if (std.mem.eql(u8, module_name, source_file))
             {
-                print("Already import module \"{s}\" with ID {}\n", .{source_file, i});
+                log("Already import module \"{s}\" with ID {}\n", .{source_file, i});
                 return Entity.new(i, Entity.GlobalID.modules);
             }
         }
@@ -1648,7 +1650,7 @@ pub const Node = struct
                 const block_count = self.value.function_decl.blocks.items.len;
                 if (block_count > 0)
                 {
-                    // @Info: we only need to print the first one since the others are dependent
+                    // @Info: we only need to log the first one since the others are dependent
                     try std.fmt.format(writer, "{}", .{self.value.function_decl.blocks.items[0]});
                 }
                 try writer.writeAll("}\n");
@@ -2061,7 +2063,7 @@ const Precedence = enum
                     //{
                         //if (parser.expect_and_consume_sign('}') != null)
                         //{
-                            //log.debug("end of struct initializer\n", .{});
+                            //log("end of struct initializer\n", .{});
                             //break;
                         //}
                     //}
@@ -2161,7 +2163,7 @@ const Precedence = enum
         //const binary_node = self.append_and_get(binary_node_value);
 
         //const right_expr = self.parse_precedence(allocator, parser, binary_node, precedence.increment());
-        //log.debug("Right expr: {}\n", .{right_expr});
+        //log("Right expr: {}\n", .{right_expr});
         //binary_node.value.binary_expr.right = right_expr;
 
         //const binary_op: BinaryExpression.ID = switch (operator)
@@ -2181,7 +2183,7 @@ const Precedence = enum
             //left_expr.value_type = Node.ValueType.LValue;
         //}
 
-        //log.debug("New binary expression: {}\n", .{binary_node});
+        //log("New binary expression: {}\n", .{binary_node});
         //return binary_node;
     //}
 
@@ -2613,7 +2615,7 @@ const Precedence = enum
     //{
         //if (std.meta.stringToEnum(Intrinsic.ID, intrinsic_name)) |intrinsic_id|
         //{
-            //print("Intrinsic found: {}\n", .{intrinsic_id});
+            //log("Intrinsic found: {}\n", .{intrinsic_id});
             //switch (intrinsic_id)
             //{
                 //Intrinsic.ID.syscall =>
@@ -2706,7 +2708,7 @@ const Precedence = enum
                             //};
 
                             //syscall.arg_bytes[argument_count] = byte_count;
-                            //print("Byte count: {}\n", .{byte_count});
+                            //log("Byte count: {}\n", .{byte_count});
 
                             //const next_token = parser.peek();
                             //parser.consume();

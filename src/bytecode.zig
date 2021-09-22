@@ -163,7 +163,7 @@ pub const Value = struct
         GlobalVariable,
         MemoryAccess,
         Instruction,
-        Intrinsic, // In this we defer from llvm, since LLVM doesn't have a Intrinsic category, but they are call instruction children
+        Intrinsic, // In this we differ from llvm, since LLVM doesn't have a Intrinsic category, but they are call instruction children
         Operator,
         OperatorAddrSpaceCast,
         OperatorBitCast,

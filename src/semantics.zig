@@ -2,7 +2,6 @@ const std = @import("std");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const print = std.debug.print;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
@@ -14,12 +13,16 @@ const UnaryExpression = Parser.UnaryExpression;
 const Type = @import("type.zig");
 usingnamespace @import("entity.zig");
 
-const log = std.log.scoped(.semantics);
+const Compiler = @import("compiler.zig");
+
+pub fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.semantics, format, arguments);
+}
 
 pub fn semantics_error(comptime format: []const u8, args: anytype) noreturn
 {
-    log.err(format, args);
-    panic("Error in the semantics stage\n", .{});
+    panic(format, args);
 }
 
 fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, types: *TypeBuffer, node_buffer: *NodeBuffer) *Type
@@ -35,12 +38,12 @@ fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, type
                     const name = type_in_analysis.value.type_identifier.value.structure.name;
                     if (Type.get_type_by_name(types, name)) |type_found|
                     {
-                        log.debug("Type already found\n", .{});
+                        log("Type already found\n", .{});
                         return type_found;
                     }
                     else
                     {
-                        log.debug("Type not found. Must create\n", .{});
+                        log("Type not found. Must create\n", .{});
                     }
 
                     var fields = ArrayList(Type.Struct.Field).init(allocator);
@@ -154,7 +157,7 @@ fn resolve_compile_time_uint_constant(node: *Node) u64
 
 pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
 {
-    log.debug("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
+    log("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
 
     switch (lvalue_type.value)
     {
@@ -166,7 +169,7 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                 {
                     assert(right.type.value == Type.ID.unresolved);
                     right.type = lvalue_type;
-                    log.debug("Integer literal type resolved\n", .{});
+                    log("Integer literal type resolved\n", .{});
                     // @TODO: make sure we have enough bytes in the lvalue type
 
                     return lvalue_type;
@@ -181,7 +184,7 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                 =>
                 {
                     const rvalue_type = right.type;
-                    log.debug("{}\n", .{rvalue_type});
+                    log("{}\n", .{rvalue_type});
                     if (lvalue_type == rvalue_type)
                     {
                         return lvalue_type;
@@ -244,7 +247,7 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                     const result = typecheck(lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
                     assert(result.value != Type.ID.unresolved);
                     // @TODO: typecheck here
-                    log.debug("Array literal resolved into {}\n", .{result});
+                    log("Array literal resolved into {}\n", .{result});
                     right.type = lvalue_type;
                     return lvalue_type;
                 },
@@ -525,7 +528,7 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
             const function_call_id_node = node.value.invoke_expr.expression;
             assert(function_call_id_node.value == Node.ID.identifier_expr);
             const function_call_name = function_call_id_node.value.identifier_expr.name;
-            log.debug("function call name: {s}\n", .{function_call_name});
+            log("function call name: {s}\n", .{function_call_name});
             const function_decl = find_function_decl(function_call_name, functions);
             node.type = function_decl.type.value.function.ret_type;
             node.value.invoke_expr.expression = function_decl;
@@ -748,7 +751,7 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, sem
 pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, module_index: u64) void
 {
     const statement_count = scope.statements.len;
-    print("Statement count: {}\n", .{statement_count});
+    log("Statement count: {}\n", .{statement_count});
     for (scope.statements) |*statement|
     {
         const statement_index = statement.get_index();
@@ -761,12 +764,12 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
             {
                 const invoke_expression = &scope.invoke_expressions[statement_index];
                 const expression_to_invoke = invoke_expression.expression;
-                print("{}\n", .{invoke_expression});
+                log("{}\n", .{invoke_expression});
                 const expression_to_invoke_index = expression_to_invoke.get_index();
                 const expression_to_invoke_level = expression_to_invoke.get_level();
                 assert(expression_to_invoke_level == .scope);
                 const expression_to_invoke_id = expression_to_invoke.get_array_index(.scope);
-                print("{}\n", .{expression_to_invoke_id});
+                log("{}\n", .{expression_to_invoke_id});
 
                 const resolved_expression_to_invoke: Entity = blk:
                 {
@@ -778,7 +781,7 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
                         {
                             for (semantics_analyzer.internal_functions.items) |function, i|
                             {
-                                print("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
+                                log("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
                                 if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
                                 {
                                     continue;
@@ -797,7 +800,7 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
                     else if (expression_to_invoke_id == .field_access_expressions)
                     {
                         const field_expression = scope.field_access_expressions[expression_to_invoke_index];
-                        print("{}\n", .{field_expression});
+                        log("{}\n", .{field_expression});
                         const left = field_expression.left_expression;
                         const left_level = left.get_level();
                         assert(left_level == .scope);
@@ -828,11 +831,11 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
                             const imported_module_index = imported_module.module.get_index();
                             const internal_functions_range = get_module_item_slice_range(.internal_functions, semantics_analyzer, module_offsets, imported_module_index);
                             const internal_functions = semantics_analyzer.internal_functions.items[internal_functions_range.start..internal_functions_range.end];
-                            print("Internal functions\n", .{});
+                            log("Internal functions\n", .{});
 
                             for (internal_functions) |function|
                             {
-                                print("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
+                                log("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
                                 if (!std.mem.eql(u8, function.declaration.name, field_name))
                                 {
                                     continue;
@@ -843,10 +846,10 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
 
                             const external_functions_range = get_module_item_slice_range(.external_functions, semantics_analyzer, module_offsets, imported_module_index);
                             const external_functions = semantics_analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
-                            print("External functions\n", .{});
+                            log("External functions\n", .{});
                             for (external_functions) |function, i|
                             {
-                                print("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
+                                log("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
                                 if (!std.mem.eql(u8, function.declaration.name, field_name))
                                 {
                                     continue;
@@ -864,7 +867,7 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
 
                 invoke_expression.expression = resolved_expression_to_invoke;
 
-                print("Argument count: {}\n", .{invoke_expression.arguments.len});
+                log("Argument count: {}\n", .{invoke_expression.arguments.len});
                 if (invoke_expression.arguments.len > 0)
                 {
                     const resolved_expression_array_index = resolved_expression_to_invoke.get_array_index(.global);
@@ -879,7 +882,7 @@ pub fn analyze_scope(semantics_analyzer: *SemanticsAnalyzer, module_offsets: []M
 
                     for (invoke_expression.arguments) |*arg, arg_i|
                     {
-                        print("Argument: {}\n", .{arg});
+                        log("Argument: {}\n", .{arg});
                         const arg_level = arg.get_level();
                         assert(arg_level == .scope);
                         const array_index = arg.get_array_index(.scope);
@@ -902,9 +905,9 @@ pub const Result = Parser.Module;
 
 pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 {
-    log.debug("\n==============\nSEMANTICS\n==============\n\n", .{});
+    log("\n==============\nSEMANTICS\n==============\n\n", .{});
 
-    print("{}\n", .{ast});
+    log("{}\n", .{ast});
 
     //var types = Types.init(allocator);
     //
@@ -916,11 +919,11 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 
     for (module_array) |module, i|
     {
-        print("Module imported module count: {}\n", .{module.imported_modules.len});
+        log("Module imported module count: {}\n", .{module.imported_modules.len});
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.internal_functions)] = total.counters[@enumToInt(ModuleStats.ID.internal_functions)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.external_functions)] = total.counters[@enumToInt(ModuleStats.ID.external_functions)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.imported_modules)] = total.counters[@enumToInt(ModuleStats.ID.imported_modules)];
-        print("Imported module count: {}\n", .{module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.imported_modules)]});
+        log("Imported module count: {}\n", .{module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.imported_modules)]});
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.unresolved_types)] = total.counters[@enumToInt(ModuleStats.ID.unresolved_types)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.pointer_types)] = total.counters[@enumToInt(ModuleStats.ID.pointer_types)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.slice_types)] = total.counters[@enumToInt(ModuleStats.ID.slice_types)];
@@ -966,15 +969,15 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         semantics_analyzer.struct_types.appendSlice(module.struct_types) catch unreachable;
     }
 
-    print("Internal:\t{}\n", .{semantics_analyzer.internal_functions.items.len});
-    print("External:\t{}\n", .{semantics_analyzer.external_functions.items.len});
-    print("Imported:\t{}\n", .{semantics_analyzer.imported_modules.items.len});
-    print("Unresolved:\t{}\n", .{semantics_analyzer.unresolved_types.items.len});
-    print("Pointer:\t{}\n", .{semantics_analyzer.pointer_types.items.len});
-    print("Slice:\t{}\n", .{semantics_analyzer.slice_types.items.len});
-    print("Function:\t{}\n", .{semantics_analyzer.function_types.items.len});
-    print("Array\t{}\n", .{semantics_analyzer.array_types.items.len});
-    print("Struct\t{}\n", .{semantics_analyzer.struct_types.items.len});
+    log("Internal:\t{}\n", .{semantics_analyzer.internal_functions.items.len});
+    log("External:\t{}\n", .{semantics_analyzer.external_functions.items.len});
+    log("Imported:\t{}\n", .{semantics_analyzer.imported_modules.items.len});
+    log("Unresolved:\t{}\n", .{semantics_analyzer.unresolved_types.items.len});
+    log("Pointer:\t{}\n", .{semantics_analyzer.pointer_types.items.len});
+    log("Slice:\t{}\n", .{semantics_analyzer.slice_types.items.len});
+    log("Function:\t{}\n", .{semantics_analyzer.function_types.items.len});
+    log("Array\t{}\n", .{semantics_analyzer.array_types.items.len});
+    log("Struct\t{}\n", .{semantics_analyzer.struct_types.items.len});
 
 
     // @TODO: shouldn't we discard repeated function types?

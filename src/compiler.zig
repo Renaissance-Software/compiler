@@ -20,36 +20,27 @@ pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, 
     const ast = Parser.AST.parse(allocator, source_filename, target);
     const semantics_result = Semantics.analyze(allocator, ast);
 
-    NewIR.generate(semantics_result);
-
-
+    const ir_program = NewIR.generate(allocator, semantics_result);
+    _ = ir_program;
     //Codegen.encode(allocator, &module, target);
 }
 
-//pub fn load_all_tests(page_allocator: *Allocator, cwd: std.fs.Dir) !void
-//{
-    //var arena = std.heap.ArenaAllocator.init(page_allocator);
-    //defer arena.deinit();
-    //const allocator = &arena.allocator;
+pub fn should_log(comptime scope: @TypeOf(.EnumLiteral)) bool
+{
+    return comptime switch (scope)
+    {
+        .ir => true,
+        else => false,
+    };
+}
 
-    //var test_file_contents: [test_files.len][]const u8 = undefined;
-
-    //for (test_files) |test_filename, i|
-    //{
-        //test_file_contents[i] = try cwd.readFileAlloc(allocator, test_filename, 0xffffffff);
-    //}
-
-    //const iterations : u64 = 10000;
-    //var i: u64 = 0;
-    //while (i < iterations) : (i += 1)
-    //{
-        //for (test_file_contents) |test_file_content|
-        //{
-            //logger.debug("\nTEST #{} ({s}):\n==========\n{s}\n", .{i, filename, file_content});
-            //if (!make_executable(allocator, &compiler, test_file_content))
-            //{
-                //compiler.report_error("Compiler workflow failed\n", .{});
-            //}
-        //}
-    //}
-//}
+pub fn log(comptime scope: @TypeOf(.EnumLiteral), comptime format: []const u8, arguments: anytype) void
+{
+    if (comptime should_log(scope))
+    {
+        const held = std.debug.getStderrMutex().acquire();
+        defer held.release();
+        const stderr = std.io.getStdErr().writer();
+        nosuspend stderr.print(format, arguments) catch return;
+    }
+}
