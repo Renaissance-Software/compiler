@@ -10,7 +10,6 @@ const Codegen = @import("../codegen.zig");
 const CodeBuffer = Codegen.CodeBuffer;
 const DataBuffer = Codegen.DataBuffer;
 const Import = Codegen.Import;
-const Section = Codegen.Section;
 
 const BucketArray = @import("../bucket_array.zig").BucketArray;
 
@@ -20,10 +19,6 @@ const x86_64v2 = @import("x86_64/codegenv2.zig");
 pub const file_alignment = 0x200;
 pub const section_alignment = 0x1000;
 const min_windows_version_vista = 6;
-
-const NameType = [:0]const u8;
-
-// @TODO: work around. We need to abstract this away from platforms
 
 const DirectoryIndex = enum
 {
@@ -671,72 +666,102 @@ const DataSection = struct
     }
 };
 
-const SectionIndex = enum(u8)
+pub const Section = struct
 {
-    @".text",
-    @".rdata",
-    @".data",
+    header: ImageSectionHeader,
+    buffer: DataBuffer,
+    name: []const u8,
+
+    const count = std.enums.values(Index).len;
+
+    const Index = enum(u8)
+    {
+        @".text",
+        @".rdata",
+        @".data",
+    };
+
+    const NameType = [image_sizeof_short_name]u8;
+    const names = [_]NameType
+    {
+        NameType { '.', 't', 'e', 'x', 't',   0, 0, 0 },
+        NameType { '.', 'r', 'd', 'a', 't', 'a', 0, 0 },
+        NameType { '.', 'd', 'a', 't', 'a',   0, 0, 0 },
+    };
+    //{
+        //var section_names: [Section.count]NameType = [_]NameType{0, 0, 0, 0, 0, 0, 0, 0} ** Section.count;
+        
+        //break :blk section_names;
+    //};
+    //
+    const text_index = @enumToInt(Section.Index.@".text");
+    const rdata_index = @enumToInt(Section.Index.@".rdata");
+    const data_index = @enumToInt(Section.Index.@".data");
+
+    const characteristics = blk:
+    {
+        var section_characteristics: [Section.count]u32 = [_]u32{0} ** Section.count;
+
+        section_characteristics[text_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute);
+        section_characteristics[rdata_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read);
+        section_characteristics[data_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_write);
+
+        break :blk section_characteristics;
+    };
+
+    pub const Permission = enum(u8)
+    {
+        read = 1,
+        write = 2,
+        execute = 4,
+    };
+
+    pub const Directory = extern struct
+    {
+        RVA: u32,
+        size: u32,
+    };
 };
 
 pub const Patch = struct
 {
     section_buffer_index_to: u32,
     section_buffer_index_from: u32,
-    section_to_write_to: SectionIndex,
-    section_to_read_from: SectionIndex,
+    section_to_write_to: Section.Index,
+    section_to_read_from: Section.Index,
 };
 
 pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, data_buffer: []const u8, import_libraries: []Import.Library, target: std.Target) void
 {
     _ = data_buffer;
-    _ = executable;
+    var patches = ArrayList(Patch).init(allocator);
     
-    var section_headers = [_]ImageSectionHeader
+    var section_headers: [Section.count + 1]ImageSectionHeader = undefined;
+    for (section_headers[0..Section.count]) |*sh, sh_i|
     {
-        std.mem.zeroInit(ImageSectionHeader, .{
-            .name = text_section_name,
-            .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute),
-        }),
-        std.mem.zeroInit(ImageSectionHeader, .{
-            .name = rdata_section_name,
-            .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read),
-        }),
-        std.mem.zeroInit(ImageSectionHeader, .{
-            .name = data_section_name,
-            .characteristics = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_write),
-        }),
-        std.mem.zeroes(ImageSectionHeader),
-    };
+        sh.* = std.mem.zeroInit(.
+            {
+                //.name = Section.names[sh_i],
+                .characteristics = Section.characteristics[sh_i],
+            });
+    }
+    section_headers[Section.count] = std.mem.zeroes(ImageSectionHeader);
     
     const file_size_of_headers = @intCast(u32, alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(@TypeOf(image_NT_signature)) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + @sizeOf(@TypeOf(section_headers)), file_alignment));
 
     var offset = Offset.new(file_size_of_headers);
 
-    var patches = ArrayList(Patch).init(allocator);
-
-    // .text
-    var text_section_header = &section_headers[@enumToInt(SectionIndex.@".text")];
-    var rdata_section_header = &section_headers[@enumToInt(SectionIndex.@".rdata")];
-    var data_section_header = &section_headers[@enumToInt(SectionIndex.@".data")];
-
     //const text = TextSection.encode_old(allocator, text_section_header, &offset);
-    const text = TextSection.encode(executable, allocator, text_section_header, &patches, target.cpu.arch, &offset);
-    const rdata = RDataSection.encode(allocator, rdata_section_header, import_libraries, &offset);
-    const data = DataSection.encode(allocator, data_section_header, &offset);
+    const text = TextSection.encode(executable, allocator, &section_header[@enumToInt(Section.Index.@".text")], &patches, target.cpu.arch, &offset);
+    const rdata = RDataSection.encode(allocator, &section_header[@enumToInt(Section.Index.@".rdata")], import_libraries, &offset);
+    const data = DataSection.encode(allocator, &section_header[@enumToInt(Section.Index.@".data")], &offset);
 
-
-    var sections = [std.enums.values(SectionIndex).len]Section
+    var sections = [Section.count]Section
     {
         text,
         rdata.section,
         data,
     };
-
-    for (sections) |section, section_i|
-    {
-        std.debug.print("Section #{}\n", .{section_i});
-        assert(section.base_RVA != 0);
-    }
 
     // program patch labels
     for (patches.items) |patch|

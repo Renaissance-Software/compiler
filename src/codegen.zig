@@ -67,26 +67,3 @@ pub fn write_executable(name: []const u8, content: []const u8) void
         panic("Error writting bytes to a file: {}\n", .{file_wr_err});
     };
 }
-
-pub const Section = struct
-{
-    header: PE.ImageSectionHeader,
-    buffer: DataBuffer,
-    name: []const u8,
-    base_RVA: u32,
-    permissions: u8,
-
-    pub const Permission = enum(u8)
-    {
-        read = 1,
-        write = 2,
-        execute = 4,
-    };
-
-    pub const Directory = extern struct
-    {
-        RVA: u32,
-        size: u32,
-    };
-};
-
