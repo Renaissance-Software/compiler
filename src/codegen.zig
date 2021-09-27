@@ -1,20 +1,26 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
-const print = std.debug.print;
 const ArrayList = std.ArrayList;
 
-const IR = @import("bytecode.zig");
-const x86_64 = @import("codegen/x86_64/codegen.zig");
+const Compiler = @import("compiler.zig");
+const IR = if (old_version) @import("bytecode.zig") else @import("ir.zig");
+const old_version = false;
+const x86_64 = if (old_version) @import("codegen/x86_64/codegen.zig") else @import("codegen/x86_64/codegenv2.zig");
 const arm64 = @import("codegen/arm64/codegen.zig");
 
-pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) void
+fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.codegen, format, arguments);
+}
+
+pub fn encode(allocator: *Allocator, module: *const IR.Program, target: std.Target) void
 {
     const arch = target.cpu.arch;
     switch (arch)
     {
         .x86_64 => x86_64.encode(allocator, module, target),
-        .aarch64 => arm64.encode(allocator, module, target),
+        //.aarch64 => arm64.encode(allocator, module, target),
         else => panic("Architecture {} is not supported\n", .{arch}),
     }
 }
@@ -51,7 +57,7 @@ pub const Import = struct
 
 pub fn write_executable(name: []const u8, content: []const u8) void
 {
-    print("Creating executable: {s}\n", .{name});
+    log("Creating executable: {s}\n", .{name});
     const file = std.fs.cwd().createFile(name, comptime if (std.builtin.target.os.tag == .windows) .{} else .{ .mode = 0o777}) catch |err| panic("Error creating file {s}: {}\n", .{name, err});
     defer file.close();
 
@@ -79,4 +85,10 @@ pub const Section = struct
         RVA: u32,
         size: u32,
     };
+};
+
+pub const TextSection = struct
+{
+    section: Section,
+    entry_point_rva: u32,
 };

@@ -21,15 +21,14 @@ pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, 
     const semantics_result = Semantics.analyze(allocator, ast);
 
     const ir_program = NewIR.generate(allocator, semantics_result);
-    _ = ir_program;
-    //Codegen.encode(allocator, &module, target);
+    Codegen.encode(allocator, &ir_program, target);
 }
 
 pub fn should_log(comptime scope: @TypeOf(.EnumLiteral)) bool
 {
     return comptime switch (scope)
     {
-        .ir => true,
+        .x86_64 => true,
         else => false,
     };
 }

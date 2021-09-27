@@ -11,7 +11,7 @@ const IR = @import("../../bytecode.zig");
 const Encoding = @import("encoding.zig");
 const Mnemonic = Encoding.Instruction.ID;
 
-const PE32 = @import("../pe32.zig");
+const PE = @import("../pe.zig");
 
 const encode_frame_pointer = true;
 const reset_register_allocator_each_basic_block = true;
@@ -449,8 +449,6 @@ const Label = struct
     }
 };
 
-
-
 const Instruction = struct
 {
     id: Mnemonic,
@@ -627,9 +625,9 @@ pub const Executable = struct
     data_base_RVA: u64,
     entry_point: *Function,
 
-    pub fn encode_text_section_pe32(self: *Self, allocator: *Allocator, header: *PE32.ImageSectionHeader) TextSection
+    pub fn encode_text_section_pe(self: *Self, allocator: *Allocator, header: *PE.ImageSectionHeader) TextSection
     {
-        const aprox_code_size = std.mem.alignForward(estimate_max_code_size(self.functions.items), PE32.file_alignment);
+        const aprox_code_size = std.mem.alignForward(estimate_max_code_size(self.functions.items), PE.file_alignment);
         var code_buffer = DataBuffer.initCapacity(allocator, aprox_code_size) catch panic("Error creating code buffer\n", .{});
 
         self.code_base_RVA = header.virtual_address;
@@ -938,7 +936,7 @@ pub const Executable = struct
         log.debug("\n\nAproximate code size: {}. Real code size: {}\n", .{aprox_code_size, code_size});
 
         header.misc.virtual_size = @intCast(u32, code_buffer.items.len);
-        header.size_of_raw_data = @intCast(u32, std.mem.alignForward(code_buffer.items.len, PE32.file_alignment));
+        header.size_of_raw_data = @intCast(u32, std.mem.alignForward(code_buffer.items.len, PE.file_alignment));
 
         return 
         .{
@@ -2273,13 +2271,11 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
     const function_count = module.functions.len();
     assert(function_count > 0);
 
-    //var function_buffer = FunctionBuffer.initCapacity(allocator, function_count) catch {
-    //    panic("Error allocating memory for machine code functions\n", .{});
-    //};
     var data_buffer = DataBuffer.initCapacity(allocator, 1024 * 64) catch
     {
         panic("Unable to create buffer\n", .{});
     };
+
     var constant_data_list = ConstantDataList.initCapacity(allocator, 1024) catch
     {
         panic("Unable to create buffer\n", .{});
@@ -2333,15 +2329,14 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
                 },
             };
 
+            // @TODO: should we separate allocas from other instructions?
             for (function.basic_blocks.items[0].instructions.items) |instruction|
             {
-                if (instruction.id != IR.Instruction.ID.Alloca)
+                if (instruction.id == IR.Instruction.ID.Alloca)
                 {
-                    break;
+                    const alloca_size = get_alloca_size(instruction);
+                    _ = mc_function_value.stack_allocator.allocate(alloca_size);
                 }
-
-                const alloca_size = get_alloca_size(instruction);
-                _ = mc_function_value.stack_allocator.allocate(alloca_size);
             }
 
             mc_function_value.labels.resize(mc_function_value.labels.capacity) catch {
@@ -2782,6 +2777,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
 
                                         const use_count = instruction.base.uses.items.len;
                                         log.debug("Call use count: {}\n", .{use_count});
+
                                         if (instruction.base.type.id == IR.Type.ID.void)
                                         {
                                             assert(use_count == 0);
@@ -2923,7 +2919,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
                                 break :blk kernel32;
                             }) catch unreachable;
 
-                    PE32.write(allocator, &executable, filename, data_buffer.items, libraries.items, target);
+                    PE.write(allocator, &executable, filename, data_buffer.items, libraries.items, target);
                 },
                 else => panic("ni: {}\n", .{os}),
             }

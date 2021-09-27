@@ -1,0 +1,863 @@
+const std = @import("std");
+const ArrayList = std.ArrayList;
+const alignForward = std.mem.alignForward;
+const assert = std.debug.assert;
+const panic = std.debug.panic;
+const Allocator = std.mem.Allocator;
+
+const Type = @import("../../type.zig");
+const IR = @import("../../ir.zig");
+const Compiler = @import("../../compiler.zig");
+const Codegen = @import("../../codegen.zig");
+const PE = @import("../pe.zig");
+const Import = Codegen.Import;
+const Section = Codegen.Section;
+const Encoding = @import("encoding.zig");
+const Semantics = @import("../../semantics.zig");
+
+pub fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.x86_64, format, arguments);
+}
+
+fn codegen_error(comptime format: []const u8, arguments: anytype) noreturn
+{
+    panic(format, arguments);
+}
+
+fn get_alloca_size(function: *IR.Function, instruction_ref: IR.Reference) u64
+{
+    assert(instruction_ref.get_ID() == .instruction);
+    assert(IR.Instruction.get_ID(instruction_ref) == .alloca);
+    const instruction = function.instructions[instruction_ref.get_index()];
+    panic("Instruction: {}\n", .{instruction});
+}
+
+const system_v_argument_registers = [_]Encoding.Register
+{
+    .DI,
+    .SI,
+    .C,
+    .r8,
+    .r9,
+};
+
+const msvc_argument_registers = [_]Encoding.Register
+{
+    .C,
+    .D,
+    .r8,
+    .r9,
+};
+
+const mov_rbp_rsp_bytes = [_]u8 { 0x48, 0x89, 0xe5 };
+const pop_rbp_bytes = [_]u8 { 0x5d };
+const systemv_abi_prologue = push_rbp_bytes ++ mov_rbp_rsp_bytes;
+const push_rbp_bytes = [_]u8 { 0x55 };
+const ret_bytes = [_]u8 { 0xc3 };
+
+fn add_rsp_s8(n: i8) [4]u8
+{
+    assert(n > 0);
+    var bytes = [_]u8 { 0x48, 0x83, 0xc4, undefined };
+    @ptrCast(*i8, &bytes[3]).* = n;
+
+    return bytes;
+}
+
+fn add_rsp_s32(n: i32) [7]u8
+{
+    assert(n > 0);
+    var bytes = [_]u8 { 0x48, 0x81, 0xc4, undefined, undefined, undefined, undefined };
+
+    @ptrCast(* align(1) i32, &bytes[3]).* = n;
+
+    return bytes;
+}
+
+const call_rel32_bytes = [_]u8 { 0xe8, 0xcc, 0xcc, 0xcc, 0xcc };
+fn call_rel32(rel32: i32) [5]u8
+{
+    var bytes = [_]u8 { 0xe8, undefined, undefined, undefined, undefined };
+    const offset = 1;
+    for (std.mem.asBytes(&rel32)) |byte, i|
+    {
+        bytes[offset + i] = byte;
+    }
+
+    return bytes;
+}
+
+fn sub_rsp_s8(n: i8) [4]u8
+{
+    assert(n > 0);
+    var bytes = [_]u8 { 0x48, 0x83, 0xec, undefined };
+    @ptrCast(*i8, &bytes[3]).* = n;
+
+    return bytes;
+}
+
+fn sub_rsp_s32(n: i32) [7]u8
+{
+    assert(n > 0);
+    var bytes = [_]u8 { 0x48, 0x81, 0xec, undefined, undefined, undefined, undefined };
+
+    @ptrCast(* align(1) i32, &bytes[3]).* = n;
+
+    return bytes;
+}
+
+//fn xor_register_immediate(register: Encoding.Register, register_byte: u8, comptime ImmediateType: type, immediate: ImmediateType) void
+//{
+    //if (register == .A)
+    //{
+        //unreachable;
+    //}
+    //else
+    //{
+        //unreachable;
+    //}
+//}
+
+fn xor_register(register: Encoding.Register, size: u8) [2]u8
+{
+    const mod = 0b11;
+    const r_m = @enumToInt(register);
+
+    return switch (size)
+    {
+        1 => unreachable,
+        2 => unreachable,
+        4 => [_]u8 { 0x31, (mod << 6) | ((@enumToInt(register) & 0b111) << 3) | (r_m & 0b111)},
+        8 => unreachable,
+        else => unreachable,
+    };
+}
+
+const Instruction = struct
+{
+    const Self = @This();
+
+    bytes: []const u8,
+    id: ID,
+    resolved: bool,
+    operand_offset: u8,
+    operand_kind: Operand.Kind,
+    operand_index: u32,
+
+    const ID = enum(u16)
+    {
+        call,
+        ret,
+        xor,
+    };
+
+    const Operand = struct
+    {
+        const Kind = enum(u8)
+        {
+            none,
+            immediate,
+            relative,
+        };
+    };
+
+    fn create_resolved(id: ID, bytes: []const u8) Self
+    {
+        return .
+        {
+            .id = id,
+            .resolved = true,
+            .bytes = bytes,
+            .operand_offset = 0,
+            .operand_kind = .none,
+            .operand_index = 0,
+        };
+    }
+
+    fn create_unresolved_operand(id: ID, bytes: []const u8, operand_offset: u8, operand_kind: Operand.Kind, operand_index: u32) Self
+    {
+        return .
+        {
+            .id = id,
+            .resolved = false,
+            .bytes = bytes,
+            .operand_offset = operand_offset,
+            .operand_kind = operand_kind,
+            .operand_index = operand_index
+        };
+    }
+};
+
+const Label = union(enum)
+{
+    resolved: struct
+    {
+        target: u64,
+    },
+    unresolved: struct
+    {
+        locations: ArrayList(PatchLocation),
+        instruction_index: u32,
+    },
+
+    const PatchLocation = struct
+    {
+        const BufferType = enum(u8)
+        {
+            code,
+            data,
+            rdata,
+        };
+
+        buffer_index: u32,
+        next_instruction_offset: u16,
+        buffer_type: BufferType,
+    };
+};
+
+const BackwardPatch = struct
+{
+    code_buffer_offset: u32,
+};
+
+pub const Program = struct
+{
+    functions: []Function,
+    code_base_RVA: u64,
+    data_base_RVA: u64,
+    entry_point_index: u64 = 0,
+
+    const Function = struct
+    {
+        instructions: ArrayList(Instruction),
+        labels: ArrayList(Label),
+        previous_patches: ArrayList(BackwardPatch),
+        rsp: i32,
+        code_buffer_offset: u64,
+        max_call_parameter_size: i32,
+        terminator: Terminator,
+        register_allocator: Register.Allocator,
+
+        const Terminator = enum
+        {
+            noreturn,
+            ret,
+        };
+
+    };
+
+    const max_bytes_per_instruction = 15;
+
+    fn estimate_max_code_size(self: *Program) u64
+    {
+        var total_instruction_count: u64 = 0;
+        const aprox_fixed_instruction_count_per_function = 5;
+
+        for (self.functions) |function|
+        {
+            total_instruction_count += aprox_fixed_instruction_count_per_function + function.instructions.items.len;
+        }
+
+        return total_instruction_count * max_bytes_per_instruction;
+    }
+
+    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader) Section
+    {
+        const aproximate_code_size = std.mem.alignForward(self.estimate_max_code_size(), PE.file_alignment);
+        var code_buffer = ArrayList(u8).initCapacity(allocator, aproximate_code_size) catch unreachable;
+        self.code_base_RVA = header.virtual_address;
+
+        for (self.functions) |*function, function_i|
+        {
+            log("Encoding bytes for function #{}...\n", .{function_i});
+            function.code_buffer_offset = code_buffer.items.len;
+
+            for (function.previous_patches.items) |patch|
+            {
+                var pointer_writer = @ptrCast(* align(1) i32, &code_buffer.items[patch.code_buffer_offset]);
+                pointer_writer.* = @intCast(i32, @intCast(i64, function.code_buffer_offset) - @intCast(i64, patch.code_buffer_offset + @sizeOf(i32)));
+            }
+           
+            var add_rsp_at_epilogue = false;
+
+            if (encode_frame_pointer)
+            {
+                switch (abi)
+                {
+                    .msvc =>
+                    {
+                        log("Function RSP: {}\n", .{function.rsp});
+                        if (function.rsp > std.math.maxInt(i8))
+                        {
+                            code_buffer.appendSlice(sub_rsp_s32(function.rsp)[0..]) catch unreachable;
+                            add_rsp_at_epilogue = true;
+                        }
+                        else if (function.rsp > 0)
+                        {
+                            code_buffer.appendSlice(sub_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                            add_rsp_at_epilogue = true;
+                        }
+                    },
+                    .gnu =>
+                    {
+                        code_buffer.appendSlice(systemv_abi_prologue[0..]) catch unreachable;
+                    },
+                    else => panic("not implemented: {}\n", .{abi}),
+                }
+            }
+
+            const instruction_count = function.instructions.items.len;
+            log("Instruction count: {}\n", .{instruction_count});
+            for (function.instructions.items) |instruction|
+            {
+                if (instruction.resolved)
+                {
+                    code_buffer.appendSlice(instruction.bytes) catch unreachable;
+                }
+                else
+                {
+                    const instruction_id = instruction.id;
+                    switch (instruction_id)
+                    {
+                        .call =>
+                        {
+                            const operand_index = instruction.operand_index;
+
+                            const from = code_buffer.items.len + instruction.bytes.len;
+                            if (operand_index <= function_i)
+                            {
+                                const target = self.functions[operand_index].code_buffer_offset;
+                                const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
+                                code_buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
+                            }
+                            else
+                            {
+                                const code_buffer_offset = @intCast(u32, code_buffer.items.len + instruction.operand_offset);
+                                self.functions[operand_index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
+                                code_buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
+                            }
+                        },
+                        else => unreachable,
+                    }
+                }
+            }
+
+            if (add_rsp_at_epilogue)
+            {
+                if (function.terminator == .ret)
+                {
+                    switch (abi)
+                    {
+                        .msvc =>
+                        {
+                            if (function.rsp > std.math.maxInt(i8))
+                            {
+                                code_buffer.appendSlice(add_rsp_s32(function.rsp)[0..]) catch unreachable;
+                            }
+                            else if (function.rsp > 0)
+                            {
+                                code_buffer.appendSlice(add_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                            }
+                        },
+                        .gnu =>
+                        {
+                            unreachable;
+                        },
+                        else => panic("not implemented: {}\n", .{abi}),
+                    }
+                }
+            }
+
+            if (function.terminator == .ret)
+            {
+                code_buffer.append(ret_bytes[0]) catch unreachable;
+            }
+            else if (function.terminator == .noreturn)
+            {
+                // Append Int3
+                code_buffer.append(0xcc) catch unreachable;
+            }
+            else unreachable;
+        }
+
+        const code_size = @intCast(u32, code_buffer.items.len);
+        log("Code size: {} bytes. Aproximation: {} bytes\n", .{code_size, aproximate_code_size});
+        assert(aproximate_code_size >= code_size);
+        header.misc.virtual_size = code_size;
+        header.size_of_raw_data = @intCast(u32, alignForward(code_size, PE.file_alignment));
+
+        return .
+        {
+            .buffer = code_buffer,
+            .name = ".text",
+            .base_RVA = header.virtual_address,
+            .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
+        };
+    }
+};
+
+var abi: std.Target.Abi = undefined;
+const encode_frame_pointer = true;
+
+const Labels = struct
+{
+    function_index: u32,
+    instruction_index: u16,
+    byte_offset: u8,
+    operand_size: u8,
+
+    fn from_instruction(function_index: u32, block_index: u16, byte_offset: u8, operand_size: u8) Label
+    {
+        return Label
+        {
+            .function_index = function_index,
+            .block_index = block_index,
+            .byte_offset = byte_offset,
+            .operand_size = operand_size,
+        };
+    }
+
+    fn from_function(function_index: u32) Label
+    {
+        return Label.from_instruction(function_index, 0, 0, 0);
+    }
+};
+
+fn get_type_size(T: Type) u64
+{
+    switch (T.get_ID())
+    {
+        else => panic("{}\n", .{T.get_ID()}),
+    }
+}
+
+
+const Stack = struct
+{
+    const Store = struct
+    {
+        const ArrayType = [Register.count]Stack.Store;
+    };
+};
+
+const Register = struct
+{
+    value: ?IR.Reference,
+    size: u8,
+
+    const count = 16;
+    const ArrayType = [Register.count]Register; 
+
+    const Allocator = struct
+    {
+        registers: Register.ArrayType, 
+        argument_registers: []const Encoding.Register,
+
+        const Self = @This();
+
+        fn new(argument_registers: []const Encoding.Register) Self
+        {
+            const result = Self
+            {
+                .registers = std.enums.directEnumArray(Register.ID, Register, 4,.{
+                    .A   =  .{ .size = 0, .value = null, },
+                    .C   =  .{ .size = 0, .value = null, },
+                    .D   =  .{ .size = 0, .value = null, },
+                    .B   =  .{ .size = 0, .value = null, },
+                    .r8  =  .{ .size = 0, .value = null, },
+                    .r9  =  .{ .size = 0, .value = null, },
+                    .r10 =  .{ .size = 0, .value = null, },
+                    .r11 =  .{ .size = 0, .value = null, },
+                    .r12 =  .{ .size = 0, .value = null, },
+                    .r13 =  .{ .size = 0, .value = null, },
+                    .r14 =  .{ .size = 0, .value = null, },
+                    .r15 =  .{ .size = 0, .value = null, },
+                }),
+                .argument_registers = argument_registers,
+            };
+
+            return result;
+        }
+
+        fn spill_registers_before_call(self: *Register.Allocator) State
+        {
+            log("Saving registers before call...\n", .{});
+
+            var saved_register_count: u32 = 0;
+
+            var registers = std.mem.zeroes(Register.ArrayType);
+
+            for (self.registers) |register, register_i|
+            {
+                if (register.value != null and must_save(@intToEnum(Encoding.Register, register_i)))
+                {
+                    registers[register_i] = register;
+                    saved_register_count += 1;
+                }
+            }
+
+            log("Registers to be saved: {}\n", .{saved_register_count});
+
+            if (saved_register_count > 0)
+            {
+                for (registers) |register, register_i|
+                {
+                    _ = register_i;
+                    if (register.value != null)
+                    {
+                        panic("IR value: {}\n", .{register.value.?});
+                    }
+                }
+            }
+
+            if (saved_register_count > 0) unreachable;
+            return std.mem.zeroes(State);
+        }
+
+        fn allocate_argument(self: *Register.Allocator, argument_reference: IR.Reference, byte_count: u8) Encoding.Register
+        {
+            for (self.argument_registers) |r|
+            {
+                const register_index = @enumToInt(r);
+
+                var register = &self.registers[register_index];
+                if (register.value == null)
+                {
+                    register.value = argument_reference;
+                    register.size = byte_count;
+
+                    return r;
+                }
+            }
+
+            panic("No argument register ready\n", .{});
+        }
+
+        const State = struct
+        {
+            registers: Register.ArrayType,
+            stack_stores: Stack.Store.ArrayType,
+            saved_register_count: u32,
+        };
+
+
+        fn must_save(register: Encoding.Register) bool
+        {
+            return switch (register)
+            {
+                .A => true,
+                else => panic("ni: {}\n", .{register}),
+            };
+        }
+    };
+
+    const ID = enum(u8)
+    {
+        A = 0,
+        C = 1,
+        D = 2,
+        B = 3,
+        // SP = 4,
+        // BP = 5,
+        // SI = 6,
+        // DI = 7,
+
+        r8 = 8,
+        r9 = 9,
+        r10 = 10,
+        r11 = 11,
+        r12 = 12,
+        r13 = 13,
+        r14 = 14,
+        r15 = 15,
+
+        pub const AH: u8 = 4;
+        pub const CH: u8 = 5;
+        pub const DH: u8 = 6;
+        pub const BH: u8 = 7;
+    };
+};
+
+pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Target) void
+{
+    abi = target.abi;
+    const os = target.os.tag;
+    if (os == .windows) abi = .msvc;
+    const argument_registers =
+        if (abi == .msvc)
+            msvc_argument_registers[0..]
+        else if (abi == .gnu)
+            system_v_argument_registers[0..]
+        else
+            panic("Not implemented: {}\n", .{abi});
+
+    const function_count = program.functions.len;
+    assert(function_count > 0);
+
+    //assert(std.mem.eql(program.functions[0].declaration.name, "entry"));
+
+    var functions = ArrayList(Program.Function).initCapacity(allocator, function_count) catch unreachable;
+
+    for (program.functions) |*function|
+    {
+        const basic_block_count = function.basic_blocks.len;
+        var labels = ArrayList(Label).initCapacity(allocator, basic_block_count) catch unreachable;
+        labels.resize(basic_block_count) catch unreachable;
+        log("Creating {} labels...\n", .{basic_block_count});
+
+        for (function.basic_blocks[0].instructions) |instruction|
+        {
+            if (IR.Instruction.get_ID(instruction) == .alloca)
+            {
+                const alloca_size = get_alloca_size(function, instruction);
+                _ = alloca_size;
+                // stack allocate this
+                unreachable;
+            }
+        }
+
+        for (labels.items) |*label|
+        {
+            label.* = Label
+            {
+                .unresolved = .
+                {
+                    .locations = ArrayList(Label.PatchLocation).init(allocator),
+                    .instruction_index = 0,
+                },
+            };
+        }
+
+        functions.append(.
+            {
+                .instructions = ArrayList(Instruction).init(allocator),
+                .labels = labels,
+                .rsp = 0,
+                .max_call_parameter_size = 0,
+                .previous_patches = ArrayList(BackwardPatch).init(allocator),
+                .code_buffer_offset = 0,
+                .terminator = .noreturn,
+                .register_allocator = Register.Allocator.new(argument_registers),
+            }) catch unreachable;
+
+        // @TODO:
+        // resize and initialize labels
+        //   unreachable;
+    }
+
+    for (program.functions) |*ir_function, ir_function_i|
+    {
+        var function = &functions.items[ir_function_i];
+
+        for (ir_function.basic_blocks) |*basic_block, basic_block_i|
+        {
+            assert(basic_block.instructions.len > 0);
+            // @TODO:
+            // reset register allocator
+            const function_offset = @intCast(u32, function.instructions.items.len);
+            function.labels.items[basic_block_i].unresolved.instruction_index = function_offset;
+
+            for (basic_block.instructions) |instruction|
+            {
+                const instruction_id = IR.Instruction.get_ID(instruction);
+                const instruction_index = instruction.get_index();
+
+                switch (instruction_id)
+                {
+                    .call =>
+                    {
+                        const call = program.instructions.call[instruction_index];
+                        const callee = call.callee;
+                        const callee_id = callee.get_ID();
+                        const callee_index = callee.get_index();
+
+                        const argument_count = call.arguments.len;
+
+                        var function_type: Type.Function = undefined;
+                        switch (callee_id)
+                        {
+                            .global_function =>
+                            {
+                                function_type = program.functions[callee_index].type;
+                            },
+                            .external_function =>
+                            {
+                                function_type = program.libraries[(callee_index & 0xffff0000) >> 16].functions[@truncate(u16, callee_index)].type;
+                            },
+                            else => unreachable,
+                        }
+
+                        assert(callee_index <= std.math.maxInt(i32));
+                        assert(argument_count <= function.register_allocator.argument_registers.len);
+                        var register_allocator_state = function.register_allocator.spill_registers_before_call();
+                        for (call.arguments) |argument, argument_i|
+                        {
+                            const argument_id = argument.get_ID();
+                            const argument_array_index = argument.get_index();
+                            const argument_type = function_type.argument_types[argument_i];
+
+                            switch (argument_id)
+                            {
+                                .constant =>
+                                {
+                                    const constant_id = IR.Constant.get_ID(argument);
+
+                                    switch (constant_id)
+                                    {
+                                        .int =>
+                                        {
+                                            if (argument_type.get_ID() != .integer)
+                                            {
+                                                codegen_error("Expected integer\n", .{});
+                                            }
+
+                                            log("Integer literal index: {}\n", .{argument_array_index});
+                                            const integer_literal = program.integer_literals[argument_array_index];
+                                            //@TODO: typecheck signedness
+                                            assert(!integer_literal.signed);
+                                            const literal = integer_literal.value;
+
+                                            const integer_bit_count = Type.Integer.get_bit_count(argument_type);
+                                            // assert n % 8 == 0
+                                            assert((integer_bit_count & 0x7) == 0);
+                                            const integer_byte_count = @truncate(u8, integer_bit_count >> 3);
+                                            const argument_register = function.register_allocator.allocate_argument(argument, integer_byte_count);
+                                            log("Argument register: {}\n", .{argument_register});
+                                            log("Byte count: {}\n", .{integer_byte_count});
+
+                                            if (literal == 0)
+                                            {
+                                                // do xor
+                                                function.instructions.append(Instruction.create_resolved(.xor, xor_register(argument_register, integer_byte_count)[0..])) catch unreachable;
+                                            }
+                                            else
+                                            {
+                                                // do mov
+                                                unreachable;
+                                            }
+                                        },
+                                        else => panic("Constant id: {}\n", .{constant_id}),
+                                    }
+                                },
+                                else => panic("Arg id: {}\n", .{argument_id}),
+                            }
+                        }
+
+
+
+
+                        // @TODO: resolve callee
+                        //var callee_function = functions[callee_index];
+
+                        function.instructions.append(Instruction.create_unresolved_operand(.call, call_rel32_bytes[0..], 1, .relative, callee_index)) catch unreachable;
+
+                        var parameter_stack_size = @intCast(i32, std.math.max(4, argument_count) * 8);
+
+                        // @TODO: use count
+                        if (call.type.value != Type.Builtin.void_type.value and call.type.value != Type.Builtin.noreturn_type.value)
+                        {
+                            const return_size = @intCast(i32, get_type_size(call.type));
+                            if (abi == .msvc and return_size > 8)
+                            {
+                                parameter_stack_size += return_size;
+                                unreachable;
+                            }
+                        }
+                        else
+                        {
+                            // @TODO: assert use count == 0
+                        }
+
+                        if (abi == .msvc)
+                        {
+                            function.max_call_parameter_size = std.math.max(function.max_call_parameter_size, parameter_stack_size);
+                        }
+
+                        if (register_allocator_state.saved_register_count > 0 )
+                        {
+                            // @TODO: restore registers
+                            unreachable;
+                        }
+                    },
+                    .ret =>
+                    {
+                        const ret = program.instructions.ret[instruction_index];
+
+                        if (ret.type.value == Type.Builtin.noreturn_type.value)
+                        {
+                            codegen_error("Noreturn type should not return ever\n", .{});
+                        }
+
+                        if (ret.type.value != Type.Builtin.void_type.value)
+                        {
+                            unreachable;
+                        }
+
+                        function.terminator = .ret;
+                        //function.instructions.append(Instruction.create_resolved(.ret, ret_bytes[0..])) catch unreachable;
+                    },
+                    else => panic("Not implemented: {}\n", .{instruction_id}),
+                }
+            }
+        }
+
+        // function end
+        switch (abi)
+        {
+            .msvc =>
+            {
+                const alignment = 0x8;
+                function.rsp += function.max_call_parameter_size;
+                function.rsp = @boolToInt(function.rsp > 0) * (@intCast(i32, alignForward(@intCast(u32, function.rsp), 0x10)) + alignment);
+            },
+            else => panic("not implemented: {}\n", .{abi}),
+        }
+    }
+
+    for (functions.items) |function, function_i|
+    {
+        log("\nFunction #{}\n", .{function_i});
+        for (function.instructions.items) |instruction, instruction_i|
+        {
+            log("#{} {}\n", .{instruction_i, instruction.id});
+        }
+    }
+
+    var executable = Program
+    {
+        .functions = functions.items,
+        .code_base_RVA = 0,
+        .data_base_RVA = 0,
+    };
+
+    var data_buffer = ArrayList(u8).init(allocator);
+
+    switch (os)
+    {
+        .windows =>
+        {
+            var libraries = ArrayList(Import.Library).init(allocator);
+            libraries.append(blk:
+                {
+                    var kernel32 = Import.Library
+                    {
+                        .symbols = ArrayList(Import.Symbol).init(allocator),
+                        .name = "KERNEL32.DLL",
+                        .name_RVA = 0,
+                        .RVA = 0,
+                        .image_thunk_RVA = 0,
+                    };
+
+                    kernel32.symbols.append(std.mem.zeroInit(Import.Symbol, .
+                            {
+                                .name = "ExitProcess",
+                            })) catch unreachable;
+                    break :blk kernel32;
+                }) catch unreachable;
+
+            PE.write(allocator, &executable, "new.exe", data_buffer.items, libraries.items, target);
+        },
+        else => panic("OS {} not implemented\n", .{os}),
+    }
+}

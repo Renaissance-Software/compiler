@@ -10,3 +10,4 @@ macho_first
 minimal*
 *.colors
 bash.exe*
+*.exe

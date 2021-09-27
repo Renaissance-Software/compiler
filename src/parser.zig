@@ -26,7 +26,7 @@ pub fn log(comptime format: []const u8, arguments: anytype) void
     Compiler.log(.parser, format, arguments);
 }
 
-const IntegerLiteral = struct
+pub const IntegerLiteral = struct
 {
     value: u64,
     signed: bool,
@@ -67,14 +67,13 @@ pub const Scope = struct
     identifier_expressions: []IdentifierExpression,
     invoke_expressions: []InvokeExpression,
     field_access_expressions: []FieldAccessExpression,
-    integer_literals: []IntegerLiteral,
 };
 
 pub const Function = struct
 {
-    argument_names: [][]const u8,
     name: []const u8,
-    type: Type, // @INFO: this is function type, not function return type
+    argument_names: [][]const u8,
+    type: Type.Function,
 
     pub const External = struct
     {
@@ -138,7 +137,6 @@ pub const ModuleParser = struct
         identifier_expressions: ArrayList(IdentifierExpression),
         invoke_expressions: ArrayList(InvokeExpression),
         field_access_expressions: ArrayList(FieldAccessExpression),
-        integer_literals: ArrayList(IntegerLiteral),
     };
 
     const FunctionBuilder = struct
@@ -153,6 +151,8 @@ pub const ModuleParser = struct
         internal_functions: ArrayList(Function.Internal),
         external_functions: ArrayList(Function.External),
         imported_modules: ArrayList(ImportedModule),
+        integer_literals: ArrayList(IntegerLiteral),
+
         unresolved_types: ArrayList([]const u8),
         pointer_types: ArrayList(Type.Pointer),
         slice_types: ArrayList(Type.Slice),
@@ -238,8 +238,10 @@ pub const ModuleParser = struct
                 .int_lit =>
                 {
                     const integer_value = self.get_and_consume_token(.int_lit).value;
-                    const integer_literal_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].integer_literals.items.len, Entity.ScopeID.integer_literals);
-                    self.function_builder.scope_builders.items[self.function_builder.current_scope].integer_literals.append(.
+                    //const integer_literal_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].integer_literals.items.len, Entity.ScopeID.integer_literals);
+                    const index = self.module_builder.integer_literals.items.len;
+                    const integer_literal_id = Entity.new(index, Entity.ScopeID.integer_literals);
+                    self.module_builder.integer_literals.append(.
                         {
                             .value = integer_value,
                             // @TODO: implement signedness parsing
@@ -660,7 +662,6 @@ pub const ModuleParser = struct
             .identifier_expressions = ArrayList(IdentifierExpression).init(self.allocator),
             .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
             .field_access_expressions = ArrayList(FieldAccessExpression).init(self.allocator),
-            .integer_literals = ArrayList(IntegerLiteral).init(self.allocator),
         }) catch unreachable;
 
         // @TODO: should we move this outside the function?
@@ -698,7 +699,6 @@ pub const ModuleParser = struct
             .identifier_expressions = scope_builder.identifier_expressions.items,
             .invoke_expressions = scope_builder.invoke_expressions.items,
             .field_access_expressions = scope_builder.field_access_expressions.items,
-            .integer_literals = scope_builder.integer_literals.items,
         };
 
         self.function_builder.current_scope = previous_scope;
@@ -1126,6 +1126,8 @@ pub const Module = struct
     internal_functions: []Function.Internal,
     external_functions: []Function.External,
     imported_modules: []ImportedModule,
+    integer_literals: []IntegerLiteral,
+
     unresolved_types: [][]const u8,
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
@@ -1238,6 +1240,8 @@ pub const AST = struct
                 .internal_functions = ArrayList(Function.Internal).init(allocator),
                 .external_functions = ArrayList(Function.External).init(allocator),
                 .imported_modules = ArrayList(ImportedModule).init(allocator),
+                .integer_literals = ArrayList(IntegerLiteral).init(allocator),
+
                 .unresolved_types = ArrayList([]const u8).init(allocator),
                 .pointer_types = ArrayList(Type.Pointer).init(allocator),
                 .slice_types = ArrayList(Type.Slice).init(allocator),
@@ -1381,7 +1385,12 @@ pub const AST = struct
 
                             const is_no_return = (attributes & (1 << @enumToInt(Type.Function.Attribute.@"noreturn")) >> @enumToInt(Type.Function.Attribute.@"noreturn")) != 0;
                             if (is_no_return) return_type = Type.Builtin.noreturn_type;
-                            const function_type = parser.get_function_type(return_type, argument_type_list.items, attributes);
+                            const function_type = Type.Function
+                            {
+                                .return_type = return_type,
+                                .argument_types = argument_type_list.items,
+                                .attributes = attributes,
+                            };
 
                             log("Return type for \"{s}\": {}\n", .{tld_name, function_type});
 
@@ -1536,6 +1545,7 @@ pub const AST = struct
             .internal_functions = parser.module_builder.internal_functions.items,
             .external_functions = parser.module_builder.external_functions.items,
             .imported_modules = parser.module_builder.imported_modules.items,
+            .integer_literals = parser.module_builder.integer_literals.items,
             .unresolved_types = parser.module_builder.unresolved_types.items,
             .pointer_types = parser.module_builder.pointer_types.items,
             .slice_types = parser.module_builder.slice_types.items,

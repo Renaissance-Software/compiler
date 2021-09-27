@@ -15,6 +15,7 @@ const Section = Codegen.Section;
 const BucketArray = @import("../bucket_array.zig").BucketArray;
 
 const x86_64 = @import("x86_64/codegen.zig");
+const x86_64v2 = @import("x86_64/codegenv2.zig");
 
 pub const file_alignment = 0x200;
 pub const section_alignment = 0x1000;
@@ -452,26 +453,44 @@ fn get_pointer(comptime T: type, file_buffer: []u8, index: usize) *align(1) T
 
 const TextSection = struct
 {
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader) Section
+    //fn encode(allocator: *Allocator, header: *ImageSectionHeader) Section
+    //{
+        //var text = Section
+        //{
+            //.buffer = CodeBuffer.init(allocator),
+            //.base_RVA = header.virtual_address,
+            //.name = ".text",
+            //.permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
+        //};
+        //const code = [_]u8
+        //{
+            //0x48, 0x83, 0xEC, 0x28, 0xC7, 0xC1, 0x2A, 0x00, 0x00, 0x00, 0x48, 0xFF, 0x15, 0xFD, 0x0F, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3, 0x48, 0x83, 0xEC, 0x00, 0xE9, 0xE1, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xC4, 0x00, 0xC3
+        //};
+
+        //text.buffer.appendSlice(code[0..]) catch unreachable;
+
+        //header.misc.virtual_size = @intCast(u32, text.buffer.items.len);
+        //header.size_of_raw_data = @intCast(u32, alignForward(text.buffer.items.len, file_alignment));
+
+        //return text;
+    //}
+
+    fn encode(executable: anytype, allocator: *Allocator, header: *ImageSectionHeader, arch: std.Target.Cpu.Arch) Section
     {
-        var text = Section
+        _ = header;
+        _ = executable;
+        _ = allocator;
+
+        switch (arch)
         {
-            .buffer = CodeBuffer.init(allocator),
-            .base_RVA = header.virtual_address,
-            .name = ".text",
-            .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
-        };
-        const code = [_]u8
-        {
-            0x48, 0x83, 0xEC, 0x28, 0xC7, 0xC1, 0x2A, 0x00, 0x00, 0x00, 0x48, 0xFF, 0x15, 0xFD, 0x0F, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3, 0x48, 0x83, 0xEC, 0x00, 0xE9, 0xE1, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xC4, 0x00, 0xC3
-        };
+            .x86_64 =>
+            {
+                var x86_64_program = @ptrCast(*x86_64v2.Program, executable);
+                return x86_64_program.encode_text_section_pe(allocator, header);
+            },
+            else => panic("CPU arch: {}\n", .{arch}),
+        }
 
-        text.buffer.appendSlice(code[0..]) catch unreachable;
-
-        header.misc.virtual_size = @intCast(u32, text.buffer.items.len);
-        header.size_of_raw_data = @intCast(u32, alignForward(text.buffer.items.len, file_alignment));
-
-        return text;
     }
 };
 
@@ -651,7 +670,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     text_section_header.pointer_to_raw_data = offset.file;
     text_section_header.virtual_address = offset.virtual;
 
-    const text = TextSection.encode(allocator, text_section_header);
+    const text = TextSection.encode(executable, allocator, text_section_header, target.cpu.arch);
     offset.after_size(text_section_header.size_of_raw_data);
 
     // .rdata

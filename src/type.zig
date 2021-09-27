@@ -55,6 +55,11 @@ pub const Integer = struct
     {
         return .{ .value = (@as(u64, @enumToInt(Type.ID.integer)) << Type.ID.position) | (@as(u64, @enumToInt(signedness)) << Signedness.position) | bit_count };
     }
+
+    pub fn get_bit_count(T: Type) u16
+    {
+        return @truncate(u16, T.value);
+    }
 };
 
 pub const Function = struct

@@ -1,7 +1,6 @@
 const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
-const print = std.debug.print;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
@@ -17,9 +16,9 @@ fn log(comptime format: []const u8, arguments: anytype) void
     Compiler.log(.ir, format, arguments);
 }
 
-const Constant = struct
+pub const Constant = struct
 {
-    const ID = enum(u8)
+    pub const ID = enum(u8)
     {
         array,
         @"struct",
@@ -31,19 +30,36 @@ const Constant = struct
         int,
         null_pointer,
 
-        const position = ID.position - @bitSizeOf(ConstantID);
+        const position = Reference.ID.position - @bitSizeOf(ID);
     };
+
+    fn new(id: ID, index: u32) Reference
+    {
+        return .{ .value = (@as(u64, @enumToInt(Reference.ID.constant)) << Reference.ID.position) | (@as(u64, @enumToInt(id)) << ID.position) | index };
+    }
+
+    pub fn get_ID(reference: Reference) ID
+    {
+        return @intToEnum(ID, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
+    }
 };
 
-const Reference = struct
+const IntegerLiteral = Parser.IntegerLiteral;
+
+pub const Reference = struct
 {
     value: T,
 
     const T = u64;
 
-    fn get_ID (self: Reference) ID
+    pub fn get_ID (self: Reference) ID
     {
         return @intToEnum(ID, (self.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
+    }
+
+    pub fn get_index(self: Reference) u32
+    {
+        return @truncate(u32, self.value);
     }
 
     pub const ID = enum(u8)
@@ -54,6 +70,7 @@ const Reference = struct
         basic_block,
         constant,
         global_function,
+        external_function,
         global_variable,
         instruction,
         intrinsic,
@@ -135,20 +152,20 @@ const BasicBlock = struct
     };
 };
 
-const Instruction = struct
+pub const Instruction = struct
 {
     fn new(id: ID, index: u64) Reference
     {
         return .{ .value = (@as(u64, @enumToInt(Reference.ID.instruction)) << Reference.ID.position) | (@as(u64, @enumToInt(id)) << Instruction.ID.position) | index };
     }
 
-    fn get_ID(reference: Reference) ID
+    pub fn get_ID(reference: Reference) ID
     {
         assert(reference.get_ID() == .instruction);
         return @intToEnum(ID, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
     }
 
-    const ID = enum(u8)
+    pub const ID = enum(u8)
     {
         // Terminator
         //
@@ -286,15 +303,17 @@ const Instruction = struct
 
     const Call = struct
     {
-        function: Reference,
+        type: Type,
+        callee: Reference,
         arguments: []Reference,
 
-        fn new(builder: *Program.Builder, called_function: Reference, arguments: []Reference) Reference
+        fn new(builder: *Program.Builder, return_type: Type, callee: Reference, arguments: []Reference) Reference
         {
             const call_array_index = builder.instructions.call.items.len;
             builder.instructions.call.append(
                 .{
-                    .function = called_function,
+                    .type = return_type,
+                    .callee = callee,
                     .arguments = arguments,
                 }) catch unreachable;
 
@@ -311,13 +330,11 @@ const Instruction = struct
         type: Type,
         value: Reference,
 
-        fn new(builder: *Program.Builder, maybe_value: ?*Reference) Reference
+        fn new(builder: *Program.Builder, return_type: Type, maybe_value: ?*Reference) Reference
         {
             var function_builder = &builder.function_builders.items[builder.current_function];
             if (!function_builder.is_terminated())
             {
-                const return_type = builder.function_types.items[builder.current_function].return_type;
-
                 const ret = blk:
                 {
                     if (maybe_value) |value|
@@ -328,7 +345,7 @@ const Instruction = struct
                     }
                     else
                     {
-                        assert(return_type.value == Type.Builtin.void_type.value or return_type.value == Type.Builtin.noreturn_type.value);
+                        assert(return_type.value == Type.Builtin.void_type.value);
                         break :blk Ret
                         {
                             .type = return_type,
@@ -353,11 +370,11 @@ const Instruction = struct
     };
 };
 
-const Function = struct
+pub const Function = struct
 {
     argument_allocas: []Reference,
     argument_names: [][]const u8,
-    argument_types: []Type,
+    type: Type.Function,
     basic_blocks: []BasicBlock,
     instructions: []Reference,
 
@@ -365,20 +382,20 @@ const Function = struct
     {
         argument_allocas: ArrayList(Reference),
         argument_names: [][]const u8,
-        argument_types: []Type,
+        type: Type.Function,
         basic_blocks: ArrayList(BasicBlock.Builder),
         instructions: ArrayList(Reference),
         current_block: u32,
         next_alloca_index: u32,
         allocator: *Allocator,
 
-        fn new(allocator: *Allocator, function: Parser.Function, function_type: Type.Function) Function.Builder
+        fn new(allocator: *Allocator, function: Parser.Function) Function.Builder
         {
             return Builder
             {
                 .argument_allocas = ArrayList(Reference).initCapacity(allocator, function.argument_names.len) catch unreachable,
                 .argument_names = function.argument_names,
-                .argument_types = function_type.argument_types,
+                .type = function.type,
                 .basic_blocks = ArrayList(BasicBlock.Builder).init(allocator),
                 .instructions = ArrayList(Reference).init(allocator),
                 .allocator = allocator,
@@ -405,14 +422,6 @@ const Function = struct
         }
     };
 
-    const ID = enum(u2)
-    {
-        internal,
-        external,
-
-        const position = Reference.ID.position - @bitSizeOf(Function.ID);
-    };
-
     const Argument = struct
     {
         fn new(index: u32) Reference
@@ -421,13 +430,24 @@ const Function = struct
         }
     };
 
-    fn new(index: u32, comptime function: ID) Reference
+    fn new(index: u32) Reference
     {
-        return .{ .value = (@as(u64, @enumToInt(Reference.ID.global_function)) << Reference.ID.position) | (@as(u64, @enumToInt(function)) << Function.ID.position) | index };
+        return .{ .value = (@as(u64, @enumToInt(Reference.ID.global_function)) << Reference.ID.position) | index };
     }
 };
 
-const Program = struct
+pub const ExternalFunction = struct
+{
+    library_name: []const u8,
+    type: Type,
+
+    fn new(index: u32) Reference
+    {
+        return .{ .value = (@as(u64, @enumToInt(Reference.ID.external_function)) << Reference.ID.position) | index };
+    }
+};
+
+pub const Program = struct
 {
     instructions: struct
     {
@@ -437,6 +457,8 @@ const Program = struct
         ret: []Instruction.Ret,
     },
     functions: []Function,
+    libraries: []Semantics.Library,
+    integer_literals: []IntegerLiteral,
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
     function_types: []Type.Function,
@@ -456,6 +478,8 @@ const Program = struct
         },
 
         function_builders: ArrayList(Function.Builder),
+        libraries: []Semantics.Library,
+        integer_literals: ArrayList(IntegerLiteral),
         pointer_types: ArrayList(Type.Pointer),
         slice_types: ArrayList(Type.Slice),
         function_types: ArrayList(Type.Function),
@@ -474,7 +498,9 @@ const Program = struct
                     .call = ArrayList(Instruction.Call).init(allocator),
                     .ret = ArrayList(Instruction.Ret).init(allocator),
                 },
-                .function_builders = ArrayList(Function.Builder).initCapacity(allocator, result.internal_functions.len) catch unreachable,
+                .function_builders = ArrayList(Function.Builder).initCapacity(allocator, result.functions.len) catch unreachable,
+                .libraries = result.libraries,
+                .integer_literals = ArrayList(IntegerLiteral).initCapacity(allocator, result.integer_literals.len) catch unreachable,
                 .pointer_types = ArrayList(Type.Pointer).initCapacity(allocator, result.pointer_types.len) catch unreachable,
                 .slice_types = ArrayList(Type.Slice).initCapacity(allocator, result.slice_types.len) catch unreachable,
                 .function_types = ArrayList(Type.Function).initCapacity(allocator, result.function_types.len) catch unreachable,
@@ -482,6 +508,19 @@ const Program = struct
                 .struct_types = ArrayList(Type.Struct).initCapacity(allocator, result.struct_types.len) catch unreachable,
                 .current_function = 0,
             };
+
+            std.debug.print("AST semantics integer literal count: {}\n", .{result.integer_literals.len});
+            
+            //for (result.external_functions) |external_function|
+            //{
+                //builder.external_functions.append(.{
+                    //.type = external_function.declaration.type,
+                    //.library_name = external_function.library,
+                //}) catch unreachable;
+            //}
+            // @TODO: Avoid all these copies
+
+            builder.integer_literals.appendSlice(result.integer_literals) catch unreachable;
 
             builder.pointer_types.appendSlice(result.pointer_types) catch unreachable;
             builder.slice_types.appendSlice(result.slice_types) catch unreachable;
@@ -500,21 +539,33 @@ const Program = struct
     };
 };
 
+const ReturnKind = enum
+{
+    void,
+    noreturn,
+    something,
+};
+
 pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 {
-    for (result.external_functions) |function|
+    for (result.libraries) |library, library_i|
     {
-        log("External function: {s}\n", .{function.declaration.name});
+        log("Library [#{}]: {s}\n", .{library_i, result.library_names[library_i]});
+
+        for (library.functions) |function, function_i|
+        {
+            log("Symbol [#{}]: {s}\n", .{function_i, function.name});
+        }
     }
 
     var builder = Program.Builder.new(allocator, result);
 
-    for (result.internal_functions) |ast_function, ast_function_i|
+    for (result.functions) |ast_function, ast_function_i|
     {
         log("Processing internal function: {s}\n", .{ast_function.declaration.name});
 
-        const function_type = result.function_types[ast_function.declaration.type.get_index()];
-        builder.function_builders.append(Function.Builder.new(allocator, ast_function.declaration, function_type)) catch unreachable;
+        const function_type = ast_function.declaration.type;
+        builder.function_builders.append(Function.Builder.new(allocator, ast_function.declaration)) catch unreachable;
         builder.current_function = @intCast(u32, ast_function_i);
 
         var function_builder = &builder.function_builders.items[ast_function_i];
@@ -523,14 +574,18 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         // @TODO: dont pick argument names to take argument length?
         const argument_count = ast_function.declaration.argument_names.len;
         _ = argument_count;
-        const return_type_id = function_type.return_type.get_ID();
+        const return_type = function_type.return_type;
         const returns_something = blk:
         {
-            if (return_type_id == .builtin)
+            if (return_type.get_ID() == .builtin)
             {
-                if (function_type.return_type.value == Type.Builtin.void_type.value or function_type.return_type.value == Type.Builtin.noreturn_type.value)
+                if (return_type.value == Type.Builtin.void_type.value)
                 {
-                    break :blk false;
+                    break :blk ReturnKind.void;
+                }
+                else if (return_type.value == Type.Builtin.noreturn_type.value)
+                {
+                    break :blk ReturnKind.noreturn;
                 }
                 else
                 {
@@ -539,7 +594,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             }
             else
             {
-                break :blk true;
+                break :blk ReturnKind.something;
             }
         };
 
@@ -547,7 +602,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         // @TODO: loop to detect alloca count
 
         const ast_main_block = &ast_function.scopes[0];
-        var conditional_alloca = returns_something and explicit_return;
+        var conditional_alloca = returns_something == .something and explicit_return;
         _ = conditional_alloca;
 
         if (explicit_return)
@@ -556,7 +611,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         }
 
         //var argument_list = ArrayList(Function.
-        print("Processing arguments...\n", .{});
+        log("Processing arguments...\n", .{});
         for (function_type.argument_types) |argument_type, argument_i|
         {
             const argument_alloca = Instruction.Alloca.create(&builder, argument_type, null);
@@ -589,17 +644,23 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 
                             if (expression.get_array_index(.global) == .resolved_internal_functions)
                             {
-                                called_function_reference = Function.new(called_function_index, .internal);
-                                ast_called_function_declaration = result.internal_functions[called_function_index].declaration;
+                                std.debug.print("Internal function\n", .{});
+                                called_function_reference = Function.new(called_function_index);
+                                ast_called_function_declaration = result.functions[called_function_index].declaration;
                             }
                             else if (expression.get_array_index(.global) == .resolved_external_functions)
                             {
-                                called_function_reference = Function.new(called_function_index, .internal);
-                                ast_called_function_declaration = result.external_functions[called_function_index].declaration;
+                                std.debug.print("External function\n", .{});
+                                called_function_reference = ExternalFunction.new(called_function_index);
+                                ast_called_function_declaration = result.libraries[Semantics.Library.get_library_index(expression)].functions[Semantics.Library.get_function_index(expression)];
                             }
                             else unreachable;
 
+                            //const called_function_type = result.function_types[ast_called_function_declaration.type.get_index()];
+                            const called_function_type = ast_called_function_declaration.type;
+
                             const called_function_argument_count = ast_called_function_declaration.argument_names.len;
+                            std.debug.print("Argument count: {}\n", .{called_function_argument_count});
                             if (called_function_argument_count != 0)
                             {
                                 var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
@@ -607,6 +668,8 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                 for (ast_invoke_expression.arguments) |ast_argument|
                                 {
                                     const ast_arg_level = ast_argument.get_level();
+                                    const ast_index = ast_argument.get_index();
+
                                     switch (ast_arg_level)
                                     {
                                         .scope =>
@@ -616,6 +679,8 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                             {
                                                 .integer_literals =>
                                                 {
+                                                    const int_literal = Constant.new(.int, ast_index);
+                                                    argument_list.append(int_literal) catch unreachable;
                                                 },
                                                 else => panic("{}\n", .{ast_arg_array_index}),
                                             }
@@ -624,13 +689,13 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                     }
                                 }
 
-                                const call = Instruction.Call.new(&builder, called_function_reference, argument_list.items);
+                                const call = Instruction.Call.new(&builder, called_function_type.return_type, called_function_reference, argument_list.items);
                                 // @TODO: we should be returning this? Yes, but...
                                 _ = call;
                             }
                             else
                             {
-                                const call = Instruction.Call.new(&builder, called_function_reference, std.mem.zeroes([]Reference));
+                                const call = Instruction.Call.new(&builder, called_function_type.return_type, called_function_reference, std.mem.zeroes([]Reference));
                                 // @TODO: we should be returning this? Yes, but...
                                 _ = call;
                             }
@@ -646,19 +711,22 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         {
             unreachable;
         }
-        else if (!returns_something)
+        else if (returns_something == .void)
         {
             if (explicit_return)
             {
                 unreachable;
             }
-            _ = Instruction.Ret.new(&builder, null);
+            _ = Instruction.Ret.new(&builder, return_type, null);
         }
-
-        builder.current_function += 1;
+        else
+        // here noreturn type, do nothing at the moment
+        {
+            assert(returns_something == .noreturn);
+        }
     }
 
-    var functions = ArrayList(Function).initCapacity(allocator, result.internal_functions.len) catch unreachable;
+    var functions = ArrayList(Function).initCapacity(allocator, result.functions.len) catch unreachable;
 
     for (builder.function_builders.items) |fb|
     {
@@ -674,12 +742,13 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         functions.append(.{
             .argument_allocas = fb.argument_allocas.items,
             .argument_names = fb.argument_names,
-            .argument_types = fb.argument_types,
+            .type = fb.type,
             .basic_blocks = bb_list.items,
             .instructions = fb.instructions.items,
         }) catch unreachable;
     }
 
+    std.debug.print("Integer literal count: {}\n", .{builder.integer_literals.items.len});
     return Program
     {
         .instructions = .
@@ -690,6 +759,9 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             .ret = builder.instructions.ret.items,
         },
         .functions = functions.items,
+        .libraries = builder.libraries,
+        .integer_literals = builder.integer_literals.items,
+
         .pointer_types = builder.pointer_types.items,
         .slice_types = builder.slice_types.items,
         .function_types = builder.function_types.items, 
