@@ -78,7 +78,7 @@ fn add_rsp_s32(n: i32) [7]u8
 const call_rel32_bytes = [_]u8 { 0xe8, 0xcc, 0xcc, 0xcc, 0xcc };
 fn call_rel32(rel32: i32) [5]u8
 {
-    var bytes = [_]u8 { 0xe8, undefined, undefined, undefined, undefined };
+    var bytes = call_rel32_bytes;
     const offset = 1;
     for (std.mem.asBytes(&rel32)) |byte, i|
     {
@@ -87,6 +87,8 @@ fn call_rel32(rel32: i32) [5]u8
 
     return bytes;
 }
+
+const call_rip_rel32_bytes = [_]u8 { 0x48, 0xff, 0x15, 0xcc, 0xcc, 0xcc, 0xcc };
 
 fn sub_rsp_s8(n: i8) [4]u8
 {
@@ -141,9 +143,7 @@ const Instruction = struct
     bytes: []const u8,
     id: ID,
     resolved: bool,
-    operand_offset: u8,
-    operand_kind: Operand.Kind,
-    operand_index: u32,
+    operand: Operand, 
 
     const ID = enum(u16)
     {
@@ -154,11 +154,16 @@ const Instruction = struct
 
     const Operand = struct
     {
+        index: u32,
+        kind: Kind,
+        offset: u8,
+
         const Kind = enum(u8)
         {
             none,
             immediate,
-            relative,
+            relative_global,
+            relative_external,
         };
     };
 
@@ -169,9 +174,12 @@ const Instruction = struct
             .id = id,
             .resolved = true,
             .bytes = bytes,
-            .operand_offset = 0,
-            .operand_kind = .none,
-            .operand_index = 0,
+            .operand = .
+            {
+                .offset = 0,
+                .kind = .none,
+                .index = 0,
+            },
         };
     }
 
@@ -182,9 +190,12 @@ const Instruction = struct
             .id = id,
             .resolved = false,
             .bytes = bytes,
-            .operand_offset = operand_offset,
-            .operand_kind = operand_kind,
-            .operand_index = operand_index
+            .operand = .
+            {
+                .offset = operand_offset,
+                .kind = operand_kind,
+                .index = operand_index
+            },
         };
     }
 };
@@ -234,7 +245,7 @@ pub const Program = struct
         labels: ArrayList(Label),
         previous_patches: ArrayList(BackwardPatch),
         rsp: i32,
-        code_buffer_offset: u64,
+        code_buffer_offset: u32,
         max_call_parameter_size: i32,
         terminator: Terminator,
         register_allocator: Register.Allocator,
@@ -262,16 +273,20 @@ pub const Program = struct
         return total_instruction_count * max_bytes_per_instruction;
     }
 
-    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader) Section
+    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader, patches: *ArrayList(PE.Patch), offset: *PE.Offset) Section
     {
+        var section_header = header.*;
+        section_header.pointer_to_raw_data = offset.file;
+        section_header.virtual_address = offset.virtual;
+
         const aproximate_code_size = std.mem.alignForward(self.estimate_max_code_size(), PE.file_alignment);
         var code_buffer = ArrayList(u8).initCapacity(allocator, aproximate_code_size) catch unreachable;
-        self.code_base_RVA = header.virtual_address;
+        self.code_base_RVA = section_header.virtual_address;
 
         for (self.functions) |*function, function_i|
         {
             log("Encoding bytes for function #{}...\n", .{function_i});
-            function.code_buffer_offset = code_buffer.items.len;
+            function.code_buffer_offset = @intCast(u32, code_buffer.items.len);
 
             for (function.previous_patches.items) |patch|
             {
@@ -309,6 +324,7 @@ pub const Program = struct
 
             const instruction_count = function.instructions.items.len;
             log("Instruction count: {}\n", .{instruction_count});
+
             for (function.instructions.items) |instruction|
             {
                 if (instruction.resolved)
@@ -322,20 +338,45 @@ pub const Program = struct
                     {
                         .call =>
                         {
-                            const operand_index = instruction.operand_index;
-
+                            const operand_index = instruction.operand.index;
                             const from = code_buffer.items.len + instruction.bytes.len;
-                            if (operand_index <= function_i)
+
+                            switch (instruction.operand.kind)
                             {
-                                const target = self.functions[operand_index].code_buffer_offset;
-                                const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
-                                code_buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
-                            }
-                            else
-                            {
-                                const code_buffer_offset = @intCast(u32, code_buffer.items.len + instruction.operand_offset);
-                                self.functions[operand_index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
-                                code_buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
+                                .relative_global =>
+                                {
+                                    if (operand_index <= function_i)
+                                    {
+                                        const target = self.functions[operand_index].code_buffer_offset;
+                                        const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
+                                        code_buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
+                                    }
+                                    else
+                                    {
+                                        const code_buffer_offset = @intCast(u32, code_buffer.items.len + instruction.operand.offset);
+                                        self.functions[operand_index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
+                                        code_buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
+                                    }
+                                },
+                                .relative_external =>
+                                {
+                                    std.debug.print("operand offset: {}\n", .{instruction.operand.offset});
+                                    const library_index = (instruction.operand.index & 0xffff0000) >> 16;
+                                    const function_index = @truncate(u16, instruction.operand.index);
+                                    std.debug.print("Library index: {}. Function index: {}\n", .{library_index, function_index});
+                                    const target_index = @intCast(u32, code_buffer.items.len + instruction.operand.offset);
+                                    std.debug.print("Adding patch with rip index: {}\n", .{target_index});
+                                    patches.append(.
+                                    {
+                                        .section_buffer_index_to = target_index,
+                                        .section_buffer_index_from = operand_index,
+                                        .section_to_write_to = .@".text",
+                                        .section_to_read_from = .@".rdata",
+                                    }) catch unreachable;
+
+                                    code_buffer.appendSlice(call_rip_rel32_bytes[0..]) catch unreachable;
+                                },
+                                else => unreachable,
                             }
                         },
                         else => unreachable,
@@ -384,14 +425,17 @@ pub const Program = struct
         const code_size = @intCast(u32, code_buffer.items.len);
         log("Code size: {} bytes. Aproximation: {} bytes\n", .{code_size, aproximate_code_size});
         assert(aproximate_code_size >= code_size);
-        header.misc.virtual_size = code_size;
-        header.size_of_raw_data = @intCast(u32, alignForward(code_size, PE.file_alignment));
+        section_header.misc.virtual_size = code_size;
+        section_header.size_of_raw_data = @intCast(u32, alignForward(code_size, PE.file_alignment));
+
+        offset.after_size(section_header.size_of_raw_data);
 
         return .
         {
+            .header = section_header,
             .buffer = code_buffer,
             .name = ".text",
-            .base_RVA = header.virtual_address,
+            .base_RVA = section_header.virtual_address,
             .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
         };
     }
@@ -675,18 +719,31 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Tar
                         const argument_count = call.arguments.len;
 
                         var function_type: Type.Function = undefined;
+                        var external_library_index: u16 = undefined;
+                        var external_function_index: u16 = undefined;
+                        var call_operand_kind: Instruction.Operand.Kind = undefined;
+                        var operand_offset: u8 = undefined;
+
                         switch (callee_id)
                         {
                             .global_function =>
                             {
                                 function_type = program.functions[callee_index].type;
+                                call_operand_kind = .relative_global;
+                                operand_offset = 1;
                             },
                             .external_function =>
                             {
-                                function_type = program.libraries[(callee_index & 0xffff0000) >> 16].functions[@truncate(u16, callee_index)].type;
+                                external_library_index = @truncate(u16, (callee_index & 0xffff0000) >> 16);
+                                external_function_index = @truncate(u16, callee_index);
+                                const ast_function_declaration = program.libraries[external_library_index].functions[external_function_index];
+                                function_type = ast_function_declaration.type;
+                                call_operand_kind = .relative_external;
+                                operand_offset = 3;
                             },
                             else => unreachable,
                         }
+
 
                         assert(callee_index <= std.math.maxInt(i32));
                         assert(argument_count <= function.register_allocator.argument_registers.len);
@@ -744,13 +801,12 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Tar
                             }
                         }
 
+                        const call_instruction = Instruction.create_unresolved_operand(.call, call_rel32_bytes[0..], operand_offset, call_operand_kind, callee_index);
+                        function.instructions.append(call_instruction) catch unreachable;
 
-
-
+                        // @TODO: do we need to do this?
                         // @TODO: resolve callee
                         //var callee_function = functions[callee_index];
-
-                        function.instructions.append(Instruction.create_unresolved_operand(.call, call_rel32_bytes[0..], 1, .relative, callee_index)) catch unreachable;
 
                         var parameter_stack_size = @intCast(i32, std.math.max(4, argument_count) * 8);
 

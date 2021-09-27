@@ -2872,6 +2872,7 @@ pub fn encode(allocator: *Allocator, module: *IR.Module, target: std.Target) voi
                     }
                 }
 
+
                 function_index += 1;
             }
         }

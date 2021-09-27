@@ -9,6 +9,8 @@ const old_version = false;
 const x86_64 = if (old_version) @import("codegen/x86_64/codegen.zig") else @import("codegen/x86_64/codegenv2.zig");
 const arm64 = @import("codegen/arm64/codegen.zig");
 
+const PE = @import("codegen/pe.zig");
+
 fn log(comptime format: []const u8, arguments: anytype) void
 {
     Compiler.log(.codegen, format, arguments);
@@ -68,6 +70,7 @@ pub fn write_executable(name: []const u8, content: []const u8) void
 
 pub const Section = struct
 {
+    header: PE.ImageSectionHeader,
     buffer: DataBuffer,
     name: []const u8,
     base_RVA: u32,
@@ -87,8 +90,3 @@ pub const Section = struct
     };
 };
 
-pub const TextSection = struct
-{
-    section: Section,
-    entry_point_rva: u32,
-};

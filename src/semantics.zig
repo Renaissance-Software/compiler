@@ -943,6 +943,7 @@ pub const LibraryBuilder = struct
 pub const Library = struct
 {
     functions: []Parser.Function,
+    function_offsets: []u32,
 
     const position = 16;
 
@@ -1222,6 +1223,13 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
             {
                 libraries.append(.{
                     .functions = library.functions.items,
+                    .function_offsets = blk2:
+                    {
+                        var function_offsets = ArrayList(u32).initCapacity(allocator, library.functions.items.len) catch unreachable;
+                        function_offsets.items.len = library.functions.items.len;
+
+                        break :blk2 function_offsets.items;
+                    },
                 }) catch unreachable;
             }
 

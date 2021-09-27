@@ -44,7 +44,7 @@ const DirectoryIndex = enum
     CLR,
 };
 
-pub fn get_RVA(header: *ImageSectionHeader, section_buffer_len: usize) u32
+pub fn get_RVA(header: ImageSectionHeader, section_buffer_len: usize) u32
 {
     return header.virtual_address + @intCast(u32, section_buffer_len);
 }
@@ -403,7 +403,7 @@ const image_NT_signature: u32 = 0x00004550;
 
 const image_number_of_directory_entries = 0x10;
 
-const Offset = struct
+pub const Offset = struct
 {
     file: u32,
     virtual: u32,
@@ -419,7 +419,7 @@ const Offset = struct
         };
     }
 
-    fn after_size(self: *Self, size: u32) void
+    pub fn after_size(self: *Self, size: u32) void
     {
         self.* =
         .{
@@ -453,29 +453,36 @@ fn get_pointer(comptime T: type, file_buffer: []u8, index: usize) *align(1) T
 
 const TextSection = struct
 {
-    //fn encode(allocator: *Allocator, header: *ImageSectionHeader) Section
-    //{
-        //var text = Section
-        //{
-            //.buffer = CodeBuffer.init(allocator),
-            //.base_RVA = header.virtual_address,
-            //.name = ".text",
-            //.permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
-        //};
-        //const code = [_]u8
-        //{
-            //0x48, 0x83, 0xEC, 0x28, 0xC7, 0xC1, 0x2A, 0x00, 0x00, 0x00, 0x48, 0xFF, 0x15, 0xFD, 0x0F, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3, 0x48, 0x83, 0xEC, 0x00, 0xE9, 0xE1, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xC4, 0x00, 0xC3
-        //};
+    fn encode_old(allocator: *Allocator, header: *ImageSectionHeader, offset: *Offset) Section
+    {
+        var text = Section
+        {
+            .header = header.*,
+            .buffer = CodeBuffer.init(allocator),
+            .base_RVA = header.virtual_address,
+            .name = ".text",
+            .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
+        };
+        text.header.pointer_to_raw_data = offset.file;
+        text.header.virtual_address = offset.virtual;
 
-        //text.buffer.appendSlice(code[0..]) catch unreachable;
+        const code = [_]u8
+        {
+            0x48, 0x83, 0xEC, 0x28, 0xC7, 0xC1, 0x2A, 0x00, 0x00, 0x00, 0x48, 0xFF, 0x15, 0xFD, 0x0F, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3, 0x48, 0x83, 0xEC, 0x00, 0xE9, 0xE1, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xC4, 0x00, 0xC3
+        };
 
-        //header.misc.virtual_size = @intCast(u32, text.buffer.items.len);
-        //header.size_of_raw_data = @intCast(u32, alignForward(text.buffer.items.len, file_alignment));
+        text.buffer.appendSlice(code[0..]) catch unreachable;
 
-        //return text;
-    //}
+        const code_size = @intCast(u32, text.buffer.items.len);
+        text.header.misc.virtual_size = code_size;
+        text.header.size_of_raw_data = @intCast(u32, alignForward(code_size, file_alignment));
 
-    fn encode(executable: anytype, allocator: *Allocator, header: *ImageSectionHeader, arch: std.Target.Cpu.Arch) Section
+        offset.after_size(text.header.size_of_raw_data);
+
+        return text;
+    }
+
+    fn encode(executable: anytype, allocator: *Allocator, header: *ImageSectionHeader, patches: *ArrayList(Patch), arch: std.Target.Cpu.Arch, offset: *Offset) Section
     {
         _ = header;
         _ = executable;
@@ -486,7 +493,7 @@ const TextSection = struct
             .x86_64 =>
             {
                 var x86_64_program = @ptrCast(*x86_64v2.Program, executable);
-                return x86_64_program.encode_text_section_pe(allocator, header);
+                return x86_64_program.encode_text_section_pe(allocator, header, patches, offset);
             },
             else => panic("CPU arch: {}\n", .{arch}),
         }
@@ -500,6 +507,7 @@ const ImportLibrary = struct
     RVA: u32,
     image_thunk_RVA: u32,
     symbol_RVAs: []u32,
+    symbol_offsets: []u32,
 };
 
 const RDataSection = struct
@@ -507,16 +515,24 @@ const RDataSection = struct
     section: Section,
     IAT: Section.Directory,
     import_directory: Section.Directory,
+    libraries: []ImportLibrary,
 
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader, import_libraries: []Import.Library) RDataSection
+    fn encode(allocator: *Allocator, header: *ImageSectionHeader, import_libraries: []Import.Library, offset: *Offset) RDataSection
     {
+        header.pointer_to_raw_data = offset.file;
+        header.virtual_address = offset.virtual;
+
         var rdata = Section
         {
+            .header = header.*,
             .buffer = DataBuffer.init(allocator),
             .base_RVA = header.virtual_address,
             .name = ".rdata",
             .permissions = @enumToInt(Section.Permission.read),
         };
+
+
+        std.debug.print("RDATA base RVA = {}\n", .{rdata.base_RVA});
 
         var pe32_libraries = ArrayList(ImportLibrary).initCapacity(allocator, import_libraries.len) catch unreachable;
 
@@ -524,12 +540,12 @@ const RDataSection = struct
         {
             const symbol_count = library.symbols.items.len;
             var symbol_RVAs = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
-            symbol_RVAs.items.len = symbol_count;
 
-            for (library.symbols.items) |*symbol, i|
+            for (library.symbols.items) |*symbol|
             {
-                const symbol_rva = get_RVA(header, rdata.buffer.items.len);
-                symbol_RVAs.items[i] = symbol_rva;
+                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
+                const symbol_rva = get_RVA(rdata.header, rdata.buffer.items.len);
+                symbol_RVAs.appendAssumeCapacity(symbol_rva);
                 rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0))) catch unreachable;
                 append_string(&rdata.buffer, symbol.name);
             }
@@ -540,20 +556,28 @@ const RDataSection = struct
                     .RVA = 0,
                     .image_thunk_RVA = 0,
                     .symbol_RVAs = symbol_RVAs.items,
+                    .symbol_offsets = blk:
+                    {
+                        var symbol_offsets = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
+                        symbol_offsets.resize(symbol_count) catch unreachable;
+                        break :blk symbol_offsets.items;
+                    },
                 }) catch unreachable;
         }
 
         // IAT list
-        const IAT_RVA = get_RVA(header, rdata.buffer.items.len);
+        const IAT_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
 
         for (pe32_libraries.items) |*pe32_lib|
         {
-            pe32_lib.RVA = get_RVA(header, rdata.buffer.items.len);
+            pe32_lib.RVA = get_RVA(rdata.header, rdata.buffer.items.len);
 
-            for (pe32_lib.symbol_RVAs) |symbol_rva|
+            for (pe32_lib.symbol_RVAs) |symbol_rva, symbol_i|
             {
-                const offset = get_RVA(header, rdata.buffer.items.len) - header.virtual_address;
-                _ = offset;
+                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
+                const symbol_offset = get_RVA(rdata.header, rdata.buffer.items.len) - rdata.header.virtual_address;
+                pe32_lib.symbol_offsets[symbol_i] = symbol_offset;
+
                 rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
             }
 
@@ -565,7 +589,7 @@ const RDataSection = struct
         // Image thunks
         for (pe32_libraries.items) |*pe32_lib|
         {
-            pe32_lib.image_thunk_RVA = get_RVA(header, rdata.buffer.items.len);
+            pe32_lib.image_thunk_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
 
             for (pe32_lib.symbol_RVAs) |symbol_RVA|
             {
@@ -579,13 +603,13 @@ const RDataSection = struct
         for (import_libraries) |*library, library_i|
         {
             var pe32_lib = &pe32_libraries.items[library_i];
-            pe32_lib.name_RVA = get_RVA(header, rdata.buffer.items.len);
+            pe32_lib.name_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
 
             append_string(&rdata.buffer, library.name);
         }
 
         // Import directory
-        const import_directory_RVA = get_RVA(header, rdata.buffer.items.len);
+        const import_directory_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
 
         for (pe32_libraries.items) |pe32_lib|
         {
@@ -597,7 +621,7 @@ const RDataSection = struct
                         }))) catch unreachable;
         }
 
-        const import_directory_size = get_RVA(header, rdata.buffer.items.len) - import_directory_RVA;
+        const import_directory_size = get_RVA(rdata.header, rdata.buffer.items.len) - import_directory_RVA;
 
         if (import_directory_size > 0)
         {
@@ -606,23 +630,30 @@ const RDataSection = struct
 
         // @TODO: @INFO: Exception directory: dont code for now
 
-        header.misc.virtual_size = @intCast(u32, rdata.buffer.items.len);
-        header.size_of_raw_data = @intCast(u32, alignForward(rdata.buffer.items.len, file_alignment));
+        rdata.header.misc.virtual_size = @intCast(u32, rdata.buffer.items.len);
+        rdata.header.size_of_raw_data = @intCast(u32, alignForward(rdata.buffer.items.len, file_alignment));
+        offset.after_size(rdata.header.size_of_raw_data);
+
         return .
         {
             .section = rdata,
             .IAT = .{ .RVA = IAT_RVA, .size = IAT_size, },
             .import_directory = .{ .RVA = import_directory_RVA, .size = import_directory_size, },
+            .libraries = pe32_libraries.items,
         };
     }
 };
 
 const DataSection = struct
 {
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader) Section
+    fn encode(allocator: *Allocator, header: *ImageSectionHeader, offset: *Offset) Section
     {
+        header.pointer_to_raw_data = offset.file;
+        header.virtual_address = offset.virtual;
+
         var data = Section
         {
+            .header = header.*,
             .buffer = DataBuffer.init(allocator),
             .base_RVA = header.virtual_address,
             .name = ".data",
@@ -632,11 +663,27 @@ const DataSection = struct
         // dont hardcode this
         data.buffer.append(0) catch unreachable;
         
-        header.misc.virtual_size = @intCast(u32, data.buffer.items.len);
-        header.size_of_raw_data = @intCast(u32, alignForward(data.buffer.items.len, file_alignment));
+        data.header.misc.virtual_size = @intCast(u32, data.buffer.items.len);
+        data.header.size_of_raw_data = @intCast(u32, alignForward(data.buffer.items.len, file_alignment));
+        offset.after_size(data.header.size_of_raw_data);
 
         return data;
     }
+};
+
+const SectionIndex = enum(u8)
+{
+    @".text",
+    @".rdata",
+    @".data",
+};
+
+pub const Patch = struct
+{
+    section_buffer_index_to: u32,
+    section_buffer_index_from: u32,
+    section_to_write_to: SectionIndex,
+    section_to_read_from: SectionIndex,
 };
 
 pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, data_buffer: []const u8, import_libraries: []Import.Library, target: std.Target) void
@@ -665,34 +712,61 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
 
     var offset = Offset.new(file_size_of_headers);
 
+    var patches = ArrayList(Patch).init(allocator);
+
     // .text
-    var text_section_header = &section_headers[0];
-    text_section_header.pointer_to_raw_data = offset.file;
-    text_section_header.virtual_address = offset.virtual;
+    var text_section_header = &section_headers[@enumToInt(SectionIndex.@".text")];
+    var rdata_section_header = &section_headers[@enumToInt(SectionIndex.@".rdata")];
+    var data_section_header = &section_headers[@enumToInt(SectionIndex.@".data")];
 
-    const text = TextSection.encode(executable, allocator, text_section_header, target.cpu.arch);
-    offset.after_size(text_section_header.size_of_raw_data);
+    //const text = TextSection.encode_old(allocator, text_section_header, &offset);
+    const text = TextSection.encode(executable, allocator, text_section_header, &patches, target.cpu.arch, &offset);
+    const rdata = RDataSection.encode(allocator, rdata_section_header, import_libraries, &offset);
+    const data = DataSection.encode(allocator, data_section_header, &offset);
 
-    // .rdata
-    var rdata_section_header = &section_headers[1];
-    rdata_section_header.pointer_to_raw_data = offset.file;
-    rdata_section_header.virtual_address = offset.virtual;
 
-    const rdata = RDataSection.encode(allocator, rdata_section_header, import_libraries);
-    offset.after_size(rdata_section_header.size_of_raw_data);
+    var sections = [std.enums.values(SectionIndex).len]Section
+    {
+        text,
+        rdata.section,
+        data,
+    };
 
-    var data_section_header = &section_headers[2];
-    data_section_header.pointer_to_raw_data = offset.file;
-    data_section_header.virtual_address = offset.virtual;
-
-    const data = DataSection.encode(allocator, data_section_header);
-    offset.after_size(data_section_header.size_of_raw_data);
+    for (sections) |section, section_i|
+    {
+        std.debug.print("Section #{}\n", .{section_i});
+        assert(section.base_RVA != 0);
+    }
 
     // program patch labels
+    for (patches.items) |patch|
+    {
+        // assuming all patches are 4 bytes
+        const section_to_patch = &sections[@enumToInt(patch.section_to_write_to)];
+        const jump_from = patch.section_buffer_index_to + 4;
+        const jump_from_RVA = section_to_patch.base_RVA + jump_from;
+        var patch_address = @ptrCast(*align(1) i32, &section_to_patch.buffer.items[patch.section_buffer_index_to]);
+        const jump_to_RVA = switch (patch.section_to_read_from)
+        {
+            .@".rdata" => blk:
+            {
+                const library_index = @truncate(u16, (patch.section_buffer_index_from & 0xffff0000) >> 16);
+                const function_index = @truncate(u16, patch.section_buffer_index_from);
+                std.debug.print("Library index: {}. Function index: {}\n", .{library_index, function_index});
+                const symbol_offset = rdata.libraries[library_index].symbol_offsets[function_index];
+                const symbol_RVA = rdata.section.base_RVA + symbol_offset;
+                break :blk symbol_RVA;
+            },
+            else => panic("Not implemented: {}\n", .{patch.section_to_read_from}),
+        };
+        const relative = @intCast(i32, @intCast(i64, jump_to_RVA) - @intCast(i64, jump_from_RVA));
+        patch_address.* = relative;
+    }
 
     const virtual_size_of_image = offset.virtual;
 
     const max_executable_buffer_size = offset.file;
+
     var exe_buffer = DataBuffer.initCapacity(allocator, max_executable_buffer_size) catch unreachable;
     exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageDOSHeader,.
                 {
@@ -724,11 +798,11 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageOptionalHeader, .
             {
                 .magic = ImageOptionalHeader.magic,
-                .size_of_code = text_section_header.size_of_raw_data,
-                .size_of_initialized_data = rdata_section_header.size_of_raw_data + data_section_header.size_of_raw_data,
+                .size_of_code = sections[@enumToInt(SectionIndex.@".text")].header.size_of_raw_data,
+                .size_of_initialized_data = sections[@enumToInt(SectionIndex.@".rdata")].header.size_of_raw_data + sections[@enumToInt(SectionIndex.@".data")].header.size_of_raw_data,
                 // entry point address is the first byte of the text section
-                .address_of_entry_point = text_section_header.virtual_address + entry_point_byte_index,
-                .base_of_code = text_section_header.virtual_address,
+                .address_of_entry_point = sections[@enumToInt(SectionIndex.@".text")].header.virtual_address + entry_point_byte_index,
+                .base_of_code = sections[@enumToInt(SectionIndex.@".text")].header.virtual_address,
                 .image_base = 0x0000000140000000,
                 .section_alignment = section_alignment,
                 .file_alignment = file_alignment,
@@ -766,28 +840,30 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     //
 
     // copy sections
-    exe_buffer.appendSlice(std.mem.asBytes(&section_headers)) catch unreachable;
-
-    // .text segment
+    for (sections) |*section|
     {
-        exe_buffer.items.len = text_section_header.pointer_to_raw_data;
-        exe_buffer.appendSlice(text.buffer.items) catch unreachable;
+        exe_buffer.appendSlice(std.mem.asBytes(&section.header)) catch unreachable;
     }
 
-    // .rdata segment
+    for (sections) |*section|
     {
-        exe_buffer.items.len = rdata_section_header.pointer_to_raw_data;
-        exe_buffer.appendSlice(rdata.section.buffer.items) catch unreachable;
-    }
-    
-    // .data segment
-    {
-        exe_buffer.items.len = data_section_header.pointer_to_raw_data;
-        exe_buffer.appendSlice(data.buffer.items) catch unreachable;
+        exe_buffer.items.len = section.header.pointer_to_raw_data;
+        exe_buffer.appendSlice(section.buffer.items) catch unreachable;
     }
 
     exe_buffer.items.len = offset.file;
     assert(exe_buffer.items.len % file_alignment == 0);
+
+    const working_exe = std.fs.cwd().readFileAlloc(allocator, "working.exe", 0xffffffff) catch unreachable;
+
+    for (working_exe) |working_b, working_i|
+    {
+        const exe_b = exe_buffer.items[working_i];
+        if (exe_b != working_b)
+        {
+            std.debug.print("[{x}]: W: 0x{x}. E: 0x{x}\n", .{working_i, working_b, exe_b});
+        }
+    }
 
     Codegen.write_executable(exe_name, exe_buffer.items);
 }
