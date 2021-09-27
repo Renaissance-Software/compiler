@@ -11,7 +11,6 @@ const Compiler = @import("../../compiler.zig");
 const Codegen = @import("../../codegen.zig");
 const PE = @import("../pe.zig");
 const Import = Codegen.Import;
-const Section = Codegen.Section;
 const Encoding = @import("encoding.zig");
 const Semantics = @import("../../semantics.zig");
 
@@ -273,7 +272,7 @@ pub const Program = struct
         return total_instruction_count * max_bytes_per_instruction;
     }
 
-    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader, patches: *ArrayList(PE.Patch), offset: *PE.Offset) Section
+    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader, patches: *ArrayList(PE.Patch), offset: *PE.Offset) PE.Section
     {
         var section_header = header.*;
         section_header.pointer_to_raw_data = offset.file;
@@ -434,9 +433,6 @@ pub const Program = struct
         {
             .header = section_header,
             .buffer = code_buffer,
-            .name = ".text",
-            .base_RVA = section_header.virtual_address,
-            .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
         };
     }
 };

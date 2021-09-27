@@ -521,13 +521,7 @@ const RDataSection = struct
         {
             .header = header.*,
             .buffer = DataBuffer.init(allocator),
-            .base_RVA = header.virtual_address,
-            .name = ".rdata",
-            .permissions = @enumToInt(Section.Permission.read),
         };
-
-
-        std.debug.print("RDATA base RVA = {}\n", .{rdata.base_RVA});
 
         var pe32_libraries = ArrayList(ImportLibrary).initCapacity(allocator, import_libraries.len) catch unreachable;
 
@@ -643,17 +637,13 @@ const DataSection = struct
 {
     fn encode(allocator: *Allocator, header: *ImageSectionHeader, offset: *Offset) Section
     {
-        header.pointer_to_raw_data = offset.file;
-        header.virtual_address = offset.virtual;
-
         var data = Section
         {
             .header = header.*,
             .buffer = DataBuffer.init(allocator),
-            .base_RVA = header.virtual_address,
-            .name = ".data",
-            .permissions = @enumToInt(Section.Permission.read) | @enumToInt(Section.Permission.write),
         };
+        data.header.pointer_to_raw_data = offset.file;
+        data.header.virtual_address = offset.virtual;
 
         // dont hardcode this
         data.buffer.append(0) catch unreachable;
@@ -670,7 +660,6 @@ pub const Section = struct
 {
     header: ImageSectionHeader,
     buffer: DataBuffer,
-    name: []const u8,
 
     const count = std.enums.values(Index).len;
 
@@ -682,29 +671,23 @@ pub const Section = struct
     };
 
     const NameType = [image_sizeof_short_name]u8;
-    const names = [_]NameType
+    const names = blk:
     {
-        NameType { '.', 't', 'e', 'x', 't',   0, 0, 0 },
-        NameType { '.', 'r', 'd', 'a', 't', 'a', 0, 0 },
-        NameType { '.', 'd', 'a', 't', 'a',   0, 0, 0 },
-    };
-    //{
-        //var section_names: [Section.count]NameType = [_]NameType{0, 0, 0, 0, 0, 0, 0, 0} ** Section.count;
+        var section_names: [Section.count]NameType = undefined;
         
-        //break :blk section_names;
-    //};
-    //
-    const text_index = @enumToInt(Section.Index.@".text");
-    const rdata_index = @enumToInt(Section.Index.@".rdata");
-    const data_index = @enumToInt(Section.Index.@".data");
+        section_names[@enumToInt(Section.Index.@".text")] = NameType { '.', 't', 'e', 'x', 't',   0, 0, 0 };
+        section_names[@enumToInt(Section.Index.@".rdata")] = NameType { '.', 'r', 'd', 'a', 't', 'a', 0, 0 };
+        section_names[@enumToInt(Section.Index.@".data")] = NameType { '.', 'd', 'a', 't', 'a', 0, 0, 0 };
+        break :blk section_names;
+    };
 
     const characteristics = blk:
     {
         var section_characteristics: [Section.count]u32 = [_]u32{0} ** Section.count;
 
-        section_characteristics[text_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute);
-        section_characteristics[rdata_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read);
-        section_characteristics[data_index] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_write);
+        section_characteristics[@enumToInt(Section.Index.@".text")] = @enumToInt(ImageSectionHeader.Characteristics.contains_code) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_execute);
+        section_characteristics[@enumToInt(Section.Index.@".rdata")] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read);
+        section_characteristics[@enumToInt(Section.Index.@".data")] = @enumToInt(ImageSectionHeader.Characteristics.contains_initialized_data) | @enumToInt(ImageSectionHeader.Characteristics.memory_read) | @enumToInt(ImageSectionHeader.Characteristics.memory_write);
 
         break :blk section_characteristics;
     };
@@ -739,12 +722,13 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     var section_headers: [Section.count + 1]ImageSectionHeader = undefined;
     for (section_headers[0..Section.count]) |*sh, sh_i|
     {
-        sh.* = std.mem.zeroInit(.
+        sh.* = std.mem.zeroInit(ImageSectionHeader, .
             {
-                //.name = Section.names[sh_i],
+                .name = Section.names[sh_i],
                 .characteristics = Section.characteristics[sh_i],
             });
     }
+
     section_headers[Section.count] = std.mem.zeroes(ImageSectionHeader);
     
     const file_size_of_headers = @intCast(u32, alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(@TypeOf(image_NT_signature)) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + @sizeOf(@TypeOf(section_headers)), file_alignment));
@@ -752,9 +736,9 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     var offset = Offset.new(file_size_of_headers);
 
     //const text = TextSection.encode_old(allocator, text_section_header, &offset);
-    const text = TextSection.encode(executable, allocator, &section_header[@enumToInt(Section.Index.@".text")], &patches, target.cpu.arch, &offset);
-    const rdata = RDataSection.encode(allocator, &section_header[@enumToInt(Section.Index.@".rdata")], import_libraries, &offset);
-    const data = DataSection.encode(allocator, &section_header[@enumToInt(Section.Index.@".data")], &offset);
+    const text = TextSection.encode(executable, allocator, &section_headers[@enumToInt(Section.Index.@".text")], &patches, target.cpu.arch, &offset);
+    const rdata = RDataSection.encode(allocator, &section_headers[@enumToInt(Section.Index.@".rdata")], import_libraries, &offset);
+    const data = DataSection.encode(allocator, &section_headers[@enumToInt(Section.Index.@".data")], &offset);
 
     var sections = [Section.count]Section
     {
@@ -769,7 +753,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
         // assuming all patches are 4 bytes
         const section_to_patch = &sections[@enumToInt(patch.section_to_write_to)];
         const jump_from = patch.section_buffer_index_to + 4;
-        const jump_from_RVA = section_to_patch.base_RVA + jump_from;
+        const jump_from_RVA = section_to_patch.header.virtual_address + jump_from;
         var patch_address = @ptrCast(*align(1) i32, &section_to_patch.buffer.items[patch.section_buffer_index_to]);
         const jump_to_RVA = switch (patch.section_to_read_from)
         {
@@ -779,7 +763,7 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
                 const function_index = @truncate(u16, patch.section_buffer_index_from);
                 std.debug.print("Library index: {}. Function index: {}\n", .{library_index, function_index});
                 const symbol_offset = rdata.libraries[library_index].symbol_offsets[function_index];
-                const symbol_RVA = rdata.section.base_RVA + symbol_offset;
+                const symbol_RVA = rdata.section.header.virtual_address + symbol_offset;
                 break :blk symbol_RVA;
             },
             else => panic("Not implemented: {}\n", .{patch.section_to_read_from}),
@@ -823,11 +807,11 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageOptionalHeader, .
             {
                 .magic = ImageOptionalHeader.magic,
-                .size_of_code = sections[@enumToInt(SectionIndex.@".text")].header.size_of_raw_data,
-                .size_of_initialized_data = sections[@enumToInt(SectionIndex.@".rdata")].header.size_of_raw_data + sections[@enumToInt(SectionIndex.@".data")].header.size_of_raw_data,
+                .size_of_code = sections[@enumToInt(Section.Index.@".text")].header.size_of_raw_data,
+                .size_of_initialized_data = sections[@enumToInt(Section.Index.@".rdata")].header.size_of_raw_data + sections[@enumToInt(Section.Index.@".data")].header.size_of_raw_data,
                 // entry point address is the first byte of the text section
-                .address_of_entry_point = sections[@enumToInt(SectionIndex.@".text")].header.virtual_address + entry_point_byte_index,
-                .base_of_code = sections[@enumToInt(SectionIndex.@".text")].header.virtual_address,
+                .address_of_entry_point = sections[@enumToInt(Section.Index.@".text")].header.virtual_address + entry_point_byte_index,
+                .base_of_code = sections[@enumToInt(Section.Index.@".text")].header.virtual_address,
                 .image_base = 0x0000000140000000,
                 .section_alignment = section_alignment,
                 .file_alignment = file_alignment,
