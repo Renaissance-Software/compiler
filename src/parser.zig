@@ -78,13 +78,41 @@ pub const Function = struct
     pub const External = struct
     {
         declaration: Function,
-        library: []const u8,
+        index: Index,
+
+        pub const Index = struct
+        {
+            function: u16,
+            library: u16,
+
+            // @TODO: make this fast
+            pub fn from_u32(index_int: u32) Index
+            {
+                return @ptrCast(* const Index, &index_int).*;
+            }
+
+            // @TODO: make this fast
+            pub fn to_u32(self: *const Index) u32
+            {
+                return @ptrCast(*align (2) const u32, self).*;
+            }
+        };
     };
 
     pub const Internal = struct
     {
         declaration: Function,
         scopes: []Scope,
+    };
+};
+
+pub const Library = struct
+{
+    symbol_names: [][]const u8,
+
+    pub const Builder = struct
+    {
+        symbol_names: ArrayList([]const u8),
     };
 };
 
@@ -150,6 +178,9 @@ pub const ModuleParser = struct
     {
         internal_functions: ArrayList(Function.Internal),
         external_functions: ArrayList(Function.External),
+        library_names: ArrayList([]const u8),
+        libraries: ArrayList(Library.Builder),
+
         imported_modules: ArrayList(ImportedModule),
         integer_literals: ArrayList(IntegerLiteral),
 
@@ -1125,6 +1156,8 @@ pub const Module = struct
 {
     internal_functions: []Function.Internal,
     external_functions: []Function.External,
+    library_names: []([]const u8),
+    libraries: []Library.Builder,
     imported_modules: []ImportedModule,
     integer_literals: []IntegerLiteral,
 
@@ -1239,6 +1272,8 @@ pub const AST = struct
             {
                 .internal_functions = ArrayList(Function.Internal).init(allocator),
                 .external_functions = ArrayList(Function.External).init(allocator),
+                .library_names = ArrayList([]const u8).init(allocator),
+                .libraries = ArrayList(Library.Builder).init(allocator),
                 .imported_modules = ArrayList(ImportedModule).init(allocator),
                 .integer_literals = ArrayList(IntegerLiteral).init(allocator),
 
@@ -1431,15 +1466,66 @@ pub const AST = struct
                                     parser_error("Expected semicolon after extern function declaration\n", .{});
                                 }
 
-                                parser.module_builder.external_functions.append(.{
-                                    .declaration = .
+                                parser.module_builder.external_functions.append(.
                                     {
-                                        .argument_names = argument_name_list.items,
-                                        .name = tld_name,
-                                        .type = function_type,
-                                    },
-                                    .library = extern_library_name,
-                                }) catch unreachable;
+                                        .declaration = .
+                                        {
+                                            .argument_names = argument_name_list.items,
+                                            .name = tld_name,
+                                            .type = function_type,
+                                        },
+                                        .index = blk:
+                                        {
+                                            const function_name = tld_name;
+
+                                            for (parser.module_builder.library_names.items) |library_name, library_i|
+                                            {
+                                                if (std.mem.eql(u8, library_name, extern_library_name))
+                                                {
+                                                    var symbol_names = &parser.module_builder.libraries.items[library_i].symbol_names;
+                                                    for (symbol_names.items) |symbol_name, symbol_i|
+                                                    {
+                                                        if (std.mem.eql(u8, symbol_name, function_name))
+                                                        {
+                                                            break :blk .
+                                                            {
+                                                                .function = @intCast(u16, symbol_i),
+                                                                .library = @intCast(u16, library_i),
+                                                            };
+                                                        }
+                                                    }
+
+                                                    const symbol_index = symbol_names.items.len;
+                                                    symbol_names.append(function_name) catch unreachable;
+
+                                                    break :blk .
+                                                    {
+                                                        .function = @intCast(u16, symbol_index),
+                                                        .library = @intCast(u16, library_i),
+                                                    };
+                                                }
+                                            }
+
+                                            const library_i = parser.module_builder.library_names.items.len;
+                                            parser.module_builder.library_names.append(extern_library_name) catch unreachable;
+                                            parser.module_builder.libraries.append(.
+                                                {
+                                                    .symbol_names = sym_blk:
+                                                    {
+                                                        var new_lib_symbol_names = ArrayList([]const u8).init(allocator);
+                                                        new_lib_symbol_names.append(function_name) catch unreachable;
+                                                        break :sym_blk new_lib_symbol_names;
+                                                    },
+                                                    }) catch unreachable;
+
+                                            const symbol_i = 0;
+                                            break :blk .
+                                            {
+                                                .function = @intCast(u16, symbol_i),
+                                                .library = @intCast(u16, library_i),
+                                            };
+                                        }
+                                    }) catch unreachable;
                             }
                         }
                         else if (after_const_operator.value == .CompilerIntrinsic)
@@ -1544,6 +1630,8 @@ pub const AST = struct
         {
             .internal_functions = parser.module_builder.internal_functions.items,
             .external_functions = parser.module_builder.external_functions.items,
+            .library_names = parser.module_builder.library_names.items,
+            .libraries = parser.module_builder.libraries.items,
             .imported_modules = parser.module_builder.imported_modules.items,
             .integer_literals = parser.module_builder.integer_literals.items,
             .unresolved_types = parser.module_builder.unresolved_types.items,

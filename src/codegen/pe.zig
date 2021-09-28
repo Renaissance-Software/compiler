@@ -529,7 +529,6 @@ const RDataSection = struct
         {
             const symbol_count = library.symbols.items.len;
             var symbol_RVAs = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
-
             for (library.symbols.items) |*symbol|
             {
                 std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});

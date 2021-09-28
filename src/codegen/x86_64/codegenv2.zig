@@ -6,6 +6,7 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 
 const Type = @import("../../type.zig");
+const Parser = @import("../../parser.zig");
 const IR = @import("../../ir.zig");
 const Compiler = @import("../../compiler.zig");
 const Codegen = @import("../../codegen.zig");
@@ -357,9 +358,8 @@ pub const Program = struct
                                 .relative_external =>
                                 {
                                     std.debug.print("operand offset: {}\n", .{instruction.operand.offset});
-                                    const library_index = (instruction.operand.index & 0xffff0000) >> 16;
-                                    const function_index = @truncate(u16, instruction.operand.index);
-                                    std.debug.print("Library index: {}. Function index: {}\n", .{library_index, function_index});
+                                    const external_function_index = Parser.Function.External.Index.from_u32(operand_index);
+                                    std.debug.print("Library index: {}. Function index: {}\n", .{external_function_index.library, external_function_index.function});
                                     const target_index = @intCast(u32, code_buffer.items.len + instruction.operand.offset);
                                     std.debug.print("Adding patch with rip index: {}\n", .{target_index});
                                     patches.append(.
@@ -708,13 +708,11 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                         const call = program.instructions.call[instruction_index];
                         const callee = call.callee;
                         const callee_id = callee.get_ID();
-                        const callee_index = callee.get_index();
+                        var callee_index = callee.get_index();
 
                         const argument_count = call.arguments.len;
 
                         var function_type: Type.Function = undefined;
-                        var external_library_index: u16 = undefined;
-                        var external_function_index: u16 = undefined;
                         var call_operand_kind: Instruction.Operand.Kind = undefined;
                         var operand_offset: u8 = undefined;
 
@@ -722,24 +720,22 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                         {
                             .global_function =>
                             {
+                                assert(callee_index <= std.math.maxInt(i32));
                                 function_type = program.functions[callee_index].type;
                                 call_operand_kind = .relative_global;
                                 operand_offset = 1;
                             },
                             .external_function =>
                             {
-                                external_library_index = @truncate(u16, (callee_index & 0xffff0000) >> 16);
-                                external_function_index = @truncate(u16, callee_index);
-                                const ast_function_declaration = program.libraries[external_library_index].functions[external_function_index];
-                                function_type = ast_function_declaration.type;
+                                const external_function = program.external_functions[callee_index];
+                                function_type = external_function.declaration.type;
+                                callee_index = external_function.index.to_u32();
                                 call_operand_kind = .relative_external;
                                 operand_offset = 3;
                             },
                             else => unreachable,
                         }
 
-
-                        assert(callee_index <= std.math.maxInt(i32));
                         assert(argument_count <= function.register_allocator.argument_registers.len);
                         var register_allocator_state = function.register_allocator.spill_registers_before_call();
                         for (call.arguments) |argument, argument_i|

@@ -457,7 +457,9 @@ pub const Program = struct
         ret: []Instruction.Ret,
     },
     functions: []Function,
-    libraries: []Semantics.Library,
+    external_functions: []Parser.Function.External,
+    library_names: [][]const u8,
+    libraries: []Parser.Library.Builder,
     integer_literals: []IntegerLiteral,
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
@@ -478,7 +480,9 @@ pub const Program = struct
         },
 
         function_builders: ArrayList(Function.Builder),
-        libraries: []Semantics.Library,
+        external_functions: []Parser.Function.External,
+        library_names: [][]const u8,
+        libraries: []Parser.Library.Builder,
         integer_literals: ArrayList(IntegerLiteral),
         pointer_types: ArrayList(Type.Pointer),
         slice_types: ArrayList(Type.Slice),
@@ -499,6 +503,8 @@ pub const Program = struct
                     .ret = ArrayList(Instruction.Ret).init(allocator),
                 },
                 .function_builders = ArrayList(Function.Builder).initCapacity(allocator, result.functions.len) catch unreachable,
+                .external_functions = result.external_functions,
+                .library_names = result.library_names,
                 .libraries = result.libraries,
                 .integer_literals = ArrayList(IntegerLiteral).initCapacity(allocator, result.integer_literals.len) catch unreachable,
                 .pointer_types = ArrayList(Type.Pointer).initCapacity(allocator, result.pointer_types.len) catch unreachable,
@@ -548,15 +554,16 @@ const ReturnKind = enum
 
 pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 {
-    for (result.libraries) |library, library_i|
-    {
-        log("Library [#{}]: {s}\n", .{library_i, result.library_names[library_i]});
+    // @TODO: we are not doing anything relevant here
+    //for (result.libraries) |library, library_i|
+    //{
+        //log("Library [#{}]: {s}\n", .{library_i, result.library_names[library_i]});
 
-        for (library.functions) |function, function_i|
-        {
-            log("Symbol [#{}]: {s}\n", .{function_i, function.name});
-        }
-    }
+        //for (library.functions) |function, function_i|
+        //{
+            //log("Symbol [#{}]: {s}\n", .{function_i, function.name});
+        //}
+    //}
 
     var builder = Program.Builder.new(allocator, result);
 
@@ -652,7 +659,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             {
                                 std.debug.print("External function\n", .{});
                                 called_function_reference = ExternalFunction.new(called_function_index);
-                                ast_called_function_declaration = result.libraries[Semantics.Library.get_library_index(expression)].functions[Semantics.Library.get_function_index(expression)];
+                                ast_called_function_declaration = result.external_functions[called_function_index].declaration;
                             }
                             else unreachable;
 
@@ -759,6 +766,8 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             .ret = builder.instructions.ret.items,
         },
         .functions = functions.items,
+        .external_functions = builder.external_functions,
+        .library_names = builder.library_names,
         .libraries = builder.libraries,
         .integer_literals = builder.integer_literals.items,
 
