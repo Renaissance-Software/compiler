@@ -234,9 +234,7 @@ const BackwardPatch = struct
 pub const Program = struct
 {
     functions: []Function,
-    code_base_RVA: u64,
-    data_base_RVA: u64,
-    entry_point_index: u64 = 0,
+    data_buffer: ArrayList(u8),
 
     const Function = struct
     {
@@ -280,7 +278,6 @@ pub const Program = struct
 
         const aproximate_code_size = std.mem.alignForward(self.estimate_max_code_size(), PE.file_alignment);
         var code_buffer = ArrayList(u8).initCapacity(allocator, aproximate_code_size) catch unreachable;
-        self.code_base_RVA = section_header.virtual_address;
 
         for (self.functions) |*function, function_i|
         {
@@ -619,7 +616,7 @@ const Register = struct
     };
 };
 
-pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Target) void
+pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_filename: []const u8, target: std.Target) void
 {
     abi = target.abi;
     const os = target.os.tag;
@@ -638,6 +635,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Tar
     //assert(std.mem.eql(program.functions[0].declaration.name, "entry"));
 
     var functions = ArrayList(Program.Function).initCapacity(allocator, function_count) catch unreachable;
+    var data_buffer = ArrayList(u8).init(allocator);
 
     for (program.functions) |*function|
     {
@@ -879,11 +877,8 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Tar
     var executable = Program
     {
         .functions = functions.items,
-        .code_base_RVA = 0,
-        .data_base_RVA = 0,
+        .data_buffer = data_buffer,
     };
-
-    var data_buffer = ArrayList(u8).init(allocator);
 
     switch (os)
     {
@@ -908,7 +903,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, target: std.Tar
                     break :blk kernel32;
                 }) catch unreachable;
 
-            PE.write(allocator, &executable, "new.exe", data_buffer.items, libraries.items, target);
+            PE.write(allocator, &executable, executable_filename, libraries.items, target);
         },
         else => panic("OS {} not implemented\n", .{os}),
     }

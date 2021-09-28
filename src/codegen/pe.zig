@@ -714,9 +714,8 @@ pub const Patch = struct
     section_to_read_from: Section.Index,
 };
 
-pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, data_buffer: []const u8, import_libraries: []Import.Library, target: std.Target) void
+pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []const u8, import_libraries: []Import.Library, target: std.Target) void
 {
-    _ = data_buffer;
     var patches = ArrayList(Patch).init(allocator);
     
     var section_headers: [Section.count + 1]ImageSectionHeader = undefined;
@@ -773,7 +772,6 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     }
 
     const virtual_size_of_image = offset.virtual;
-
     const max_executable_buffer_size = offset.file;
 
     var exe_buffer = DataBuffer.initCapacity(allocator, max_executable_buffer_size) catch unreachable;
@@ -784,7 +782,6 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
                 }))) catch unreachable;
 
     exe_buffer.appendSlice(std.mem.asBytes(&image_NT_signature)) catch unreachable;
-
     exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageFileHeader, .
                 {
                     .machine = @enumToInt(switch(target.cpu.arch)
@@ -844,16 +841,18 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
         import_data_directory.* = rdata.import_directory;
     }
 
-    // ignore exception directory
-    //
-    //
+    // @TODO: we are ignoring the exception directory
 
-    // copy sections
+    // copy section headers
     for (sections) |*section|
     {
         exe_buffer.appendSlice(std.mem.asBytes(&section.header)) catch unreachable;
     }
 
+    // @TODO: can this null section header cause problems?
+    exe_buffer.appendSlice(std.mem.asBytes(&section_headers[Section.count])) catch unreachable;
+
+    // copy sections
     for (sections) |*section|
     {
         exe_buffer.items.len = section.header.pointer_to_raw_data;
@@ -863,16 +862,5 @@ pub fn write(allocator: *Allocator, executable: anytype, exe_name: []const u8, d
     exe_buffer.items.len = offset.file;
     assert(exe_buffer.items.len % file_alignment == 0);
 
-    const working_exe = std.fs.cwd().readFileAlloc(allocator, "working.exe", 0xffffffff) catch unreachable;
-
-    for (working_exe) |working_b, working_i|
-    {
-        const exe_b = exe_buffer.items[working_i];
-        if (exe_b != working_b)
-        {
-            std.debug.print("[{x}]: W: 0x{x}. E: 0x{x}\n", .{working_i, working_b, exe_b});
-        }
-    }
-
-    Codegen.write_executable(exe_name, exe_buffer.items);
+    Codegen.write_executable(executable_filename, exe_buffer.items);
 }

@@ -16,12 +16,12 @@ fn log(comptime format: []const u8, arguments: anytype) void
     Compiler.log(.codegen, format, arguments);
 }
 
-pub fn encode(allocator: *Allocator, module: *const IR.Program, target: std.Target) void
+pub fn encode(allocator: *Allocator, module: *const IR.Program, executable_filename: []const u8,target: std.Target) void
 {
     const arch = target.cpu.arch;
     switch (arch)
     {
-        .x86_64 => x86_64.encode(allocator, module, target),
+        .x86_64 => x86_64.encode(allocator, module, executable_filename, target),
         //.aarch64 => arm64.encode(allocator, module, target),
         else => panic("Architecture {} is not supported\n", .{arch}),
     }

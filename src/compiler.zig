@@ -11,7 +11,7 @@ const IR = @import("bytecode.zig");
 const NewIR = @import("ir.zig");
 const Codegen = @import("codegen.zig");
 
-pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, target: std.Target) void
+pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, executable_filename: []const u8, target: std.Target) void
 {
     var arena = std.heap.ArenaAllocator.init(page_allocator);
     defer arena.deinit();
@@ -21,7 +21,7 @@ pub fn make_executable(page_allocator: *Allocator, source_filename: []const u8, 
     const semantics_result = Semantics.analyze(allocator, ast);
 
     const ir_program = NewIR.generate(allocator, semantics_result);
-    Codegen.encode(allocator, &ir_program, target);
+    Codegen.encode(allocator, &ir_program, executable_filename, target);
 }
 
 pub fn should_log(comptime scope: @TypeOf(.EnumLiteral)) bool

@@ -51,6 +51,16 @@ const test_files_linux = [_][]const u8
     test_dir ++ "linux_hello_world.rns",
 };
 
+fn make_exe_name(allocator: *Allocator, name: []const u8, target: std.Target) []const u8
+{
+    const os = target.os.tag;
+    const exe_termination = if (os == .windows) "exe" else "out";
+    const file_union = [_][]const u8 { name[0..name.len - 3], exe_termination };
+
+    const exe_filename = std.mem.join(allocator, "", file_union[0..]) catch unreachable;
+    return exe_filename;
+}
+
 pub fn main() anyerror!void
 {
     const all_tests = false;
@@ -77,7 +87,7 @@ pub fn main() anyerror!void
 
     if (all_tests)
     {
-        for (test_files) |test_file, i|
+        inline for (test_files) |test_file, i|
         {
             log("[Test #{}] {s}\n", .{i, test_file});
             Compiler.make_executable(page_allocator, test_file, target);
@@ -87,6 +97,7 @@ pub fn main() anyerror!void
     {
         const index = 0;
         //const index = test_files.len - 1;
-        Compiler.make_executable(page_allocator, test_files[index], target);
+        const test_file = test_files[index];
+        Compiler.make_executable(page_allocator, test_file, make_exe_name(page_allocator, test_file, target), target);
     }
 }
