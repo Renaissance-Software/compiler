@@ -600,6 +600,8 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         };
 
         var explicit_return = false;
+        // @TODO: detect all this variables changes and write it here
+        var emitted_return = false;
         // @TODO: loop to detect alloca count
 
         const ast_main_block = &ast_function.scopes[0];
@@ -701,6 +703,29 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                 _ = call;
                             }
                         },
+                        .return_expressions =>
+                        {
+                            assert(!emitted_return);
+
+                            const ast_return_expression = ast_main_block.return_expressions[statement_index];
+                            if (ast_return_expression.expression) |ast_expression_to_return|
+                            {
+                                _ = ast_expression_to_return;
+                                unreachable;
+                            }
+                            else
+                            {
+                                if (!emitted_return)
+                                {
+                                    _ = Instruction.Ret.new(&builder, return_type, null);
+                                    emitted_return = true;
+                                }
+                                else
+                                {
+                                    unreachable;
+                                }
+                            }
+                        },
                         else => panic("ni: {}\n", .{array_index}),
                     }
                 },
@@ -718,7 +743,12 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             {
                 unreachable;
             }
-            _ = Instruction.Ret.new(&builder, return_type, null);
+
+            // @TODO: this can cause bugs
+            if (!emitted_return)
+            {
+                _ = Instruction.Ret.new(&builder, return_type, null);
+            }
         }
         else
         // here noreturn type, do nothing at the moment

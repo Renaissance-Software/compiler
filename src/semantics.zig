@@ -608,7 +608,6 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
     return node;
 }
 
-
 fn analyze_type(analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_type: Type) Type
 {
     const type_id = unresolved_type.get_ID();
@@ -902,6 +901,18 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         {
                             panic("Argument type must be integer\n", .{});
                         }
+                    }
+                }
+            },
+            .return_expressions =>
+            {
+                const return_expression = &scope.return_expressions[statement_index];
+                if (return_expression.expression) |expression_to_return|
+                {
+                    _ = expression_to_return;
+                    while (true)
+                    {
+                        std.debug.print("ERROR\n", .{});
                     }
                 }
             },

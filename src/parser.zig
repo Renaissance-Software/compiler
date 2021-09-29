@@ -60,6 +60,11 @@ pub const IdentifierExpression = struct
     type: Type,
 };
 
+pub const ReturnExpression = struct
+{
+    expression: ?Entity,
+};
+
 pub const Scope = struct
 {
     statements: []Entity,
@@ -67,6 +72,7 @@ pub const Scope = struct
     identifier_expressions: []IdentifierExpression,
     invoke_expressions: []InvokeExpression,
     field_access_expressions: []FieldAccessExpression,
+    return_expressions: []ReturnExpression,
 };
 
 pub const Function = struct
@@ -165,6 +171,7 @@ pub const ModuleParser = struct
         identifier_expressions: ArrayList(IdentifierExpression),
         invoke_expressions: ArrayList(InvokeExpression),
         field_access_expressions: ArrayList(FieldAccessExpression),
+        return_expressions: ArrayList(ReturnExpression),
     };
 
     const FunctionBuilder = struct
@@ -602,6 +609,40 @@ pub const ModuleParser = struct
                     else => panic("ni: {}\n", .{operator}),
                 }
             },
+            .keyword =>
+            {
+                const keyword = self.get_token(.keyword).value;
+                switch (keyword)
+                {
+                    .@"return" =>
+                    {
+                        self.consume_token(.keyword);
+                        const return_next_token = self.lexer.tokens[self.lexer.next_index];
+                        const return_expression = blk:
+                        {
+                            if (return_next_token == .sign and self.get_token(.sign).value == ';')
+                            {
+                                self.consume_token(.sign);
+                                break :blk null;
+                            }
+                            else
+                            {
+                                break :blk self.parse_expression();
+                            }
+                        };
+
+                        var current_scope = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
+                        const return_expression_index = current_scope.return_expressions.items.len;
+                        const return_expression_id = Entity.new(return_expression_index, Entity.ScopeID.return_expressions);
+                        current_scope.return_expressions.append(.{
+                            .expression = return_expression,
+                        }) catch unreachable;
+
+                        current_scope.statements.append(return_expression_id) catch unreachable;
+                    },
+                    else => panic("Ni: {}\n", .{keyword}),
+                }
+            },
             else => panic("ni: {}\n", .{next_token}),
         }
         //while (should_keep_parsing)
@@ -692,6 +733,7 @@ pub const ModuleParser = struct
             .identifier_expressions = ArrayList(IdentifierExpression).init(self.allocator),
             .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
             .field_access_expressions = ArrayList(FieldAccessExpression).init(self.allocator),
+            .return_expressions = ArrayList(ReturnExpression).init(self.allocator),
         }) catch unreachable;
 
         // @TODO: should we move this outside the function?
@@ -729,6 +771,7 @@ pub const ModuleParser = struct
             .identifier_expressions = scope_builder.identifier_expressions.items,
             .invoke_expressions = scope_builder.invoke_expressions.items,
             .field_access_expressions = scope_builder.field_access_expressions.items,
+            .return_expressions = scope_builder.return_expressions.items,
         };
 
         self.function_builder.current_scope = previous_scope;

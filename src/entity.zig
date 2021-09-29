@@ -59,6 +59,7 @@ pub const Entity = packed struct
         invoke_expressions,
         field_access_expressions,
         integer_literals,
+        return_expressions,
     };
 
     const LevelToArrayIDMap = blk:
