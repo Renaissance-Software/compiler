@@ -6,6 +6,8 @@ const assert = std.debug.assert;
 const print = std.debug.print;
 const alignForward = std.mem.alignForward;
 
+const Parser = @import("../parser.zig");
+const Semantics = @import("../semantics.zig");
 const Codegen = @import("../codegen.zig");
 const CodeBuffer = Codegen.CodeBuffer;
 const DataBuffer = Codegen.DataBuffer;
@@ -38,170 +40,6 @@ const DirectoryIndex = enum
     delay_import,
     CLR,
 };
-
-pub fn get_RVA(header: ImageSectionHeader, section_buffer_len: usize) u32
-{
-    return header.virtual_address + @intCast(u32, section_buffer_len);
-}
-
-//const RDataSection = struct
-//{
-    //const Self = @This();
-
-    //buffer: []const u8,
-    //IAT: struct
-    //{
-        //RVA: u32,
-        //size: u32,
-    //},
-    //import_directory: struct
-    //{
-        //RVA: u32,
-        //size: u32,
-    //},
-
-    //fn encode(allocator: *Allocator, data_buffer: []const u8, import_libraries: []Import.Library, header: *ImageSectionHeader) Self
-    //{
-        //var expected_encoded_size: u64 = 0;
-
-        //const data_base_RVA = header.virtual_address;
-        //_ = data_base_RVA;
-
-        //for (import_libraries) |import_library|
-        //{
-            //expected_encoded_size += alignForward(import_library.name.len + 1, 2);
-
-            //for (import_library.symbols) |import_symbol|
-            //{
-                //expected_encoded_size += @sizeOf(u16);
-                //expected_encoded_size += alignForward(import_symbol.name.len + 1, 2);
-
-                //expected_encoded_size += @sizeOf(u64);
-
-                //expected_encoded_size += @sizeOf(u64);
-
-                //expected_encoded_size += @sizeOf(ImageImportDescriptor);
-            //}
-
-            //expected_encoded_size += @sizeOf(u64);
-            //expected_encoded_size += @sizeOf(u64);
-            //expected_encoded_size += @sizeOf(ImageImportDescriptor);
-        //}
-
-        //const global_data_size = alignForward(data_buffer.len, 16);
-        //expected_encoded_size += global_data_size;
-
-        //var rdata_buffer = DataBuffer.initCapacity(allocator, expected_encoded_size) catch
-        //{
-            //panic("Error initializing the rdata section buffer\n", .{});
-        //};
-
-        //rdata_buffer.appendSlice(data_buffer) catch unreachable;
-
-        //for (import_libraries) |*import_library|
-        //{
-            //for (import_library.symbols) |*import_symbol|
-            //{
-                //import_symbol.name_RVA = get_RVA(header, rdata_buffer.items);
-                //rdata_buffer.appendSlice(std.mem.asBytes(&@intCast(i16, 0))) catch unreachable;
-                //const name_len = import_symbol.name.len;
-                //const name_size = name_len + 1;
-                //const aligned_name_size = alignForward(name_size, 2);
-                //const remainding_size = aligned_name_size - name_len;
-
-                //rdata_buffer.appendSlice(import_symbol.name) catch panic("Error appending symbol to the rdata buffer\n", .{});
-                //rdata_buffer.appendNTimes(0, remainding_size) catch panic("Error appending zero padding\n", .{});
-            //}
-        //}
-
-        //const IAT_RVA = get_RVA(header, rdata_buffer.items);
-        //_ = IAT_RVA;
-
-        //for (import_libraries) |*import_library|
-        //{
-            //import_library.RVA = get_RVA(header, rdata_buffer.items);
-
-            //for (import_library.symbols) |*import_symbol|
-            //{
-                //const offset_in_data: u64 = get_RVA(header, rdata_buffer.items) - header.virtual_address;
-                //import_symbol.offset_in_data = @intCast(u32, offset_in_data);
-                //rdata_buffer.appendSlice(std.mem.asBytes(&offset_in_data)) catch panic("error appending offset in data\n", .{});
-            //}
-
-            //const zero: u64 = 0;
-            //rdata_buffer.appendSlice(std.mem.asBytes(&zero)) catch panic("error appending 8-byte zero padding\n", .{});
-        //}
-
-        //const IAT_size = @intCast(u32, rdata_buffer.items.len);
-
-        //// Image thunks
-        //for (import_libraries) |*import_library|
-        //{
-            //import_library.image_thunk_RVA = get_RVA(header, rdata_buffer.items);
-
-            //for (import_library.symbols) |*import_symbol|
-            //{
-                //const symbol_name_RVA: u64 = import_symbol.name_RVA;
-                //rdata_buffer.appendSlice(std.mem.asBytes(&symbol_name_RVA)) catch panic("error appending symbol name RVA\n", .{});
-            //}
-
-            //const zero: u64 = 0;
-            //rdata_buffer.appendSlice(std.mem.asBytes(&zero)) catch panic("error appending 8-byte zero padding\n", .{});
-        //}
-
-        //// Library names
-        //for (import_libraries) |*import_library|
-        //{
-            //import_library.name_RVA = get_RVA(header, rdata_buffer.items);
-            //const name_len = import_library.name.len;
-            //const name_size = name_len + 1;
-            //const aligned_name_size = alignForward(name_size, 2);
-            //const remainding_size = aligned_name_size - name_len;
-
-            //rdata_buffer.appendSlice(import_library.name) catch panic("Error appending symbol to the rdata buffer\n", .{});
-            //rdata_buffer.appendNTimes(0, remainding_size) catch panic("Error appending zero padding\n", .{});
-        //}
-
-        //// Import directory
-        //const import_directory_RVA = get_RVA(header, rdata_buffer.items);
-
-        //for (import_libraries) |*import_library|
-        //{
-            //const image_import_descriptor = std.mem.zeroInit(ImageImportDescriptor, .
-            //{
-                //.characteristics_or_original_first_thunk = import_library.image_thunk_RVA,
-                //.name = import_library.name_RVA,
-                //.first_thunk = import_library.RVA,
-            //});
-
-            //rdata_buffer.appendSlice(std.mem.asBytes(&image_import_descriptor)) catch panic("error appending image_import_descriptor\n", .{});
-        //}
-
-        //const import_directory_size = get_RVA(header, rdata_buffer.items) - import_directory_RVA;
-        //_ = import_directory_size;
-
-        //const null_image_import_descrptor = std.mem.zeroes(ImageImportDescriptor);
-
-        //rdata_buffer.appendSlice(std.mem.asBytes(&null_image_import_descrptor)) catch panic("Error appending null image import descriptor\n", .{});
-
-        //const rdata_buffer_len = rdata_buffer.items.len;
-        //if (expected_encoded_size > 0)
-        //{
-            //assert(rdata_buffer_len <= expected_encoded_size);
-            //assert(rdata_buffer_len <= std.math.maxInt(i32));
-        //}
-
-        //header.misc.virtual_size = @intCast(u32, rdata_buffer_len);
-        //header.size_of_raw_data = @intCast(u32, alignForward(rdata_buffer_len, file_alignment));
-
-        //return
-        //.{
-            //.buffer = rdata_buffer.items,
-            //.IAT = .{ .RVA = IAT_RVA, .size = IAT_size, },
-            //.import_directory = .{ .RVA = import_directory_RVA, .size = import_directory_size },
-        //};
-    //}
-//};
 
 const image_sizeof_short_name = 8;
 
@@ -388,11 +226,6 @@ const ImageDLLCharacteristics = enum(u16)
     terminal_server_aware = 0x8000,
 };
 
-const text_section_name =  [image_sizeof_short_name]u8 {'.', 't', 'e', 'x', 't', 0, 0, 0};
-const rdata_section_name = [image_sizeof_short_name]u8 {'.', 'r', 'd', 'a', 't', 'a', 0, 0};
-const pdata_section_name = [image_sizeof_short_name]u8 {'.', 'p', 'd', 'a', 't', 'a', 0, 0};
-const data_section_name = [image_sizeof_short_name]u8 {'.', 'd', 'a', 't', 'a', 0, 0, 0};
-
 const image_DOS_signature = 0x5A4D;
 const image_NT_signature: u32 = 0x00004550;
 
@@ -405,15 +238,6 @@ pub const Offset = struct
 
     const Self = @This();
 
-    fn new(size: u32) Self
-    {
-        return
-        .{
-            .file = @intCast(u32, alignForward(size, file_alignment)),
-            .virtual = @intCast(u32, alignForward(size, section_alignment)),
-        };
-    }
-
     pub fn after_size(self: *Self, size: u32) void
     {
         self.* =
@@ -424,235 +248,12 @@ pub const Offset = struct
     }
 };
 
-fn append_string(file_buffer: *DataBuffer, string: []const u8) void
-{
-    const len = string.len + 1;
-    file_buffer.appendSlice(string) catch unreachable;
-    file_buffer.append(0) catch unreachable;
-    // if is not aligned to 2
-    if (len & 1 != 0)
-    {
-        file_buffer.append(0) catch unreachable;
-    }
-}
-
-fn file_rva(section_header: *ImageSectionHeader, file_len: usize) u32
-{
-    return @intCast(u32, file_len) - section_header.pointer_to_raw_data + section_header.virtual_address;
-}
-
-fn get_pointer(comptime T: type, file_buffer: []u8, index: usize) *align(1) T
-{
-    return @intToPtr(*align(1) T, @ptrToInt(file_buffer.ptr) + index);
-}
-
-const TextSection = struct
-{
-    fn encode_old(allocator: *Allocator, header: *ImageSectionHeader, offset: *Offset) Section
-    {
-        var text = Section
-        {
-            .header = header.*,
-            .buffer = CodeBuffer.init(allocator),
-            .base_RVA = header.virtual_address,
-            .name = ".text",
-            .permissions = @enumToInt(Section.Permission.execute) | @enumToInt(Section.Permission.read),
-        };
-        text.header.pointer_to_raw_data = offset.file;
-        text.header.virtual_address = offset.virtual;
-
-        const code = [_]u8
-        {
-            0x48, 0x83, 0xEC, 0x28, 0xC7, 0xC1, 0x2A, 0x00, 0x00, 0x00, 0x48, 0xFF, 0x15, 0xFD, 0x0F, 0x00, 0x00, 0x48, 0x83, 0xC4, 0x28, 0xC3, 0x48, 0x83, 0xEC, 0x00, 0xE9, 0xE1, 0xFF, 0xFF, 0xFF, 0x48, 0x83, 0xC4, 0x00, 0xC3
-        };
-
-        text.buffer.appendSlice(code[0..]) catch unreachable;
-
-        const code_size = @intCast(u32, text.buffer.items.len);
-        text.header.misc.virtual_size = code_size;
-        text.header.size_of_raw_data = @intCast(u32, alignForward(code_size, file_alignment));
-
-        offset.after_size(text.header.size_of_raw_data);
-
-        return text;
-    }
-
-    fn encode(executable: anytype, allocator: *Allocator, header: *ImageSectionHeader, patches: *ArrayList(Patch), arch: std.Target.Cpu.Arch, offset: *Offset) Section
-    {
-        _ = header;
-        _ = executable;
-        _ = allocator;
-
-        switch (arch)
-        {
-            .x86_64 =>
-            {
-                var x86_64_program = @ptrCast(*x86_64v2.Program, executable);
-                return x86_64_program.encode_text_section_pe(allocator, header, patches, offset);
-            },
-            else => panic("CPU arch: {}\n", .{arch}),
-        }
-
-    }
-};
-
 const ImportLibrary = struct
 {
     name_RVA: u32,
     RVA: u32,
     image_thunk_RVA: u32,
     symbol_RVAs: []u32,
-    symbol_offsets: []u32,
-};
-
-const RDataSection = struct
-{
-    section: Section,
-    IAT: Section.Directory,
-    import_directory: Section.Directory,
-    libraries: []ImportLibrary,
-
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader, import_libraries: []Import.Library, offset: *Offset) RDataSection
-    {
-        header.pointer_to_raw_data = offset.file;
-        header.virtual_address = offset.virtual;
-
-        var rdata = Section
-        {
-            .header = header.*,
-            .buffer = DataBuffer.init(allocator),
-        };
-
-        var pe32_libraries = ArrayList(ImportLibrary).initCapacity(allocator, import_libraries.len) catch unreachable;
-
-        for (import_libraries) |*library|
-        {
-            const symbol_count = library.symbols.items.len;
-            var symbol_RVAs = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
-            for (library.symbols.items) |*symbol|
-            {
-                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
-                const symbol_rva = get_RVA(rdata.header, rdata.buffer.items.len);
-                symbol_RVAs.appendAssumeCapacity(symbol_rva);
-                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0))) catch unreachable;
-                append_string(&rdata.buffer, symbol.name);
-            }
-
-            pe32_libraries.append(ImportLibrary
-                {
-                    .name_RVA = 0,
-                    .RVA = 0,
-                    .image_thunk_RVA = 0,
-                    .symbol_RVAs = symbol_RVAs.items,
-                    .symbol_offsets = blk:
-                    {
-                        var symbol_offsets = ArrayList(u32).initCapacity(allocator, symbol_count) catch unreachable;
-                        symbol_offsets.resize(symbol_count) catch unreachable;
-                        break :blk symbol_offsets.items;
-                    },
-                }) catch unreachable;
-        }
-
-        // IAT list
-        const IAT_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
-
-        for (pe32_libraries.items) |*pe32_lib|
-        {
-            pe32_lib.RVA = get_RVA(rdata.header, rdata.buffer.items.len);
-
-            for (pe32_lib.symbol_RVAs) |symbol_rva, symbol_i|
-            {
-                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
-                const symbol_offset = get_RVA(rdata.header, rdata.buffer.items.len) - rdata.header.virtual_address;
-                pe32_lib.symbol_offsets[symbol_i] = symbol_offset;
-
-                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
-            }
-
-            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
-        }
-
-        const IAT_size = @intCast(u32, rdata.buffer.items.len);
-
-        // Image thunks
-        for (pe32_libraries.items) |*pe32_lib|
-        {
-            pe32_lib.image_thunk_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
-
-            for (pe32_lib.symbol_RVAs) |symbol_RVA|
-            {
-                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_RVA))) catch unreachable;
-            }
-
-            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
-        }
-
-        // Library names
-        for (import_libraries) |*library, library_i|
-        {
-            var pe32_lib = &pe32_libraries.items[library_i];
-            pe32_lib.name_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
-
-            append_string(&rdata.buffer, library.name);
-        }
-
-        // Import directory
-        const import_directory_RVA = get_RVA(rdata.header, rdata.buffer.items.len);
-
-        for (pe32_libraries.items) |pe32_lib|
-        {
-            rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageImportDescriptor, .
-                        {
-                            .characteristics_or_original_first_thunk = pe32_lib.image_thunk_RVA,
-                            .name = pe32_lib.name_RVA,
-                            .first_thunk = pe32_lib.RVA,
-                        }))) catch unreachable;
-        }
-
-        const import_directory_size = get_RVA(rdata.header, rdata.buffer.items.len) - import_directory_RVA;
-
-        if (import_directory_size > 0)
-        {
-            rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageImportDescriptor))) catch unreachable;
-        }
-
-        // @TODO: @INFO: Exception directory: dont code for now
-
-        rdata.header.misc.virtual_size = @intCast(u32, rdata.buffer.items.len);
-        rdata.header.size_of_raw_data = @intCast(u32, alignForward(rdata.buffer.items.len, file_alignment));
-        offset.after_size(rdata.header.size_of_raw_data);
-
-        return .
-        {
-            .section = rdata,
-            .IAT = .{ .RVA = IAT_RVA, .size = IAT_size, },
-            .import_directory = .{ .RVA = import_directory_RVA, .size = import_directory_size, },
-            .libraries = pe32_libraries.items,
-        };
-    }
-};
-
-const DataSection = struct
-{
-    fn encode(allocator: *Allocator, header: *ImageSectionHeader, offset: *Offset) Section
-    {
-        var data = Section
-        {
-            .header = header.*,
-            .buffer = DataBuffer.init(allocator),
-        };
-        data.header.pointer_to_raw_data = offset.file;
-        data.header.virtual_address = offset.virtual;
-
-        // dont hardcode this
-        data.buffer.append(0) catch unreachable;
-        
-        data.header.misc.virtual_size = @intCast(u32, data.buffer.items.len);
-        data.header.size_of_raw_data = @intCast(u32, alignForward(data.buffer.items.len, file_alignment));
-        offset.after_size(data.header.size_of_raw_data);
-
-        return data;
-    }
 };
 
 pub const Section = struct
@@ -691,18 +292,217 @@ pub const Section = struct
         break :blk section_characteristics;
     };
 
-    pub const Permission = enum(u8)
-    {
-        read = 1,
-        write = 2,
-        execute = 4,
-    };
-
     pub const Directory = extern struct
     {
         RVA: u32,
         size: u32,
     };
+
+    pub fn get_RVA(self: *Section) u32
+    {
+        return self.header.virtual_address + @intCast(u32, self.buffer.items.len);
+    }
+
+    fn append_string(self: *Section, string: []const u8) void
+    {
+        const len = string.len + 1;
+        self.buffer.appendSlice(string) catch unreachable;
+        self.buffer.append(0) catch unreachable;
+        // if is not aligned to 2
+        if (len & 1 != 0)
+        {
+            self.buffer.append(0) catch unreachable;
+        }
+    }
+
+    const RData = struct
+    {
+        const EncodingOutput = struct
+        {
+            libraries_offsets: ArrayList(LibraryOffsets),
+            iat: Section.Directory,
+            import: Section.Directory
+        };
+    };
+
+    fn encode_rdata_section(allocator: *Allocator, external: Semantics.External, rdata_out: *RData.EncodingOutput, offset: *Offset) Section
+    {
+        var rdata = Section
+        {
+            .header = std.mem.zeroInit(ImageSectionHeader, .
+            {
+                .pointer_to_raw_data = offset.file,
+                .virtual_address = offset.virtual,
+                .name = Section.names[@enumToInt(Section.Index.@".rdata")],
+                .characteristics = Section.characteristics[@enumToInt(Section.Index.@".rdata")],
+            }),
+            .buffer = DataBuffer.init(allocator),
+        };
+
+        var pe32_libraries = ArrayList(ImportLibrary).initCapacity(allocator, external.libraries.len) catch unreachable;
+
+        for (external.libraries) |library|
+        {
+            var symbol_RVAs = ArrayList(u32).initCapacity(allocator, library.symbols.len) catch unreachable;
+            for (library.symbols) |symbol_i|
+            {
+                symbol_RVAs.appendAssumeCapacity(rdata.get_RVA());
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u16, 0))) catch unreachable;
+                const symbol_name = external.symbol_names[symbol_i];
+                rdata.append_string(symbol_name);
+            }
+            
+            pe32_libraries.append(ImportLibrary
+                {
+                    .name_RVA = 0,
+                    .RVA = 0,
+                    .image_thunk_RVA = 0,
+                    .symbol_RVAs = symbol_RVAs.items,
+                }) catch unreachable;
+        }
+
+        // IAT list
+        const IAT_RVA = rdata.get_RVA();
+
+        rdata_out.libraries_offsets = ArrayList(LibraryOffsets).initCapacity(allocator, pe32_libraries.items.len) catch unreachable;
+
+        for (pe32_libraries.items) |*pe32_lib|
+        {
+            pe32_lib.RVA = rdata.get_RVA();
+
+            var symbol_offsets = ArrayList(u32).initCapacity(allocator, pe32_lib.symbol_RVAs.len) catch unreachable;
+
+            for (pe32_lib.symbol_RVAs) |symbol_rva|
+            {
+                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
+                const symbol_offset = @intCast(u32, rdata.buffer.items.len);
+                symbol_offsets.appendAssumeCapacity(symbol_offset);
+
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_rva))) catch unreachable;
+            }
+
+            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+
+            rdata_out.libraries_offsets.appendAssumeCapacity(.
+                {
+                    .symbol_offsets = symbol_offsets.items,
+                });
+        }
+
+        const IAT_size = @intCast(u32, rdata.buffer.items.len);
+
+        // Image thunks
+        for (pe32_libraries.items) |*pe32_lib|
+        {
+            pe32_lib.image_thunk_RVA = rdata.get_RVA();
+
+            for (pe32_lib.symbol_RVAs) |symbol_RVA|
+            {
+                rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, symbol_RVA))) catch unreachable;
+            }
+
+            rdata.buffer.appendSlice(std.mem.asBytes(&@intCast(u64, 0))) catch unreachable;
+        }
+
+        // Library names
+        for (external.library_names) |library_name, library_i|
+        {
+            var pe32_lib = &pe32_libraries.items[library_i];
+            pe32_lib.name_RVA = rdata.get_RVA();
+
+            rdata.append_string(library_name);
+        }
+
+        // Import directory
+        const import_directory_RVA = rdata.get_RVA();
+
+        for (pe32_libraries.items) |pe32_lib|
+        {
+            rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageImportDescriptor, .
+                        {
+                            .characteristics_or_original_first_thunk = pe32_lib.image_thunk_RVA,
+                            .name = pe32_lib.name_RVA,
+                            .first_thunk = pe32_lib.RVA,
+                        }))) catch unreachable;
+        }
+
+        const import_directory_size = rdata.get_RVA() - import_directory_RVA;
+
+        if (import_directory_size > 0)
+        {
+            rdata.buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageImportDescriptor))) catch unreachable;
+        }
+
+        // @TODO: @INFO: Exception directory: dont code for now
+
+        rdata.header.misc.virtual_size = @intCast(u32, rdata.buffer.items.len);
+        rdata.header.size_of_raw_data = @intCast(u32, alignForward(rdata.buffer.items.len, file_alignment));
+        offset.after_size(rdata.header.size_of_raw_data);
+
+        rdata_out.iat = .{ .RVA = IAT_RVA, .size = IAT_size };
+        rdata_out.import = .{ .RVA = import_directory_RVA, .size = import_directory_size };
+
+        return rdata;
+    }
+
+    pub const Text = struct
+    {
+        pub const EncodingOutput = struct
+        {
+            patches: ArrayList(Patch),
+        };
+    };
+
+    fn encode_text_section(executable: anytype, allocator: *Allocator, text_out: *Text.EncodingOutput, arch: std.Target.Cpu.Arch, offset: *Offset) Section
+    {
+        var text = Section
+        {
+            .header = std.mem.zeroInit(ImageSectionHeader, .
+            {
+                .pointer_to_raw_data = offset.file,
+                .virtual_address = offset.virtual,
+                .name = Section.names[@enumToInt(Section.Index.@".text")],
+                .characteristics = Section.characteristics[@enumToInt(Section.Index.@".text")],
+            }),
+            .buffer = DataBuffer.init(allocator),
+        };
+
+        switch (arch)
+        {
+            .x86_64 =>
+            {
+                var x86_64_program = @ptrCast(*x86_64v2.Program, executable);
+                x86_64_program.encode_text_section_pe(allocator, &text, text_out, offset);
+            },
+            else => panic("CPU arch: {}\n", .{arch}),
+        }
+
+        return text;
+    }
+
+    fn encode_data_section(allocator: *Allocator, offset: *Offset) Section
+    {
+        var data = Section
+        {
+            .header = std.mem.zeroInit(ImageSectionHeader, .
+            {
+                .pointer_to_raw_data = offset.file,
+                .virtual_address = offset.virtual,
+                .name = Section.names[@enumToInt(Section.Index.@".data")],
+                .characteristics = Section.characteristics[@enumToInt(Section.Index.@".data")],
+            }),
+            .buffer = DataBuffer.init(allocator),
+        };
+
+        // dont hardcode this
+        data.buffer.append(0) catch unreachable;
+        
+        data.header.misc.virtual_size = @intCast(u32, data.buffer.items.len);
+        data.header.size_of_raw_data = @intCast(u32, alignForward(data.buffer.items.len, file_alignment));
+        offset.after_size(data.header.size_of_raw_data);
+
+        return data;
+    }
 };
 
 pub const Patch = struct
@@ -713,40 +513,47 @@ pub const Patch = struct
     section_to_read_from: Section.Index,
 };
 
-pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []const u8, import_libraries: []Import.Library, target: std.Target) void
+const LibraryOffsets = struct
 {
-    var patches = ArrayList(Patch).init(allocator);
-    
-    var section_headers: [Section.count + 1]ImageSectionHeader = undefined;
-    for (section_headers[0..Section.count]) |*sh, sh_i|
+    symbol_offsets: []u32,
+};
+
+pub const Libraries = struct
+{
+    names: []const u8,
+    libraries: []Library,
+
+    pub const Library = struct
     {
-        sh.* = std.mem.zeroInit(ImageSectionHeader, .
-            {
-                .name = Section.names[sh_i],
-                .characteristics = Section.characteristics[sh_i],
-            });
-    }
+        symbol_names: [][]const u8,
+    };
+};
 
-    section_headers[Section.count] = std.mem.zeroes(ImageSectionHeader);
+pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []const u8, external: Semantics.External, target: std.Target) void
+{
+    const null_section_header_count = 1;
+    var section_headers_size = @sizeOf(ImageSectionHeader) * (Section.count + null_section_header_count);
     
-    const file_size_of_headers = @intCast(u32, alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(@TypeOf(image_NT_signature)) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + @sizeOf(@TypeOf(section_headers)), file_alignment));
+    const file_size_of_headers = @intCast(u32, alignForward(@sizeOf(ImageDOSHeader) + @sizeOf(@TypeOf(image_NT_signature)) + @sizeOf(ImageFileHeader) + @sizeOf(ImageOptionalHeader) + section_headers_size, file_alignment));
 
-    var offset = Offset.new(file_size_of_headers);
+    var offset = Offset
+    {
+        .file = @intCast(u32, alignForward(file_size_of_headers, file_alignment)),
+        .virtual = @intCast(u32, alignForward(file_size_of_headers, section_alignment)),
+    };
 
-    //const text = TextSection.encode_old(allocator, text_section_header, &offset);
-    const text = TextSection.encode(executable, allocator, &section_headers[@enumToInt(Section.Index.@".text")], &patches, target.cpu.arch, &offset);
-    const rdata = RDataSection.encode(allocator, &section_headers[@enumToInt(Section.Index.@".rdata")], import_libraries, &offset);
-    const data = DataSection.encode(allocator, &section_headers[@enumToInt(Section.Index.@".data")], &offset);
+    var text_out: Section.Text.EncodingOutput = undefined;
+    var rdata_out: Section.RData.EncodingOutput = undefined;
 
     var sections = [Section.count]Section
     {
-        text,
-        rdata.section,
-        data,
+        Section.encode_text_section(executable, allocator, &text_out, target.cpu.arch, &offset),
+        Section.encode_rdata_section(allocator, external, &rdata_out, &offset),
+        Section.encode_data_section(allocator, &offset),
     };
 
     // program patch labels
-    for (patches.items) |patch|
+    for (text_out.patches.items) |patch|
     {
         // assuming all patches are 4 bytes
         const section_to_patch = &sections[@enumToInt(patch.section_to_write_to)];
@@ -757,11 +564,10 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
         {
             .@".rdata" => blk:
             {
-                const library_index = @truncate(u16, (patch.section_buffer_index_from & 0xffff0000) >> 16);
-                const function_index = @truncate(u16, patch.section_buffer_index_from);
-                std.debug.print("Library index: {}. Function index: {}\n", .{library_index, function_index});
-                const symbol_offset = rdata.libraries[library_index].symbol_offsets[function_index];
-                const symbol_RVA = rdata.section.header.virtual_address + symbol_offset;
+                const index = Parser.Function.External.Index.from_u32(patch.section_buffer_index_from);
+                std.debug.print("Library index: {}. Function index: {}\n", .{index.library, index.function});
+                const symbol_offset = rdata_out.libraries_offsets.items[index.library].symbol_offsets[index.function];
+                const symbol_RVA = sections[@enumToInt(Section.Index.@".rdata")].header.virtual_address + symbol_offset;
                 break :blk symbol_RVA;
             },
             else => panic("Not implemented: {}\n", .{patch.section_to_read_from}),
@@ -789,16 +595,15 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
                             .aarch64 => ImageFileMachine.arm64,
                             else => panic("ni: {}\n", .{target.cpu.arch}),
                             }),
-                    .section_count = section_headers.len - 1,
+                    .section_count = Section.count,
                     // @TODO: correct timestamp
                     .time_date_stamp = @intCast(u32, @intCast(i32, std.time.timestamp())),
                     .size_of_optional_header = @sizeOf(ImageOptionalHeader),
                     .characteristics = @enumToInt(ImageFileHeader.Characteristics.executable_image) | @enumToInt(ImageFileHeader.Characteristics.large_address_aware),
                 }))) catch unreachable;
 
-    // @TODO: dummy: substitute with real programming
-    const entry_point_byte_index = 0;
     comptime assert(@sizeOf(ImageOptionalHeader) == 0xf0);
+
     const image_optional_header_index = exe_buffer.items.len;
     exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroInit(ImageOptionalHeader, .
             {
@@ -806,7 +611,7 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
                 .size_of_code = sections[@enumToInt(Section.Index.@".text")].header.size_of_raw_data,
                 .size_of_initialized_data = sections[@enumToInt(Section.Index.@".rdata")].header.size_of_raw_data + sections[@enumToInt(Section.Index.@".data")].header.size_of_raw_data,
                 // entry point address is the first byte of the text section
-                .address_of_entry_point = sections[@enumToInt(Section.Index.@".text")].header.virtual_address + entry_point_byte_index,
+                .address_of_entry_point = sections[@enumToInt(Section.Index.@".text")].header.virtual_address,
                 .base_of_code = sections[@enumToInt(Section.Index.@".text")].header.virtual_address,
                 .image_base = 0x0000000140000000,
                 .section_alignment = section_alignment,
@@ -828,16 +633,16 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
 
     var image_optional_header = @intToPtr(* align(1) ImageOptionalHeader, @ptrToInt(exe_buffer.items.ptr) + image_optional_header_index);
 
-    if (rdata.IAT.size > 0)
+    if (rdata_out.iat.size > 0)
     {
-        const iat_data_directory = &image_optional_header.data_directory[@enumToInt(DirectoryIndex.IAT)];
-        iat_data_directory.* = rdata.IAT;
+        var iat_data_directory = &image_optional_header.data_directory[@enumToInt(DirectoryIndex.IAT)];
+        iat_data_directory.* = rdata_out.iat;
     }
 
-    if (rdata.import_directory.size > 0)
+    if (rdata_out.import.size > 0)
     {
-        const import_data_directory = &image_optional_header.data_directory[@enumToInt(DirectoryIndex.import)];
-        import_data_directory.* = rdata.import_directory;
+        var import_data_directory = &image_optional_header.data_directory[@enumToInt(DirectoryIndex.import)];
+        import_data_directory.* = rdata_out.import;
     }
 
     // @TODO: we are ignoring the exception directory
@@ -849,7 +654,7 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
     }
 
     // @TODO: can this null section header cause problems?
-    exe_buffer.appendSlice(std.mem.asBytes(&section_headers[Section.count])) catch unreachable;
+    exe_buffer.appendSlice(std.mem.asBytes(&std.mem.zeroes(ImageSectionHeader))) catch unreachable;
 
     // copy sections
     for (sections) |*section|

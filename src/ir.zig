@@ -457,9 +457,7 @@ pub const Program = struct
         ret: []Instruction.Ret,
     },
     functions: []Function,
-    external_functions: []Parser.Function.External,
-    library_names: [][]const u8,
-    libraries: []Parser.Library.Builder,
+    external: Semantics.External,
     integer_literals: []IntegerLiteral,
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
@@ -480,9 +478,7 @@ pub const Program = struct
         },
 
         function_builders: ArrayList(Function.Builder),
-        external_functions: []Parser.Function.External,
-        library_names: [][]const u8,
-        libraries: []Parser.Library.Builder,
+        external: Semantics.External,
         integer_literals: ArrayList(IntegerLiteral),
         pointer_types: ArrayList(Type.Pointer),
         slice_types: ArrayList(Type.Slice),
@@ -503,9 +499,7 @@ pub const Program = struct
                     .ret = ArrayList(Instruction.Ret).init(allocator),
                 },
                 .function_builders = ArrayList(Function.Builder).initCapacity(allocator, result.functions.len) catch unreachable,
-                .external_functions = result.external_functions,
-                .library_names = result.library_names,
-                .libraries = result.libraries,
+                .external = result.external,
                 .integer_literals = ArrayList(IntegerLiteral).initCapacity(allocator, result.integer_literals.len) catch unreachable,
                 .pointer_types = ArrayList(Type.Pointer).initCapacity(allocator, result.pointer_types.len) catch unreachable,
                 .slice_types = ArrayList(Type.Slice).initCapacity(allocator, result.slice_types.len) catch unreachable,
@@ -659,7 +653,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             {
                                 std.debug.print("External function\n", .{});
                                 called_function_reference = ExternalFunction.new(called_function_index);
-                                ast_called_function_declaration = result.external_functions[called_function_index].declaration;
+                                ast_called_function_declaration = result.external.functions[called_function_index].declaration;
                             }
                             else unreachable;
 
@@ -766,9 +760,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             .ret = builder.instructions.ret.items,
         },
         .functions = functions.items,
-        .external_functions = builder.external_functions,
-        .library_names = builder.library_names,
-        .libraries = builder.libraries,
+        .external = builder.external,
         .integer_literals = builder.integer_literals.items,
 
         .pointer_types = builder.pointer_types.items,

@@ -271,23 +271,21 @@ pub const Program = struct
         return total_instruction_count * max_bytes_per_instruction;
     }
 
-    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, header: *PE.ImageSectionHeader, patches: *ArrayList(PE.Patch), offset: *PE.Offset) PE.Section
+    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, text: *PE.Section, text_out: *PE.Section.Text.EncodingOutput, offset: *PE.Offset) void
     {
-        var section_header = header.*;
-        section_header.pointer_to_raw_data = offset.file;
-        section_header.virtual_address = offset.virtual;
+        text_out.patches = ArrayList(PE.Patch).init(allocator);
 
         const aproximate_code_size = std.mem.alignForward(self.estimate_max_code_size(), PE.file_alignment);
-        var code_buffer = ArrayList(u8).initCapacity(allocator, aproximate_code_size) catch unreachable;
+        text.buffer.ensureTotalCapacity(aproximate_code_size) catch unreachable;
 
         for (self.functions) |*function, function_i|
         {
             log("Encoding bytes for function #{}...\n", .{function_i});
-            function.code_buffer_offset = @intCast(u32, code_buffer.items.len);
+            function.code_buffer_offset = @intCast(u32, text.buffer.items.len);
 
             for (function.previous_patches.items) |patch|
             {
-                var pointer_writer = @ptrCast(* align(1) i32, &code_buffer.items[patch.code_buffer_offset]);
+                var pointer_writer = @ptrCast(* align(1) i32, &text.buffer.items[patch.code_buffer_offset]);
                 pointer_writer.* = @intCast(i32, @intCast(i64, function.code_buffer_offset) - @intCast(i64, patch.code_buffer_offset + @sizeOf(i32)));
             }
            
@@ -302,18 +300,18 @@ pub const Program = struct
                         log("Function RSP: {}\n", .{function.rsp});
                         if (function.rsp > std.math.maxInt(i8))
                         {
-                            code_buffer.appendSlice(sub_rsp_s32(function.rsp)[0..]) catch unreachable;
+                            text.buffer.appendSlice(sub_rsp_s32(function.rsp)[0..]) catch unreachable;
                             add_rsp_at_epilogue = true;
                         }
                         else if (function.rsp > 0)
                         {
-                            code_buffer.appendSlice(sub_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                            text.buffer.appendSlice(sub_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
                             add_rsp_at_epilogue = true;
                         }
                     },
                     .gnu =>
                     {
-                        code_buffer.appendSlice(systemv_abi_prologue[0..]) catch unreachable;
+                        text.buffer.appendSlice(systemv_abi_prologue[0..]) catch unreachable;
                     },
                     else => panic("not implemented: {}\n", .{abi}),
                 }
@@ -326,7 +324,7 @@ pub const Program = struct
             {
                 if (instruction.resolved)
                 {
-                    code_buffer.appendSlice(instruction.bytes) catch unreachable;
+                    text.buffer.appendSlice(instruction.bytes) catch unreachable;
                 }
                 else
                 {
@@ -336,7 +334,7 @@ pub const Program = struct
                         .call =>
                         {
                             const operand_index = instruction.operand.index;
-                            const from = code_buffer.items.len + instruction.bytes.len;
+                            const from = text.buffer.items.len + instruction.bytes.len;
 
                             switch (instruction.operand.kind)
                             {
@@ -346,13 +344,13 @@ pub const Program = struct
                                     {
                                         const target = self.functions[operand_index].code_buffer_offset;
                                         const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
-                                        code_buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
+                                        text.buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
                                     }
                                     else
                                     {
-                                        const code_buffer_offset = @intCast(u32, code_buffer.items.len + instruction.operand.offset);
+                                        const code_buffer_offset = @intCast(u32, text.buffer.items.len + instruction.operand.offset);
                                         self.functions[operand_index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
-                                        code_buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
+                                        text.buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
                                     }
                                 },
                                 .relative_external =>
@@ -360,9 +358,9 @@ pub const Program = struct
                                     std.debug.print("operand offset: {}\n", .{instruction.operand.offset});
                                     const external_function_index = Parser.Function.External.Index.from_u32(operand_index);
                                     std.debug.print("Library index: {}. Function index: {}\n", .{external_function_index.library, external_function_index.function});
-                                    const target_index = @intCast(u32, code_buffer.items.len + instruction.operand.offset);
+                                    const target_index = @intCast(u32, text.buffer.items.len + instruction.operand.offset);
                                     std.debug.print("Adding patch with rip index: {}\n", .{target_index});
-                                    patches.append(.
+                                    text_out.patches.append(.
                                     {
                                         .section_buffer_index_to = target_index,
                                         .section_buffer_index_from = operand_index,
@@ -370,7 +368,7 @@ pub const Program = struct
                                         .section_to_read_from = .@".rdata",
                                     }) catch unreachable;
 
-                                    code_buffer.appendSlice(call_rip_rel32_bytes[0..]) catch unreachable;
+                                    text.buffer.appendSlice(call_rip_rel32_bytes[0..]) catch unreachable;
                                 },
                                 else => unreachable,
                             }
@@ -390,11 +388,11 @@ pub const Program = struct
                         {
                             if (function.rsp > std.math.maxInt(i8))
                             {
-                                code_buffer.appendSlice(add_rsp_s32(function.rsp)[0..]) catch unreachable;
+                                text.buffer.appendSlice(add_rsp_s32(function.rsp)[0..]) catch unreachable;
                             }
                             else if (function.rsp > 0)
                             {
-                                code_buffer.appendSlice(add_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                                text.buffer.appendSlice(add_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
                             }
                         },
                         .gnu =>
@@ -408,29 +406,23 @@ pub const Program = struct
 
             if (function.terminator == .ret)
             {
-                code_buffer.append(ret_bytes[0]) catch unreachable;
+                text.buffer.append(ret_bytes[0]) catch unreachable;
             }
             else if (function.terminator == .noreturn)
             {
                 // Append Int3
-                code_buffer.append(0xcc) catch unreachable;
+                text.buffer.append(0xcc) catch unreachable;
             }
             else unreachable;
         }
 
-        const code_size = @intCast(u32, code_buffer.items.len);
+        const code_size = @intCast(u32, text.buffer.items.len);
         log("Code size: {} bytes. Aproximation: {} bytes\n", .{code_size, aproximate_code_size});
         assert(aproximate_code_size >= code_size);
-        section_header.misc.virtual_size = code_size;
-        section_header.size_of_raw_data = @intCast(u32, alignForward(code_size, PE.file_alignment));
+        text.header.misc.virtual_size = code_size;
+        text.header.size_of_raw_data = @intCast(u32, alignForward(code_size, PE.file_alignment));
 
-        offset.after_size(section_header.size_of_raw_data);
-
-        return .
-        {
-            .header = section_header,
-            .buffer = code_buffer,
-        };
+        offset.after_size(text.header.size_of_raw_data);
     }
 };
 
@@ -727,7 +719,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                             },
                             .external_function =>
                             {
-                                const external_function = program.external_functions[callee_index];
+                                const external_function = program.external.functions[callee_index];
                                 function_type = external_function.declaration.type;
                                 callee_index = external_function.index.to_u32();
                                 call_operand_kind = .relative_external;
@@ -880,26 +872,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
     {
         .windows =>
         {
-            var libraries = ArrayList(Import.Library).init(allocator);
-            libraries.append(blk:
-                {
-                    var kernel32 = Import.Library
-                    {
-                        .symbols = ArrayList(Import.Symbol).init(allocator),
-                        .name = "KERNEL32.DLL",
-                        .name_RVA = 0,
-                        .RVA = 0,
-                        .image_thunk_RVA = 0,
-                    };
-
-                    kernel32.symbols.append(std.mem.zeroInit(Import.Symbol, .
-                            {
-                                .name = "ExitProcess",
-                            })) catch unreachable;
-                    break :blk kernel32;
-                }) catch unreachable;
-
-            PE.write(allocator, &executable, executable_filename, libraries.items, target);
+            PE.write(allocator, &executable, executable_filename, program.external, target);
         },
         else => panic("OS {} not implemented\n", .{os}),
     }

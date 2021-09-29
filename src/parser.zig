@@ -565,7 +565,6 @@ pub const ModuleParser = struct
                 {
                     self.rectify(token_to_maybe_rectify);
                     const identifier_expression = self.parse_expression_identifier();
-                    _ = identifier_expression;
                     if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != ';')
                     {
                         parser_error("Expected semicolon at the end of identifier expression\n", .{});
@@ -958,7 +957,6 @@ pub const ModuleParser = struct
                         }
 
                         const os = std.builtin.target.os.tag;
-                        _ = os;
 
                         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '{')
                         {

@@ -609,9 +609,8 @@ pub fn explore_expression(allocator: *Allocator, current_function: *Node, curren
 }
 
 
-fn analyze_type(semantics_analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_type: Type) Type
+fn analyze_type(analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_type: Type) Type
 {
-    _ = semantics_analyzer;
     const type_id = unresolved_type.get_ID();
     switch (type_id)
     {
@@ -622,7 +621,7 @@ fn analyze_type(semantics_analyzer: *Analyzer, module_offsets: []ModuleStats, un
             const module_index = unresolved_type.get_module_index();
             const unresolved_type_module_offset = module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.unresolved_types)];
             const index = unresolved_type.get_index();
-            const unresolved_type_identifier = semantics_analyzer.unresolved_types.items[unresolved_type_module_offset + index];
+            const unresolved_type_identifier = analyzer.unresolved_types.items[unresolved_type_module_offset + index];
             if (unresolved_type_identifier[0] == 'u')
             {
                 
@@ -737,7 +736,7 @@ const ModuleStats = struct
 
 
 // @TODO: make this fast
-pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, semantics_analyzer: *Analyzer, module_offsets: []ModuleStats, module_index: u64) struct { start: u64, end: u64 }
+pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_offsets: []ModuleStats, module_index: u64) struct { start: u64, end: u64 }
 {
     const this_module_offsets = module_offsets[module_index];
     const internal_item_start = this_module_offsets.counters[@enumToInt(module_stats_id)];
@@ -747,15 +746,15 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, sem
             module_offsets[next_module_index].counters[@enumToInt(module_stats_id)]
         else switch (comptime module_stats_id)
         {
-            .internal_functions => semantics_analyzer.functions.items.len,
-            .external_functions => semantics_analyzer.external_functions.items.len,
+            .internal_functions => analyzer.functions.items.len,
+            .external_functions => analyzer.external_functions.items.len,
             else => unreachable,
         };
 
     return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
-pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, module_index: u64) void
+pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, module_index: u64) void
 {
     const statement_count = scope.statements.len;
     log("Statement count: {}\n", .{statement_count});
@@ -786,7 +785,7 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
                         // @TODO: stop hardcoding this and handle it the right way
                         if (std.mem.eql(u8, invoke_expression_name, "main"))
                         {
-                            for (semantics_analyzer.functions.items) |function, i|
+                            for (analyzer.functions.items) |function, i|
                             {
                                 log("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
                                 if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
@@ -824,8 +823,8 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
                         const field_index = field.get_index();
                         const field_name = scope.identifier_expressions[field_index].name;
 
-                        const imported_module_range = get_module_item_slice_range(.imported_modules, semantics_analyzer, module_offsets, module_index);
-                        const imported_modules = semantics_analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
+                        const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_offsets, module_index);
+                        const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
 
                         for (imported_modules) |imported_module|
                         {
@@ -839,8 +838,8 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
 
                             const imported_module_index = imported_module.module.get_index();
 
-                            const internal_functions_range = get_module_item_slice_range(.internal_functions, semantics_analyzer, module_offsets, imported_module_index);
-                            const internal_functions = semantics_analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
+                            const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, module_offsets, imported_module_index);
+                            const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
                             log("Internal functions\n", .{});
 
                             for (internal_functions) |function, function_i|
@@ -854,8 +853,8 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
                                 break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions);
                             }
 
-                            const external_functions_range = get_module_item_slice_range(.external_functions, semantics_analyzer, module_offsets, imported_module_index);
-                            const external_functions = semantics_analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
+                            const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, module_offsets, imported_module_index);
+                            const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
                             log("External functions\n", .{});
 
                             // @TODO: is this faster than double for loop [library_i, symbol_i]?
@@ -885,9 +884,9 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
                     const resolved_expression_array_index = resolved_expression_to_invoke.get_array_index(.global);
                     const function_type =
                         if (resolved_expression_array_index == Entity.GlobalID.resolved_internal_functions)
-                            semantics_analyzer.functions.items[resolved_expression_to_invoke.get_index()].declaration.type
+                            analyzer.functions.items[resolved_expression_to_invoke.get_index()].declaration.type
                         else if (resolved_expression_array_index == Entity.GlobalID.resolved_external_functions)
-                            semantics_analyzer.external_functions.items[resolved_expression_to_invoke.get_index()].declaration.type
+                            analyzer.external_functions.items[resolved_expression_to_invoke.get_index()].declaration.type
                         else unreachable;
                     const argument_types = function_type.argument_types;
 
@@ -911,24 +910,13 @@ pub fn analyze_scope(semantics_analyzer: *Analyzer, module_offsets: []ModuleStat
     }
 }
 
-pub const LibraryBuilder = struct
-{
-    functions: ArrayList(Parser.Function),
-    function_uses: ArrayList(SymbolUse),
-
-    const SymbolUse = struct
-    {
-        modules: ArrayList(u32),
-    };
-
-};
-
 pub const Analyzer = struct
 {
     functions: ArrayList(Parser.Function.Internal),
     external_functions: ArrayList(Parser.Function.External),
-    library_names: ArrayList([]const u8),
-    libraries: ArrayList(Parser.Library.Builder),
+    external_library_names: ArrayList([]const u8),
+    external_symbol_names: ArrayList([]const u8),
+    external_libraries: ArrayList(External.Library),
     imported_modules: ArrayList(Parser.ImportedModule),
     integer_literals: ArrayList(Parser.IntegerLiteral),
 
@@ -943,9 +931,7 @@ pub const Analyzer = struct
 pub const Result = struct
 {
     functions: []Parser.Function.Internal,
-    external_functions: []Parser.Function.External,
-    library_names: [][]const u8,
-    libraries: []Parser.Library.Builder,
+    external: External,
     imported_modules: []Parser.ImportedModule,
     integer_literals: []Parser.IntegerLiteral,
 
@@ -954,6 +940,20 @@ pub const Result = struct
     function_types: []Type.Function,
     array_types: []Type.Array,
     struct_types: []Type.Struct,
+};
+
+
+pub const External = struct
+{
+    functions: []Parser.Function.External,
+    library_names: [][]const u8,
+    symbol_names: [][]const u8,
+    libraries: []Library,
+
+    pub const Library = struct
+    {
+        symbols: []u32,
+    };
 };
 
 pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
@@ -999,11 +999,13 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     var analyzer = Analyzer
     {
         .functions = ArrayList(Parser.Function.Internal).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.internal_functions)]) catch unreachable,
-        .external_functions = ArrayList(Parser.Function.External).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.external_functions)]) catch unreachable,
-        .library_names = ArrayList([]const u8).init(allocator),
-        .libraries = ArrayList(Parser.Library.Builder).init(allocator),
         .imported_modules = ArrayList(Parser.ImportedModule).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.imported_modules)]) catch unreachable,
         .integer_literals = ArrayList(Parser.IntegerLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.integer_literals)]) catch unreachable,
+
+        .external_functions = ArrayList(Parser.Function.External).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.external_functions)]) catch unreachable,
+        .external_library_names = ArrayList([]const u8).init(allocator),
+        .external_symbol_names = ArrayList([]const u8).init(allocator),
+        .external_libraries = ArrayList(External.Library).init(allocator),
 
         .unresolved_types = ArrayList([]const u8).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.unresolved_types)]) catch unreachable,
         .pointer_types = ArrayList(Type.Pointer).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.pointer_types)]) catch unreachable,
@@ -1012,6 +1014,111 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .array_types = ArrayList(Type.Array).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_types)]) catch unreachable,
         .struct_types = ArrayList(Type.Struct).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.struct_types)]) catch unreachable,
     };
+
+    for (module_array) |*module|
+    {
+        next_lib_name: for (module.library_names) |new_library_name|
+        {
+            for (analyzer.external_library_names.items) |library_name|
+            {
+                if (std.mem.eql(u8, library_name, new_library_name))
+                {
+                    continue :next_lib_name;
+                }
+            }
+
+            analyzer.external_library_names.append(new_library_name) catch unreachable;
+        }
+    }
+
+    const library_count = analyzer.external_library_names.items.len;
+    var libraries_symbols_indices = ArrayList(ArrayList(u32)).initCapacity(allocator, library_count) catch unreachable;
+    libraries_symbols_indices.appendNTimesAssumeCapacity(ArrayList(u32).init(allocator), library_count);
+    analyzer.external_libraries.ensureTotalCapacity(library_count) catch unreachable;
+
+    for (module_array) |*module|
+    {
+        for (module.libraries) |library, library_i|
+        {
+            next_symbol_name: for (library.symbol_names.items) |new_symbol_name|
+            {
+                for (analyzer.external_symbol_names.items) |symbol_name, symbol_i|
+                {
+                    if (std.mem.eql(u8, symbol_name, new_symbol_name))
+                    {
+                        var library_symbol_list = &libraries_symbols_indices.items[library_i];
+                        for (library_symbol_list.items) |symbol_index|
+                        {
+                            if (symbol_index == symbol_i)
+                            {
+                                continue :next_symbol_name;
+                            }
+                        }
+
+                        analyzer.external_symbol_names.append(new_symbol_name) catch unreachable;
+                        library_symbol_list.append(@intCast(u32, symbol_i)) catch unreachable;
+                    }
+                }
+
+                const symbol_i = @intCast(u32, analyzer.external_symbol_names.items.len);
+                analyzer.external_symbol_names.append(new_symbol_name) catch unreachable;
+                libraries_symbols_indices.items[library_i].append(symbol_i) catch unreachable;
+            }
+        }
+    }
+
+    for (libraries_symbols_indices.items) |library_symbol_list|
+    {
+        analyzer.external_libraries.appendAssumeCapacity(. { .symbols = library_symbol_list.items });
+    }
+
+    //var library_names = ArrayList([]const u8).init(allocator);
+    //for (module_array) |*module|
+    //{
+        //next_lib_name: for (module.library_names) |new_library_name|
+        //{
+            //for (library_names.items) |library_name|
+            //{
+                //if (std.mem.eql(u8, library_name, new_library_name))
+                //{
+                    //continue :next_lib_name;
+                //}
+            //}
+
+            //library_names.append(new_library_name) catch unreachable;
+        //}
+    //}
+
+    //std.debug.print("Library count: {}\n", .{library_names.items.len});
+
+    //for (library_names.items) |library_name|
+    //{
+        //var library_symbol_names = ArrayList([]const u8).init(allocator);
+
+        //for (module_array) |*module|
+        //{
+            //for (module.library_names) |module_library_name, library_i|
+            //{
+                //if (std.mem.eql(u8, module_library_name, library_name))
+                //{
+                    //for (module.libraries[library_i].symbol_names.items) |new_symbol_name|
+                    //{
+                        //for (library_symbol_names.items) |symbol_name|
+                        //{
+                            //if (std.mem.eql(u8, symbol_name, new_symbol_name))
+                            //{
+                                //break;
+                            //}
+                        //}
+
+                        //library_symbol_names.append(new_symbol_name) catch unreachable;
+                    //}
+                //}
+            //}
+        //}
+    //}
+
+    //var ArrayList(ArrayList([]const u8)).initCapacity(allocator, library_names.items.len);
 
     for (module_array) |*module|
     {
@@ -1026,18 +1133,18 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 
             external_function.index = index_blk:
             {
-                for (analyzer.library_names.items) |library_name, library_i|
+                for (analyzer.external_library_names.items) |library_name, library_i|
                 {
                     if (std.mem.eql(u8, module_library_name, library_name))
                     {
-                        const final_library_i = @intCast(u16, library_i);
+                        const library = analyzer.external_libraries.items[library_i];
 
-                        var library = &analyzer.libraries.items[library_i];
-
-                        for (library.symbol_names.items) |symbol_name, symbol_i|
+                        for (library.symbols) |symbol_i|
                         {
+                            const symbol_name = analyzer.external_symbol_names.items[symbol_i];
                             if (std.mem.eql(u8, symbol_name, module_symbol_name))
                             {
+                                const final_library_i = @intCast(u16, library_i);
                                 const final_symbol_i = @intCast(u16, symbol_i);
 
                                 break :index_blk .
@@ -1048,44 +1155,53 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
                             }
                         }
 
-                        const final_symbol_i = @intCast(u16, library.symbol_names.items.len);
+                        unreachable;
+                        //const final_library_i = @intCast(u16, library_i);
+                        //const final_symbol_i = @intCast(u16, library.symbol_names.items.len);
 
-                        library.symbol_names.append(module_symbol_name) catch unreachable;
+                        //library.symbol_names.append(module_symbol_name) catch unreachable;
 
-                        break :index_blk .
-                        {
-                            .library = final_library_i,
-                            .function = final_symbol_i,
-                        };
+                        //break :index_blk .
+                        //{
+                            //.library = final_library_i,
+                            //.function = final_symbol_i,
+                        //};
                     }
                 }
 
-                const final_library_i = @intCast(u16, analyzer.library_names.items.len);
-                analyzer.library_names.append(module_library_name) catch unreachable;
-                analyzer.libraries.append(.{
-                    .symbol_names = blk:
-                    {
-                        var library_symbol_names = ArrayList([]const u8).init(allocator);
-                        library_symbol_names.append(module_symbol_name) catch unreachable;
-                        break :blk library_symbol_names;
-                    },
-                    }) catch unreachable;
+                unreachable;
+                //const final_library_i = @intCast(u16, analyzer.library_names.items.len);
+                //analyzer.library_names.append(module_library_name) catch unreachable;
+                //analyzer.libraries.append(.{
+                    //.symbol_names = blk:
+                    //{
+                        //var library_symbol_names = ArrayList([]const u8).init(allocator);
+                        //library_symbol_names.append(module_symbol_name) catch unreachable;
+                        //break :blk library_symbol_names;
+                    //},
+                    //}) catch unreachable;
 
-                const final_symbol_i: u16 = 0;
+                //const final_symbol_i: u16 = 0;
 
-                break :index_blk .
-                {
-                    .library = final_library_i,
-                    .function = final_symbol_i,
-                };
+                //break :index_blk .
+                //{
+                    //.library = final_library_i,
+                    //.function = final_symbol_i,
+                //};
             };
         }
     }
 
+    //var libs = Libraries
+    //{
+        //.library_names = library_names.items,
+        //.symbol_names = symbol_names.items,
+        //.libraries = libraries.items,
+    //};
+
     for (module_array) |*module|
     {
         analyzer.functions.appendSlice(module.internal_functions) catch unreachable;
-        // @TODO: make this through the library builder
         analyzer.external_functions.appendSlice(module.external_functions) catch unreachable;
         analyzer.imported_modules.appendSlice(module.imported_modules) catch unreachable;
         analyzer.integer_literals.appendSlice(module.integer_literals) catch unreachable;
@@ -1098,7 +1214,8 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     }
 
     log("Internal:\t{}\n", .{analyzer.functions.items.len});
-    log("External libraries:\t{}\n", .{analyzer.library_names.items.len});
+    log("External libraries:\t{}\n", .{analyzer.external_library_names.items.len});
+    log("External symbols:\t{}\n", .{analyzer.external_symbol_names.items.len});
     log("Imported:\t{}\n", .{analyzer.imported_modules.items.len});
     log("Unresolved:\t{}\n", .{analyzer.unresolved_types.items.len});
     log("Pointer:\t{}\n", .{analyzer.pointer_types.items.len});
@@ -1138,7 +1255,6 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         }
     }
 
-
     for (module_offsets.items) |_, module_index|
     {
         const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_offsets.items, module_index);
@@ -1149,38 +1265,20 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         }
 
     }
-    //for (analyzer.functions.items) |*function, function_i|
-    //{
-        //const this_module_offsets = module_offsets.items[module_index];
-        //var next_module_index = i + 1;
-        //const foo = this_module_offsets.counters[@enumToInt(ModuleStats.ID.internal_functions)];
-        //if (next_module_index < module_offsets.items.len)
-        //{
-            //const next_module_offsets = module_offsets.items[next_module_index];
-            //const foo_next = next_module_offsets.counters[@enumToInt(ModuleStats.ID.internal_functions)];
-            //std.debug.print("Foo next: {}\n", .{foo_next});
-            //if (foo_next <= function_i)
-            //{
-            //}
-        //}
-        //if (true) panic("Foo: [{}, {}]\n", .{foo, foo_next});
-
-        ////const final_index = this_module_offsets.counters[@enumToInt(ModuleStats.ID.function_types)] + type_index;
-        ////function.declaration.type.set_new_index(final_index);
-        ////function.declaration.type.mark_as_resolved();
-
-        //// @TODO: is this the best way to get the module index? Might not match in the future because the function type may be repeated and come from a module different than the one the function is declared
-        ////const module_index = type_module_index;
-    //}
 
     return Result
     {
         .functions = analyzer.functions.items,
-        .external_functions = analyzer.external_functions.items,
-        .library_names = analyzer.library_names.items,
-        .libraries = analyzer.libraries.items,
         .imported_modules = analyzer.imported_modules.items,
         .integer_literals = analyzer.integer_literals.items,
+
+        .external = .
+        {
+            .functions = analyzer.external_functions.items,
+            .library_names = analyzer.external_library_names.items,
+            .symbol_names = analyzer.external_symbol_names.items,
+            .libraries = analyzer.external_libraries.items,
+        },
 
         .pointer_types = analyzer.pointer_types.items,
         .slice_types = analyzer.slice_types.items,
