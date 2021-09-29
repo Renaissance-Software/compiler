@@ -747,13 +747,14 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
         {
             .internal_functions => analyzer.functions.items.len,
             .external_functions => analyzer.external_functions.items.len,
+            .integer_literals => analyzer.integer_literals.items.len,
             else => unreachable,
         };
 
     return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
-pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, module_index: u64) void
+pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
 {
     const statement_count = scope.statements.len;
     log("Statement count: {}\n", .{statement_count});
@@ -781,26 +782,18 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                     if (expression_to_invoke_id == .identifier_expressions)
                     {
                         const invoke_expression_name = scope.identifier_expressions[expression_to_invoke_index].name;
-                        // @TODO: stop hardcoding this and handle it the right way
-                        if (std.mem.eql(u8, invoke_expression_name, "main"))
+                        for (analyzer.functions.items) |function, i|
                         {
-                            for (analyzer.functions.items) |function, i|
+                            log("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
+                            if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
                             {
-                                log("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
-                                if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
-                                {
-                                    continue;
-                                }
-
-                                break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions);
+                                continue;
                             }
 
-                            unreachable;
+                            break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions);
                         }
-                        else
-                        {
-                            panic("{s}\n", .{invoke_expression_name});
-                        }
+
+                        unreachable;
                     }
                     else if (expression_to_invoke_id == .field_access_expressions)
                     {
@@ -907,12 +900,36 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
             .return_expressions =>
             {
                 const return_expression = &scope.return_expressions[statement_index];
+                const return_type = current_function.declaration.type.return_type;
                 if (return_expression.expression) |expression_to_return|
                 {
-                    _ = expression_to_return;
-                    while (true)
+                    const ret_expr_lvl = expression_to_return.get_level();
+                    assert(ret_expr_lvl == .scope);
+                    const ret_expr_array_index = expression_to_return.get_array_index(.scope);
+
+                    switch (ret_expr_array_index)
                     {
-                        std.debug.print("ERROR\n", .{});
+                        .integer_literals =>
+                        {
+                            if (return_type.get_ID() != .integer)
+                            {
+                                report_error("Expected return type: {s}\n", .{@tagName(return_type.get_ID())});
+                            }
+
+                            std.debug.print("Integer literal count: {}\n", .{analyzer.integer_literals.items.len});
+                            const integer_literal_range = get_module_item_slice_range(.integer_literals, analyzer, module_offsets, module_index);
+                            const real_index = @intCast(u32, integer_literal_range.start) + expression_to_return.get_index();
+                            return_expression.expression.?.set_index(real_index);
+                            // @TODO: do further checks?
+                        },
+                        else => panic("NI: {}\n", .{ret_expr_array_index}),
+                    }
+                }
+                else
+                {
+                    if (return_type.value != Type.Builtin.void_type.value or return_type.value != Type.Builtin.noreturn_type.value)
+                    {
+                        report_error("Expected void or noreturn type, have: {s}\n", .{@tagName(return_type.get_ID())});
                     }
                 }
             },
@@ -1272,7 +1289,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         for (analyzer.functions.items[function_range.start..function_range.end]) |*function|
         {
             const main_block = &function.scopes[0];
-            analyze_scope(&analyzer, module_offsets.items, main_block, module_index);
+            analyze_scope(&analyzer, module_offsets.items, main_block, function, module_index);
         }
 
     }

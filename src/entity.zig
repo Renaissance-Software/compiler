@@ -152,4 +152,9 @@ pub const Entity = packed struct
     {
         return ((self.features & @as(u32, 0x80000000)) >> 31) != 0;
     }
+
+    pub fn set_index(self: *Self, index: u32) void
+    {
+        self.value = (self.value & 0xffffffff00000000) | index;
+    }
 };

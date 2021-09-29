@@ -627,7 +627,9 @@ pub const ModuleParser = struct
                             }
                             else
                             {
-                                break :blk self.parse_expression();
+                                const return_expression = self.parse_expression();
+                                self.consume_token(.sign);
+                                break :blk return_expression;
                             }
                         };
 
@@ -1416,7 +1418,16 @@ pub const AST = struct
                             parser.consume_token(.operator);
 
                             const arrow_or = parser.lexer.tokens[parser.lexer.next_index];
-                            var return_type = if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow) parser.parse_type() else Type.Builtin.void_type;
+                            var return_type: Type = undefined;
+                            if (arrow_or == .operator and parser.get_token(.operator).value == .Arrow)
+                            {
+                                parser.consume_token(.operator);
+                                return_type = parser.parse_type();
+                            }
+                            else
+                            {
+                                return_type = Type.Builtin.void_type;
+                            }
                             log("Return type: {}\n", .{return_type});
 
                             var next = parser.lexer.tokens[parser.lexer.next_index];
@@ -1468,7 +1479,7 @@ pub const AST = struct
                                 .attributes = attributes,
                             };
 
-                            log("Return type for \"{s}\": {}\n", .{tld_name, function_type});
+                            log("Return type for \"{s}\": {}\n", .{tld_name, function_type.return_type});
 
                             if (has_body)
                             {

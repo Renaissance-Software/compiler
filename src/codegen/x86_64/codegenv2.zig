@@ -109,6 +109,25 @@ fn sub_rsp_s32(n: i32) [7]u8
     return bytes;
 }
 
+fn mov_register_literal_1_bytes(register: Encoding.Register, number: u8) [2]u8
+{
+    return [_]u8 { 0xb0 + @enumToInt(register), number };
+}
+
+fn mov_register_literal_2_bytes(register: Encoding.Register, number: u16) [4]u8
+{
+    return [_]u8 { 0x66, 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8) };
+}
+
+fn mov_register_literal_4_bytes(register: Encoding.Register, number: u32) [5]u8
+{
+    return [_]u8 { 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8), @truncate(u8, (number & 0xff0000) >> 16), @truncate(u8, (number & 0xff000000) >> 24) };
+}
+
+fn mov_register_literal_8_bytes(register: Encoding.Register, number: u64) [10]u8
+{
+    return [_]u8 { 0x48, 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8), @truncate(u8, (number & 0xff0000) >> 16), @truncate(u8, (number & 0xff000000) >> 24), @truncate(u8, (number & 0xff00000000) >> 32), @truncate(u8, (number & 0xff0000000000) >> 40), @truncate(u8, (number & 0xff000000000000) >> 48), @truncate(u8, (number & 0xff00000000000000) >> 56) };
+}
 //fn xor_register_immediate(register: Encoding.Register, register_byte: u8, comptime ImmediateType: type, immediate: ImmediateType) void
 //{
     //if (register == .A)
@@ -148,6 +167,7 @@ const Instruction = struct
     const ID = enum(u16)
     {
         call,
+        mov,
         ret,
         xor,
     };
@@ -455,12 +475,12 @@ const Labels = struct
 
 fn get_type_size(T: Type) u64
 {
-    switch (T.get_ID())
+    return switch (T.get_ID())
     {
+        .integer => Type.Integer.get_bit_count(T) >> 3,
         else => panic("{}\n", .{T.get_ID()}),
-    }
+    };
 }
-
 
 const Stack = struct
 {
@@ -561,6 +581,21 @@ const Register = struct
             }
 
             panic("No argument register ready\n", .{});
+        }
+
+        fn allocate_return(self: *Register.Allocator, reference: IR.Reference, byte_count: u16) Encoding.Register
+        {
+            assert(byte_count <= 8);
+            var register = &self.registers[@enumToInt(Encoding.Register.A)];
+            if (register.value == null)
+            {
+                register.value = reference;
+                register.size = @intCast(u8, byte_count);
+
+                return Encoding.Register.A;
+            }
+
+            panic("Return register A is busy\n", .{});
         }
 
         const State = struct
@@ -829,7 +864,57 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
                         if (ret.type.value != Type.Builtin.void_type.value)
                         {
-                            unreachable;
+                            const return_expr = ret.value;
+                            const return_expr_id = return_expr.get_ID();
+                            const return_expr_index = return_expr.get_index();
+                            switch (return_expr_id)
+                            {
+                                .constant =>
+                                {
+                                    const constant_id = IR.Constant.get_ID(return_expr);
+                                    switch (constant_id)
+                                    {
+                                        .int =>
+                                        {
+                                            if (ret.type.get_ID() != .integer)
+                                            {
+                                                codegen_error("Expected type: {}\n", .{ret.type.get_ID()});
+                                            }
+                                            const bit_count = Type.Integer.get_bit_count(ret.type);
+                                            assert((bit_count & 0b111) == 0);
+                                            const byte_count = bit_count >> 3;
+                                            const integer_literal = program.integer_literals[return_expr_index];
+                                            if (integer_literal.value != 0)
+                                            {
+                                                if (!integer_literal.signed)
+                                                {
+                                                    const register = function.register_allocator.allocate_return(return_expr, byte_count);
+                                                    const ret_mov = switch (byte_count)
+                                                    {
+                                                        1 => Instruction.create_resolved(.mov, mov_register_literal_1_bytes(register, @truncate(u8, integer_literal.value))[0..]),
+                                                        2 => Instruction.create_resolved(.mov, mov_register_literal_2_bytes(register, @truncate(u16, integer_literal.value))[0..]),
+                                                        4 => Instruction.create_resolved(.mov, mov_register_literal_4_bytes(register, @truncate(u32, integer_literal.value))[0..]),
+                                                        8 => Instruction.create_resolved(.mov, mov_register_literal_8_bytes(register, @truncate(u64, integer_literal.value))[0..]),
+                                                        else => unreachable,
+                                                    };
+
+                                                    function.instructions.append(ret_mov) catch unreachable;
+                                                }
+                                                else
+                                                {
+                                                    unreachable;
+                                                }
+                                            }
+                                            else
+                                            {
+                                                unreachable;
+                                            }
+                                        },
+                                        else => panic("Constant ID: {}\n", .{constant_id}),
+                                    }
+                                },
+                                else => panic("RE: {}\n", .{return_expr_id}),
+                            }
                         }
 
                         function.terminator = .ret;

@@ -330,7 +330,7 @@ pub const Instruction = struct
         type: Type,
         value: Reference,
 
-        fn new(builder: *Program.Builder, return_type: Type, maybe_value: ?*Reference) Reference
+        fn new(builder: *Program.Builder, return_type: Type, maybe_value: ?Reference) Reference
         {
             var function_builder = &builder.function_builders.items[builder.current_function];
             if (!function_builder.is_terminated())
@@ -340,8 +340,11 @@ pub const Instruction = struct
                     if (maybe_value) |value|
                     {
                         assert(return_type.value != Type.Builtin.void_type.value and return_type.value != Type.Builtin.noreturn_type.value);
-                        const value_id = value.get_ID();
-                        panic("Value ID: {}\n", .{value_id});
+                        break :blk Ret
+                        {
+                            .type = return_type,
+                            .value = value,
+                        };
                     }
                     else
                     {
@@ -664,7 +667,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 
                             const called_function_argument_count = ast_called_function_declaration.argument_names.len;
                             std.debug.print("Argument count: {}\n", .{called_function_argument_count});
-                            if (called_function_argument_count != 0)
+                            if (called_function_argument_count > 0)
                             {
                                 var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
 
@@ -682,6 +685,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                             {
                                                 .integer_literals =>
                                                 {
+                                                    // @TODO: this can be buggy
                                                     const int_literal = Constant.new(.int, ast_index);
                                                     argument_list.append(int_literal) catch unreachable;
                                                 },
@@ -710,8 +714,29 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             const ast_return_expression = ast_main_block.return_expressions[statement_index];
                             if (ast_return_expression.expression) |ast_expression_to_return|
                             {
-                                _ = ast_expression_to_return;
-                                unreachable;
+                                const ret_lvl = ast_expression_to_return.get_level();
+                                const ret_expr_index = ast_expression_to_return.get_index();
+
+                                const ret_expression = switch (ret_lvl)
+                                {
+                                    .scope => blk:
+                                    {
+                                        const ret_array_index = ast_expression_to_return.get_array_index(.scope);
+                                        switch (ret_array_index)
+                                        {
+                                            .integer_literals =>
+                                            {
+                                                const int_literal = Constant.new(.int, ret_expr_index);
+                                                break :blk int_literal;
+                                            },
+                                            else => panic("NI AI: {}\n", .{ret_array_index}),
+                                        }
+                                    },
+                                    else => panic("NI: {}\n", .{ret_lvl}),
+                                };
+
+                                _ = Instruction.Ret.new(&builder, return_type, ret_expression);
+                                emitted_return = true;
                             }
                             else
                             {
@@ -749,11 +774,6 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             {
                 _ = Instruction.Ret.new(&builder, return_type, null);
             }
-        }
-        else
-        // here noreturn type, do nothing at the moment
-        {
-            assert(returns_something == .noreturn);
         }
     }
 
