@@ -3,9 +3,9 @@ const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const panic = std.debug.panic;
 const assert = std.debug.assert;
-const print = std.debug.print;
 const alignForward = std.mem.alignForward;
 
+const Compiler = @import("../compiler.zig");
 const Parser = @import("../parser.zig");
 const Semantics = @import("../semantics.zig");
 const Codegen = @import("../codegen.zig");
@@ -21,6 +21,11 @@ const x86_64v2 = @import("x86_64/codegenv2.zig");
 pub const file_alignment = 0x200;
 pub const section_alignment = 0x1000;
 const min_windows_version_vista = 6;
+
+fn log(comptime format: []const u8, arguments: anytype) void
+{
+    Compiler.log(.pe, format, arguments);
+}
 
 const DirectoryIndex = enum
 {
@@ -374,7 +379,6 @@ pub const Section = struct
 
             for (pe32_lib.symbol_RVAs) |symbol_rva|
             {
-                std.debug.print("RData offset: {}\n", .{rdata.buffer.items.len});
                 const symbol_offset = @intCast(u32, rdata.buffer.items.len);
                 symbol_offsets.appendAssumeCapacity(symbol_offset);
 
@@ -552,12 +556,14 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
         Section.encode_data_section(allocator, &offset),
     };
 
+    log("Patch count: {}\n", .{text_out.patches.items.len});
     // program patch labels
     for (text_out.patches.items) |patch|
     {
         // assuming all patches are 4 bytes
         const section_to_patch = &sections[@enumToInt(patch.section_to_write_to)];
         const jump_from = patch.section_buffer_index_to + 4;
+        log("Text index: {}\n", .{jump_from}); 
         const jump_from_RVA = section_to_patch.header.virtual_address + jump_from;
         var patch_address = @ptrCast(*align(1) i32, &section_to_patch.buffer.items[patch.section_buffer_index_to]);
         const jump_to_RVA = switch (patch.section_to_read_from)
@@ -565,7 +571,6 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
             .@".rdata" => blk:
             {
                 const index = Parser.Function.External.Index.from_u32(patch.section_buffer_index_from);
-                std.debug.print("Library index: {}. Function index: {}\n", .{index.library, index.function});
                 const symbol_offset = rdata_out.libraries_offsets.items[index.library].symbol_offsets[index.function];
                 const symbol_RVA = sections[@enumToInt(Section.Index.@".rdata")].header.virtual_address + symbol_offset;
                 break :blk symbol_RVA;

@@ -60,6 +60,8 @@ pub const Entity = packed struct
         field_access_expressions,
         integer_literals,
         return_expressions,
+        assignments,
+        argument,
     };
 
     const LevelToArrayIDMap = blk:
@@ -140,12 +142,12 @@ pub const Entity = packed struct
 
     pub fn get_level(self: Self) Level
     {
-        return @intToEnum(Level, (self.value & (std.math.maxInt(Level.IntType) << Level.position)) >> Level.position);
+        return @intToEnum(Level, @intCast(Level.IntType, (self.value & (std.math.maxInt(Level.IntType) << Level.position)) >> Level.position));
     }
 
     pub fn get_array_index(self: Self, comptime level: Level) LevelToArrayIDMap[@enumToInt(level)]
     {
-        return @intToEnum(LevelToArrayIDMap[@enumToInt(level)], (self.value & (std.math.maxInt(ArrayIDEnumType) << array_id_position)) >> array_id_position);
+        return @intToEnum(LevelToArrayIDMap[@enumToInt(level)], @intCast(std.meta.Int(.unsigned, @bitSizeOf(LevelToArrayIDMap[@enumToInt(level)])), (self.value & (std.math.maxInt(ArrayIDEnumType) << array_id_position)) >> array_id_position));
     }
 
     pub fn is_resolved(self: Self) callconv(.Inline) bool

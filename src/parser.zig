@@ -23,7 +23,7 @@ pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
 
 pub fn log(comptime format: []const u8, arguments: anytype) void
 {
-    Compiler.log(.parser, format, arguments);
+    Compiler.log(.parser, "[PARSER] " ++ format, arguments);
 }
 
 pub const IntegerLiteral = struct
@@ -54,15 +54,33 @@ pub const VariableDeclaration = struct
 //};
 };
 
-pub const IdentifierExpression = struct
-{
-    name: []const u8,
-    type: Type,
-};
+pub const IdentifierExpression = []const u8;
 
 pub const ReturnExpression = struct
 {
     expression: ?Entity,
+};
+
+pub const Assignment = struct
+{
+    left: Entity,
+    right: Entity,
+};
+
+pub const Operation = struct
+{
+    pub const ID = enum
+    {
+        add,
+        sub,
+    };
+};
+
+pub const ModifiedAssignment = struct
+{
+    left: Entity,
+    right: Entity,
+    id: Operation.ID,
 };
 
 pub const Scope = struct
@@ -73,6 +91,7 @@ pub const Scope = struct
     invoke_expressions: []InvokeExpression,
     field_access_expressions: []FieldAccessExpression,
     return_expressions: []ReturnExpression,
+    assignments: []Assignment,
 };
 
 pub const Function = struct
@@ -172,6 +191,7 @@ pub const ModuleParser = struct
         invoke_expressions: ArrayList(InvokeExpression),
         field_access_expressions: ArrayList(FieldAccessExpression),
         return_expressions: ArrayList(ReturnExpression),
+        assignments: ArrayList(Assignment),
     };
 
     const FunctionBuilder = struct
@@ -231,7 +251,23 @@ pub const ModuleParser = struct
 
     fn consume_token(self: *Self, comptime token: Token) callconv(.Inline) void
     {
-        //log("Consuming {}...\n", .{token});
+        const token_value = self.get_token(token).value;
+        switch (comptime token)
+        {
+            .str_lit, .identifier =>
+            {
+                log("Consuming {}: {s}\n", .{token, token_value});
+            },
+            .sign =>
+            {
+                log("Consuming {}: {c}\n", .{token, token_value});
+            },
+            else =>
+            {
+                log("Consuming {}: {}\n", .{token, token_value});
+            }
+        }
+
         self.lexer.counters[@enumToInt(token)] += 1;
         self.lexer.next_index += 1;
     }
@@ -252,7 +288,7 @@ pub const ModuleParser = struct
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
         const left_expression = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.items.len, Entity.ScopeID.identifier_expressions);
-        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(.{ .name = identifier_name, .type = Type.unresolved_type }) catch unreachable;
+        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(identifier_name) catch unreachable;
         return left_expression;
     }
 
@@ -260,7 +296,7 @@ pub const ModuleParser = struct
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
         const left_expression = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.items.len, Entity.ScopeID.identifier_expressions);
-        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(.{ .name = identifier_name, .type = Type.unresolved_type, }) catch unreachable;
+        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(identifier_name) catch unreachable;
         return self.parse_infix(precedence, left_expression);
     }
 
@@ -477,106 +513,66 @@ pub const ModuleParser = struct
     fn parse_statement(self: *Self) void
     {
         const next_token = self.lexer.tokens[self.lexer.next_index];
+        log("Statement token: {}\n", .{next_token});
         switch (next_token)
         {
             .identifier =>
             {
-                const token_to_maybe_rectify = Token.identifier;
-                const identifier_name = self.get_and_consume_token(token_to_maybe_rectify).value;
+                const identifier_name = self.get_token(.identifier).value;
+                log("Identifier name:{s}\n", .{identifier_name});
 
-                if (self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .Declaration)
+                if (self.lexer.tokens[self.lexer.next_index + 1] == .operator and self.get_token(.operator).value == .Declaration)
                 {
-                    _ = identifier_name;
+                    log("Parsing variable declaration...\n", .{});
+                    self.consume_token(.identifier);
                     self.consume_token(.operator);
 
+                    var current_scope = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
+                    const var_decl_index = current_scope.variable_declarations.items.len;
+                    current_scope.variable_declarations.append(.
+                        {
+                            .name = identifier_name,
+                            .type = self.parse_type(),
+                        }) catch unreachable;
 
-                    //var var_decl_node_value = Node
-                    //{
-                    //.value = Node.Value {
-                    //.var_decl = VariableDeclaration {
-                    //.name = identifier_name,
-                    //// Info: These are set later 
-                    //.var_type =  undefined,
-                    //.var_scope =  block_node,
-                    //.backend_ref =  0,
-                    //.is_function_arg = false,
-                    //},
-                    //},
-                    //.parent = block_node,
-                    //.value_type = Node.ValueType.LValue,
-                    //.type = undefined,
-                    //};
+                    const var_decl_id = Entity.new(var_decl_index, Entity.ScopeID.variable_declarations);
+                    current_scope.statements.append(var_decl_id) catch unreachable;
 
-                    //var var_decl_node = self.append_and_get(var_decl_node_value);
-                    //if (self.expect_and_consume_operator(Operator.Assignment) == null)
-                    //{
-                    //var_decl_node.value.var_decl.var_type = self.parse_type(allocator, self, block_node);
+                    const var_next_token = self.lexer.tokens[self.lexer.next_index];
 
-                    //if (self.expect_and_consume_operator(Operator.Assignment) == null)
-                    //{
-                    //panic("expected assignment after type in variable declaration\n", .{});
-                    //}
-                    //}
-                    //else
-                    //{
-                    //// no type information
-                    //panic("not implemented: var declaration without type information\n", .{});
-                    //}
+                    if (var_next_token == .operator)
+                    {
+                        if (self.get_token(.operator).value == Operator.ID.Assignment)
+                        {
+                            self.consume_token(.operator);
 
-                    //var initialization_assignment: ?*Node = null;
-                    //// @Info: separate variable declaration and initialization
-                    //if (self.expect_sign(';') == null)
-                    //{
-                    //const id_expr = Node 
-                    //{
-                    //.value = Node.Value {
-                    //.identifier_expr = IdentifierExpression {
-                    //.name = identifier_name,
-                    //},
-                    //},
-                    //.value_type = Node.ValueType.LValue,
-                    //.parent = block_node,
-                    //.type = undefined,
-                    //};
+                            const var_init_expression = self.parse_expression();
 
-                    //const id_expr_node = self.append_and_get(id_expr);
+                            const assignment_index = current_scope.assignments.items.len;
+                            current_scope.assignments.append(.
+                                {
+                                    .left = var_decl_id,
+                                    .right = var_init_expression,
+                                }) catch unreachable;
 
-                    //initialization_assignment = self.parse_binary_expression(allocator, self, block_node, id_expr_node, Operator.Assignment, Precedence.Assignment);
-                    //}
-                    //else
-                    //{
-                    //// no initialization
-                    //panic("not implemented: var declaration without initialization\n", .{});
-                    //}
-
-                    //if (parser.expect_and_consume_sign(';') == null)
-                    //{
-                    //parser_error("Expected semicolon at the end of the statement\n", .{});
-                    //}
-                    //block_node.value.block_expr.statements.append(var_decl_node) catch {
-                    //panic("Failed to allocate memory for statement", .{});
-                    //};
-                    //self.current_function.value.function_decl.variables.append(var_decl_node) catch {
-                    //panic("Error allocating variable reference to function variable list\n", .{});
-                    //};
-                    //if (initialization_assignment) |assignment|
-                    //{
-                    //block_node.value.block_expr.statements.append(assignment) catch {
-                    //panic("Failed to allocate memory for statement", .{});
-                    //};
-                    //}
-
-                    unreachable;
+                            const assignment_id = Entity.new(assignment_index, Entity.ScopeID.assignments);
+                            current_scope.statements.append(assignment_id) catch unreachable;
+                        }
+                        else
+                        {
+                            unreachable;
+                        }
+                    }
+                    else
+                    {
+                        unreachable;
+                    }
                 }
                 else
                 {
-                    self.rectify(token_to_maybe_rectify);
+                    log("About to parse identifier expression\n", .{});
                     const identifier_expression = self.parse_expression_identifier();
-                    if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != ';')
-                    {
-                        parser_error("Expected semicolon at the end of identifier expression\n", .{});
-                    }
-
+                    log("Just parsed identifier expression\n", .{});
                     self.function_builder.scope_builders.items[self.function_builder.current_scope].statements.append(identifier_expression) catch unreachable;
                 }
             },
@@ -590,7 +586,7 @@ pub const ModuleParser = struct
                     {
                         // @TODO: speed up this because we know we have a dereference operator
                         const dereference_statement = self.parse_expression();
-                        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != ';')
+                        if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ';')
                         {
                             parser_error("Expected semicolon at the end of identifier expression\n", .{});
                         }
@@ -605,6 +601,7 @@ pub const ModuleParser = struct
                         const keyword = self.get_and_consume_token(.keyword).value;
                         assert(keyword == .@"switch");
                         self.parse_compile_time_switch();
+                        return;
                     },
                     else => panic("ni: {}\n", .{operator}),
                 }
@@ -620,16 +617,14 @@ pub const ModuleParser = struct
                         const return_next_token = self.lexer.tokens[self.lexer.next_index];
                         const return_expression = blk:
                         {
-                            if (return_next_token == .sign and self.get_token(.sign).value == ';')
+                            if (return_next_token != .sign or self.get_token(.sign).value != ';')
                             {
-                                self.consume_token(.sign);
-                                break :blk null;
+                                const return_expression = self.parse_expression();
+                                break :blk return_expression;
                             }
                             else
                             {
-                                const return_expression = self.parse_expression();
-                                self.consume_token(.sign);
-                                break :blk return_expression;
+                                break :blk null;
                             }
                         };
 
@@ -647,6 +642,21 @@ pub const ModuleParser = struct
             },
             else => panic("ni: {}\n", .{next_token}),
         }
+
+        const expected_semicolon_token = self.lexer.tokens[self.lexer.next_index];
+        log("Expected semicolon token: {}\n", .{expected_semicolon_token});
+        if (expected_semicolon_token == .sign)
+        {
+            const sign = self.get_token(.sign).value;
+            log("End of statement sign: {c}\n", .{sign});
+            if (sign == ';')
+            {
+                self.consume_token(.sign);
+                return;
+            }
+        }
+
+        parser_error("Expected semicolon to end statement\n", .{});
         //while (should_keep_parsing)
         //{
             //const token = parser.peek();
@@ -658,17 +668,6 @@ pub const ModuleParser = struct
                     //const keyword = token.value.keyword;
                     //switch (keyword)
                     //{
-                        //KeywordID.@"return" =>
-                        //{
-                            //const return_statement = self.parse_return(allocator, parser, block_node);
-                            //if (parser.expect_and_consume_sign(';') == null)
-                            //{
-                                //parser_error("Expected semicolon at the end of the statement\n", .{});
-                            //}
-                            //block_node.value.block_expr.statements.append(return_statement) catch {
-                                //panic("Failed to allocate memory for statement", .{});
-                            //};
-                        //},
                         //KeywordID.@"for" =>
                         //{
                             //const for_st = self.parse_for(allocator, parser, block_node);
@@ -736,6 +735,7 @@ pub const ModuleParser = struct
             .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
             .field_access_expressions = ArrayList(FieldAccessExpression).init(self.allocator),
             .return_expressions = ArrayList(ReturnExpression).init(self.allocator),
+            .assignments = ArrayList(Assignment).init(self.allocator),
         }) catch unreachable;
 
         // @TODO: should we move this outside the function?
@@ -774,6 +774,7 @@ pub const ModuleParser = struct
             .invoke_expressions = scope_builder.invoke_expressions.items,
             .field_access_expressions = scope_builder.field_access_expressions.items,
             .return_expressions = scope_builder.return_expressions.items,
+            .assignments = scope_builder.assignments.items,
         };
 
         self.function_builder.current_scope = previous_scope;
@@ -1224,7 +1225,7 @@ pub const AST = struct
 
     pub fn parse(allocator: *Allocator, source_filename: []const u8, target: std.Target) Self
     {
-        log("\n==============\nPARSER\n==============\n\n", .{});
+        log("\n==============\nEntering PARSER stage\n==============\n\n", .{});
 
         const minimal_module_count = 3;
         var ast = AST
@@ -1292,6 +1293,7 @@ pub const AST = struct
 
         const lexer = Lexer.lexical_analyze(allocator, file_content);
 
+        log("\n==============\nEntering PARSER stage\n==============\n\n", .{});
         var parser = ModuleParser
         {
             .lexer = .

@@ -17,7 +17,7 @@ const Semantics = @import("../../semantics.zig");
 
 pub fn log(comptime format: []const u8, arguments: anytype) void
 {
-    Compiler.log(.x86_64, format, arguments);
+    Compiler.log(.x86_64, "[CODEGEN] " ++ format, arguments);
 }
 
 fn codegen_error(comptime format: []const u8, arguments: anytype) noreturn
@@ -25,12 +25,15 @@ fn codegen_error(comptime format: []const u8, arguments: anytype) noreturn
     panic(format, arguments);
 }
 
-fn get_alloca_size(function: *IR.Function, instruction_ref: IR.Reference) u64
+fn get_alloca_size(program: *const IR.Program, instruction_ref: IR.Reference) u64
 {
     assert(instruction_ref.get_ID() == .instruction);
     assert(IR.Instruction.get_ID(instruction_ref) == .alloca);
-    const instruction = function.instructions[instruction_ref.get_index()];
-    panic("Instruction: {}\n", .{instruction});
+    const instruction_index = instruction_ref.get_index();
+    const alloca = program.instructions.alloca[instruction_index];
+    const alloca_type = alloca.alloca_type;
+    const alloca_size = alloca_type.get_size();
+    return alloca_size;
 }
 
 const system_v_argument_registers = [_]Encoding.Register
@@ -75,20 +78,17 @@ fn add_rsp_s32(n: i32) [7]u8
     return bytes;
 }
 
-const call_rel32_bytes = [_]u8 { 0xe8, 0xcc, 0xcc, 0xcc, 0xcc };
-fn call_rel32(rel32: i32) [5]u8
+fn call_rel32(operand_index: u32) Instruction
 {
-    var bytes = call_rel32_bytes;
-    const offset = 1;
-    for (std.mem.asBytes(&rel32)) |byte, i|
-    {
-        bytes[offset + i] = byte;
-    }
-
-    return bytes;
+    const bytes = [_]u8 { 0xe8 };
+    return Instruction.Unresolved.new(bytes[0..], operand_index, .relative_global, 4, bytes.len);
 }
 
-const call_rip_rel32_bytes = [_]u8 { 0x48, 0xff, 0x15, 0xcc, 0xcc, 0xcc, 0xcc };
+fn call_rip_rel32(operand_index: u32) Instruction
+{
+    const bytes = [_]u8 { 0x48, 0xff, 0x15 };
+    return Instruction.Unresolved.new(bytes[0..], operand_index, .relative_external, 4, bytes.len);
+}
 
 fn sub_rsp_s8(n: i8) [4]u8
 {
@@ -109,116 +109,393 @@ fn sub_rsp_s32(n: i32) [7]u8
     return bytes;
 }
 
-fn mov_register_literal_1_bytes(register: Encoding.Register, number: u8) [2]u8
+fn mov_register_literal(register: Encoding.Register, number: u64, byte_count: u16) Instruction
 {
-    return [_]u8 { 0xb0 + @enumToInt(register), number };
+    const number_bytes = std.mem.asBytes(&number);
+
+    const byte_slice = switch (byte_count)
+    {
+        1 => blk1:
+        {
+            const bytes = [_]u8 { 0xb0 + @enumToInt(register), @truncate(u8, number) };
+            break :blk1 bytes[0..];
+        },
+        2 => blk2:
+        {
+            const bytes = [_]u8 { 0x66, 0xb8 + @enumToInt(register),
+                number_bytes[0], number_bytes[1] };
+            break :blk2 bytes[0..];
+        },
+        4 => blk4:
+        {
+            const bytes = [_]u8 { 0xb8 + @enumToInt(register),
+                number_bytes[0], number_bytes[1], number_bytes[2], number_bytes[3] };
+            break :blk4 bytes[0..];
+        },
+        8 => blk8:
+        {
+            const bytes = [_]u8 { 0x48, 0xb8 + @enumToInt(register),
+                number_bytes[0], number_bytes[1], number_bytes[2], number_bytes[3], number_bytes[4], number_bytes[5], number_bytes[6], number_bytes[7] };
+            break :blk8 bytes[0..];
+        },
+        else => unreachable,
+    };
+
+    return Instruction.Resolved.new(byte_slice);
 }
 
-fn mov_register_literal_2_bytes(register: Encoding.Register, number: u16) [4]u8
+fn encode_indirect_instruction_opcode_plus_register_stack_offset(rex: ?u8, opcode: u8, register_byte_start: u8, indirect_register: Encoding.Register, stack_offset: i32, after_common_bytes: []const u8) Instruction
 {
-    return [_]u8 { 0x66, 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8) };
+    log("Encoding mov indirect...\n", .{});
+    var bytes: [Instruction.max_bytes]u8 = undefined;
+    var encoded_byte_count: u8 = 0;
+
+    var stack_offset_byte_count: u8 = undefined;
+    const stack_offset_i8 = @intCast(i8, stack_offset);
+
+    const stack_offset_bytes = blk:
+    {
+        if (stack_offset < std.math.minInt(i8) or stack_offset > std.math.maxInt(i8))
+        {
+            stack_offset_byte_count = 4;
+            break :blk @intToPtr([*]u8, @ptrToInt(&stack_offset))[0..stack_offset_byte_count];
+        }
+        else
+        {
+            stack_offset_byte_count = 1;
+            break :blk std.mem.asBytes(@ptrCast(* align(1) const i8, &stack_offset_i8))[0..];
+        }
+    };
+
+    if (rex) |rex_byte|
+    {
+        log("Appending rex byte: {x:0>2}\n", .{rex_byte});
+        bytes[encoded_byte_count] = rex_byte;
+        encoded_byte_count += 1;
+    }
+
+    log("Appending opcode: {x:0>2}\n", .{opcode});
+    bytes[encoded_byte_count] = opcode;
+    encoded_byte_count += 1;
+
+    const stack_offset_not_zero = stack_offset != 0;
+    const stack_offset_dependent_register_byte_part = (@as(u8, 0x40) * ((@as(u8, @boolToInt(stack_offset_byte_count == 4)) << 1) | 1)) * @as(u8, @boolToInt(stack_offset_not_zero));
+
+    log("Register byte start: {x:0>2}\n", .{register_byte_start});
+    log("Register: {x:0>2}\n", .{@enumToInt(indirect_register)});
+    log("stack_offset_dependent_register_byte_part: {x:0>2}\n", .{stack_offset_dependent_register_byte_part});
+    const register_byte = register_byte_start |
+        @enumToInt(indirect_register) |
+        stack_offset_dependent_register_byte_part;
+
+    log("Appending register byte: {x:0>2}\n", .{register_byte});
+
+    bytes[encoded_byte_count] = register_byte;
+    encoded_byte_count += 1;
+
+    if (indirect_register == .SP)
+    {
+        log("Appending SIB byte: {x:0>2}\n", .{0x24});
+        bytes[encoded_byte_count] = 0x24;
+        encoded_byte_count += 1;
+    }
+
+    if (stack_offset_not_zero)
+    {
+        for (stack_offset_bytes) |byte|
+        {
+            log("Appending stack offset byte: {x:0>2}\n", .{byte});
+            bytes[encoded_byte_count] = byte;
+            encoded_byte_count += 1;
+        }
+    }
+
+    for (after_common_bytes) |byte|
+    {
+        log("Appending byte after indirect bytes: {x:0>2}\n", .{byte});
+        bytes[encoded_byte_count] = byte;
+        encoded_byte_count += 1;
+    }
+
+    return Instruction.Resolved.new_bytes(bytes, encoded_byte_count);
 }
 
-fn mov_register_literal_4_bytes(register: Encoding.Register, number: u32) [5]u8
+fn mov_indirect_immediate_unsigned(indirect_register: Encoding.Register, stack_offset: i32, immediate: u64, allocation_size: u16) Instruction
 {
-    return [_]u8 { 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8), @truncate(u8, (number & 0xff0000) >> 16), @truncate(u8, (number & 0xff000000) >> 24) };
+    // @TODO: assert that for 64-bit register you cant use 64-bit immediate
+    const immediate_bytes = std.mem.asBytes(&immediate)[0..allocation_size];
+    return encode_indirect_instruction_opcode_plus_register_stack_offset(null, 0xc7, 0, indirect_register, stack_offset, immediate_bytes);
 }
 
-fn mov_register_literal_8_bytes(register: Encoding.Register, number: u64) [10]u8
+fn mov_register_indirect(dst_register: Encoding.Register, allocation_size: u8, indirect_register: Encoding.Register, stack_offset: i32) callconv(.Inline) Instruction
 {
-    return [_]u8 { 0x48, 0xb8 + @enumToInt(register), @truncate(u8, number), @truncate(u8, (number & 0xff00) >> 8), @truncate(u8, (number & 0xff0000) >> 16), @truncate(u8, (number & 0xff000000) >> 24), @truncate(u8, (number & 0xff00000000) >> 32), @truncate(u8, (number & 0xff0000000000) >> 40), @truncate(u8, (number & 0xff000000000000) >> 48), @truncate(u8, (number & 0xff00000000000000) >> 56) };
+    return switch (allocation_size)
+    {
+        1,2,8 => unreachable,
+        4 => encode_indirect_instruction_opcode_plus_register_stack_offset(null, 0x8b, @enumToInt(dst_register), indirect_register, stack_offset, std.mem.zeroes([]const u8)),
+        else => unreachable,
+    };
 }
-//fn xor_register_immediate(register: Encoding.Register, register_byte: u8, comptime ImmediateType: type, immediate: ImmediateType) void
-//{
-    //if (register == .A)
-    //{
-        //unreachable;
-    //}
-    //else
-    //{
-        //unreachable;
-    //}
-//}
 
-fn xor_register(register: Encoding.Register, size: u8) [2]u8
+fn xor_register(register: Encoding.Register, size: u8) Instruction
 {
     const mod = 0b11;
     const r_m = @enumToInt(register);
 
-    return switch (size)
+    const byte_slice = switch (size)
     {
         1 => unreachable,
         2 => unreachable,
-        4 => [_]u8 { 0x31, (mod << 6) | ((@enumToInt(register) & 0b111) << 3) | (r_m & 0b111)},
+        4 => blk4: 
+        {
+            const bytes = [_]u8 { 0x31, (mod << 6) | ((@enumToInt(register) & 0b111) << 3) | (r_m & 0b111)};
+            break :blk4 bytes[0..];
+        },
         8 => unreachable,
         else => unreachable,
     };
+
+    return Instruction.Resolved.new(byte_slice);
 }
 
 const Instruction = struct
 {
     const Self = @This();
+    const max_bytes = 15;
+    const max_bytes_before_operand_resolution = 3;
 
-    bytes: []const u8,
-    id: ID,
-    resolved: bool,
-    operand: Operand, 
+    resolution: Resolution,
+    status: Resolution.Status,
 
-    const ID = enum(u16)
+    const Resolved = struct
     {
-        call,
-        mov,
-        ret,
-        xor,
+        bytes: [max_bytes]u8,
+        size: u8,
+
+        fn new(bytes: []const u8) callconv(.Inline) Instruction
+        {
+            assert(bytes.len <= max_bytes);
+
+            return .{
+                .resolution = .{
+                    .resolved = .{
+                        .bytes = blk: {
+                            var result: [max_bytes]u8 = undefined;
+                            std.mem.copy(u8, result[0..], bytes);
+                            break :blk result;
+                        },
+                        .size = @intCast(u8, bytes.len),
+                    }
+                },
+                .status = .resolved,
+            };
+        }
+
+        fn new_bytes(bytes: [max_bytes]u8, byte_count: u8) callconv(.Inline) Instruction
+        {
+            assert(bytes.len <= max_bytes);
+
+            return .{
+                .resolution = .{
+                    .resolved = .{
+                        .bytes = bytes,
+                        .size = byte_count,
+                    }
+                },
+                .status = .resolved,
+            };
+        }
+
+        pub fn new_by_components(byte_slices: [][]const u8) callconv(.Inline) Instruction
+        {
+            var offset: u8 = 0;
+            
+            return .{
+                .resolution = .{
+                    .resolved = .{
+                        .bytes = blk: {
+                            var result: [max_bytes]u8 = undefined;
+
+                            for (byte_slices) |byte_slice|
+                            {
+                                std.mem.copy(u8, result[offset..], byte_slice);
+                                offset += @intCast(u8, byte_slice.len);
+                            }
+                            assert(result.len <= max_bytes);
+
+                            break :blk result;
+                        },
+                        .size = offset,
+                    }
+                },
+                .status = .resolved,
+            };
+        }
     };
 
-    const Operand = struct
+    const Unresolved = struct
     {
-        index: u32,
-        kind: Kind,
-        offset: u8,
+        bytes: [max_bytes_before_operand_resolution]u8,
+        unknown_operand: UnknownOperand,
 
-        const Kind = enum(u8)
+        const UnknownOperand = extern struct
         {
-            none,
-            immediate,
-            relative_global,
-            relative_external,
+            index: u32,
+            flags: u8,
+
+            const Kind = enum(u8)
+            {
+                none,
+                immediate,
+                relative_global,
+                relative_external,
+            };
+
+            pub fn get_size(self: UnknownOperand) u8
+            {
+                return self.flags & 0xf;
+            }
+            
+            pub fn set_size(self: *UnknownOperand, size: u8) void
+            {
+                self.flags = (self.flags & 0xf0) | size;
+            }
+
+            pub fn get_offset(self: UnknownOperand) u8
+            {
+                return (self.flags & 0x30) >> 4;
+            }
+
+            pub fn set_offset(self: *UnknownOperand, offset: u8) void
+            {
+                self.flags = (self.flags & 0xcf) | (offset << 4);
+            }
+
+            pub fn get_kind(self: UnknownOperand) Kind
+            {
+                return @intToEnum(Kind, (self.flags & 0xc0) >> 6);
+            }
+
+            pub fn set_kind(self: *UnknownOperand, kind: Kind) void
+            {
+                self.flags = (self.flags & 0x3f) | (@enumToInt(kind) << 6);
+            }
+        };
+
+        fn new(known_bytes: []const u8, operand_index: u32, operand_kind: UnknownOperand.Kind, operand_size: u8, operand_offset: u8) callconv(.Inline) Instruction
+        {
+            assert(operand_offset <= max_bytes);
+            assert(operand_size <= 8);
+
+            return .  {
+                .resolution = .{
+                    .unresolved = .{
+                        .bytes = blk: {
+                            var result: [max_bytes_before_operand_resolution]u8 = undefined;
+                            std.mem.copy(u8, result[0..], known_bytes);
+                            break :blk result;
+                        },
+                        .unknown_operand = blk: {
+                            var uk_op = Unresolved.UnknownOperand {
+                                .index = operand_index,
+                                .flags = undefined,
+                            };
+                            uk_op.set_kind(operand_kind);
+                            uk_op.set_size(operand_size);
+                            uk_op.set_offset(operand_offset);
+
+                            break :blk uk_op;
+                        },
+                    }
+                },
+                .status = .unresolved,
+            };
+        }
+    };
+
+    const Resolution = extern union
+    {
+        resolved: Resolved,
+        unresolved: Unresolved,
+
+        const Status = enum(u8)
+        {
+            resolved,
+            unresolved,
         };
     };
 
-    fn create_resolved(id: ID, bytes: []const u8) Self
-    {
-        return .
-        {
-            .id = id,
-            .resolved = true,
-            .bytes = bytes,
-            .operand = .
-            {
-                .offset = 0,
-                .kind = .none,
-                .index = 0,
-            },
-        };
-    }
 
-    fn create_unresolved_operand(id: ID, bytes: []const u8, operand_offset: u8, operand_kind: Operand.Kind, operand_index: u32) Self
-    {
-        return .
-        {
-            .id = id,
-            .resolved = false,
-            .bytes = bytes,
-            .operand = .
-            {
-                .offset = operand_offset,
-                .kind = operand_kind,
-                .index = operand_index
-            },
-        };
-    }
 };
+
+//const Instruction = struct
+//{
+    //const Self = @This();
+
+    //bytes: []const u8,
+    //id: ID,
+    //resolved: bool,
+    //operand: Operand, 
+
+    //const ID = enum(u16)
+    //{
+        //call,
+        //mov,
+        //ret,
+        //xor,
+    //};
+
+    //const Operand = struct
+    //{
+        //index: u32,
+        //kind: Kind,
+        //offset: u8,
+
+        //const Kind = enum(u8)
+        //{
+            //none,
+            //immediate,
+            //relative_global,
+            //relative_external,
+        //};
+    //};
+
+    //fn create_resolved(id: ID, bytes: []const u8) Self
+    //{
+        //log("Appending instruction {}:\n", .{id});
+        //for (bytes) |byte| log("{x:0>2} ", .{byte});
+        //log("\n", .{});
+
+        //return .
+        //{
+            //.id = id,
+            //.resolved = true,
+            //.bytes = bytes,
+            //.operand = .
+            //{
+                //.offset = 0,
+                //.kind = .none,
+                //.index = 0,
+            //},
+        //};
+    //}
+
+    //fn create_unresolved_operand(id: ID, bytes: []const u8, operand_offset: u8, operand_kind: Operand.Kind, operand_index: u32) Self
+    //{
+        //return .
+        //{
+            //.id = id,
+            //.resolved = false,
+            //.bytes = bytes,
+            //.operand = .
+            //{
+                //.offset = operand_offset,
+                //.kind = operand_kind,
+                //.index = operand_index
+            //},
+        //};
+    //}
+//};
 
 const Label = union(enum)
 {
@@ -262,11 +539,11 @@ pub const Program = struct
         instructions: ArrayList(Instruction),
         labels: ArrayList(Label),
         previous_patches: ArrayList(BackwardPatch),
-        rsp: i32,
         code_buffer_offset: u32,
         max_call_parameter_size: i32,
         terminator: Terminator,
-        register_allocator: Register.Allocator,
+        register_allocator: Register.Manager,
+        stack_allocator: Stack.Manager,
 
         const Terminator = enum
         {
@@ -276,7 +553,6 @@ pub const Program = struct
 
     };
 
-    const max_bytes_per_instruction = 15;
 
     fn estimate_max_code_size(self: *Program) u64
     {
@@ -288,7 +564,7 @@ pub const Program = struct
             total_instruction_count += aprox_fixed_instruction_count_per_function + function.instructions.items.len;
         }
 
-        return total_instruction_count * max_bytes_per_instruction;
+        return total_instruction_count * Instruction.max_bytes;
     }
 
     pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, text: *PE.Section, text_out: *PE.Section.Text.EncodingOutput, offset: *PE.Offset) void
@@ -317,15 +593,31 @@ pub const Program = struct
                 {
                     .msvc =>
                     {
-                        log("Function RSP: {}\n", .{function.rsp});
-                        if (function.rsp > std.math.maxInt(i8))
+                        const stack_offset = function.stack_allocator.offset;
+                        if (stack_offset > std.math.maxInt(i8))
                         {
-                            text.buffer.appendSlice(sub_rsp_s32(function.rsp)[0..]) catch unreachable;
+                            const sub_rsp = sub_rsp_s32(stack_offset)[0..];
+                            std.debug.print("[{}] ", .{text.buffer.items.len});
+                            for (sub_rsp) |byte|
+                            {
+                                std.debug.print("{x:0>2} ", .{byte});
+                            }
+                            std.debug.print("\n", .{});
+
+                            text.buffer.appendSlice(sub_rsp) catch unreachable;
                             add_rsp_at_epilogue = true;
                         }
-                        else if (function.rsp > 0)
+                        else if (stack_offset > 0)
                         {
-                            text.buffer.appendSlice(sub_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                            const sub_rsp = sub_rsp_s8(@intCast(i8, stack_offset))[0..];
+                            std.debug.print("[{}] ", .{text.buffer.items.len});
+                            for (sub_rsp) |byte|
+                            {
+                                std.debug.print("{x:0>2} ", .{byte});
+                            }
+                            std.debug.print("\n", .{});
+
+                            text.buffer.appendSlice(sub_rsp) catch unreachable;
                             add_rsp_at_epilogue = true;
                         }
                     },
@@ -337,61 +629,67 @@ pub const Program = struct
                 }
             }
 
-            const instruction_count = function.instructions.items.len;
-            log("Instruction count: {}\n", .{instruction_count});
-
             for (function.instructions.items) |instruction|
             {
-                if (instruction.resolved)
+                if (instruction.status == .resolved)
                 {
-                    text.buffer.appendSlice(instruction.bytes) catch unreachable;
+                    std.debug.print("Resolved instruction. Appending:\n", .{});
+                    const instruction_bytes = instruction.resolution.resolved.bytes[0..instruction.resolution.resolved.size];
+                    std.debug.print("[{}] ", .{text.buffer.items.len});
+                    for (instruction_bytes) |byte|
+                    {
+                        std.debug.print("{x:0>2} ", .{byte});
+                    }
+                    std.debug.print("\n", .{});
+                    text.buffer.appendSlice(instruction_bytes) catch unreachable;
                 }
                 else
                 {
-                    const instruction_id = instruction.id;
-                    switch (instruction_id)
+                    const unresolved = instruction.resolution.unresolved;
+                    const operand = unresolved.unknown_operand;
+                    const operand_offset = operand.get_offset();
+                    log("Operand offset: {}\n", .{operand_offset});
+                    const operand_size = operand.get_size();
+                    const instruction_length = operand_offset + operand_size;
+                    const from = text.buffer.items.len + instruction_length;
+                    const code_buffer_offset = @intCast(u32, text.buffer.items.len + operand_offset);
+                    const known_bytes = unresolved.bytes[0..operand_offset];
+                    std.debug.print("Unresolved instruction. Appending known bytes:\n", .{});
+                    std.debug.print("[{}] ", .{text.buffer.items.len});
+                    for (known_bytes) |byte|
                     {
-                        .call =>
+                        std.debug.print("{x:0>2} ", .{byte});
+                    }
+
+                    std.debug.print("\n", .{});
+                    text.buffer.appendSlice(known_bytes) catch unreachable;
+
+                    switch (operand.get_kind())
+                    {
+                        .relative_global =>
                         {
-                            const operand_index = instruction.operand.index;
-                            const from = text.buffer.items.len + instruction.bytes.len;
-
-                            switch (instruction.operand.kind)
+                            if (operand.index <= function_i)
                             {
-                                .relative_global =>
-                                {
-                                    if (operand_index <= function_i)
-                                    {
-                                        const target = self.functions[operand_index].code_buffer_offset;
-                                        const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
-                                        text.buffer.appendSlice(call_rel32(rel32)[0..]) catch unreachable;
-                                    }
-                                    else
-                                    {
-                                        const code_buffer_offset = @intCast(u32, text.buffer.items.len + instruction.operand.offset);
-                                        self.functions[operand_index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
-                                        text.buffer.appendSlice(call_rel32_bytes[0..]) catch unreachable;
-                                    }
-                                },
-                                .relative_external =>
-                                {
-                                    std.debug.print("operand offset: {}\n", .{instruction.operand.offset});
-                                    const external_function_index = Parser.Function.External.Index.from_u32(operand_index);
-                                    std.debug.print("Library index: {}. Function index: {}\n", .{external_function_index.library, external_function_index.function});
-                                    const target_index = @intCast(u32, text.buffer.items.len + instruction.operand.offset);
-                                    std.debug.print("Adding patch with rip index: {}\n", .{target_index});
-                                    text_out.patches.append(.
-                                    {
-                                        .section_buffer_index_to = target_index,
-                                        .section_buffer_index_from = operand_index,
-                                        .section_to_write_to = .@".text",
-                                        .section_to_read_from = .@".rdata",
-                                    }) catch unreachable;
-
-                                    text.buffer.appendSlice(call_rip_rel32_bytes[0..]) catch unreachable;
-                                },
-                                else => unreachable,
+                                const target = self.functions[operand.index].code_buffer_offset;
+                                const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
+                                text.buffer.appendSlice(std.mem.asBytes(&rel32)) catch unreachable;
                             }
+                            else
+                            {
+                                text.buffer.appendNTimes(0xcc, operand_size) catch unreachable;
+                                self.functions[operand.index].previous_patches.append(.{ .code_buffer_offset = code_buffer_offset }) catch unreachable;
+                            }
+                        },
+                        .relative_external =>
+                        {
+                            text_out.patches.append(.
+                                {
+                                    .section_buffer_index_to = code_buffer_offset,
+                                    .section_buffer_index_from = operand.index,
+                                    .section_to_write_to = .@".text",
+                                    .section_to_read_from = .@".rdata",
+                                }) catch unreachable;
+                            text.buffer.appendNTimes(0xcc, operand_size) catch unreachable;
                         },
                         else => unreachable,
                     }
@@ -406,13 +704,14 @@ pub const Program = struct
                     {
                         .msvc =>
                         {
-                            if (function.rsp > std.math.maxInt(i8))
+                            const stack_offset = function.stack_allocator.offset;
+                            if (stack_offset > std.math.maxInt(i8))
                             {
-                                text.buffer.appendSlice(add_rsp_s32(function.rsp)[0..]) catch unreachable;
+                                text.buffer.appendSlice(add_rsp_s32(stack_offset)[0..]) catch unreachable;
                             }
-                            else if (function.rsp > 0)
+                            else if (stack_offset > 0)
                             {
-                                text.buffer.appendSlice(add_rsp_s8(@intCast(i8, function.rsp))[0..]) catch unreachable;
+                                text.buffer.appendSlice(add_rsp_s8(@intCast(i8, stack_offset))[0..]) catch unreachable;
                             }
                         },
                         .gnu =>
@@ -426,12 +725,15 @@ pub const Program = struct
 
             if (function.terminator == .ret)
             {
+                std.debug.print("[{}] {x:0>2}\n", .{text.buffer.items.len, ret_bytes[0]});
                 text.buffer.append(ret_bytes[0]) catch unreachable;
             }
             else if (function.terminator == .noreturn)
             {
                 // Append Int3
-                text.buffer.append(0xcc) catch unreachable;
+                const int3 = 0xcc;
+                std.debug.print("[{}] {x:0>2}\n", .{text.buffer.items.len, int3});
+                text.buffer.append(int3) catch unreachable;
             }
             else unreachable;
         }
@@ -488,17 +790,75 @@ const Stack = struct
     {
         const ArrayType = [Register.count]Stack.Store;
     };
+
+    // @TODO: figure out proper signed/unsigned types
+    const Manager = struct
+    {
+        allocations: ArrayList(Allocation),
+        offset: i32,
+        register: Encoding.Register,
+
+        fn new(allocator: *Allocator, stack_register: Encoding.Register) Stack.Manager
+        {
+            return .
+            {
+                .allocations = ArrayList(Allocation).init(allocator),
+                .offset = 0,
+                .register = stack_register,
+            };
+        }
+
+        // @TODO: work on alignment
+        fn allocate(self: *Stack.Manager, size: u32, alloca_i: ?u32) i32
+        {
+            const allocation_offset = @intCast(i32, alignForward(@intCast(u32, self.offset), size));
+            self.offset += @intCast(i32, size);
+            self.allocations.append(.
+                {
+                    .size = size,
+                    .alignment = size,
+                    .offset = allocation_offset,
+                    .alloca = alloca_i,
+                }) catch unreachable;
+
+            return -self.offset;
+        }
+        
+        fn get_allocation(self: *Stack.Manager, alloca_i: u32) Allocation
+        {
+            for (self.allocations.items) |allocation|
+            {
+                if (allocation.alloca) |stack_allocator_alloca|
+                {
+                    if (stack_allocator_alloca == alloca_i)
+                    {
+                        return allocation;
+                    }
+                }
+            }
+
+            panic("Not found\n", .{});
+        }
+
+        const Allocation = struct
+        {
+            size: u32,
+            alignment: u32,
+            offset: i32,
+            alloca: ?u32,
+        };
+    };
 };
 
 const Register = struct
 {
-    value: ?IR.Reference,
+    value: IR.Reference,
     size: u8,
 
     const count = 16;
     const ArrayType = [Register.count]Register; 
 
-    const Allocator = struct
+    const Manager = struct
     {
         registers: Register.ArrayType, 
         argument_registers: []const Encoding.Register,
@@ -509,69 +869,36 @@ const Register = struct
         {
             const result = Self
             {
-                .registers = std.enums.directEnumArray(Register.ID, Register, 4,.{
-                    .A   =  .{ .size = 0, .value = null, },
-                    .C   =  .{ .size = 0, .value = null, },
-                    .D   =  .{ .size = 0, .value = null, },
-                    .B   =  .{ .size = 0, .value = null, },
-                    .r8  =  .{ .size = 0, .value = null, },
-                    .r9  =  .{ .size = 0, .value = null, },
-                    .r10 =  .{ .size = 0, .value = null, },
-                    .r11 =  .{ .size = 0, .value = null, },
-                    .r12 =  .{ .size = 0, .value = null, },
-                    .r13 =  .{ .size = 0, .value = null, },
-                    .r14 =  .{ .size = 0, .value = null, },
-                    .r15 =  .{ .size = 0, .value = null, },
-                }),
+                .registers = std.mem.zeroes(Register.ArrayType),
                 .argument_registers = argument_registers,
             };
 
             return result;
         }
 
-        fn spill_registers_before_call(self: *Register.Allocator) State
+        fn allocate(self: *Register.Manager, value: IR.Reference, byte_count: u8) Encoding.Register
         {
-            log("Saving registers before call...\n", .{});
-
-            var saved_register_count: u32 = 0;
-
-            var registers = std.mem.zeroes(Register.ArrayType);
-
-            for (self.registers) |register, register_i|
+            for (self.registers) |*reg, reg_i|
             {
-                if (register.value != null and must_save(@intToEnum(Encoding.Register, register_i)))
+                if (reg.size == 0)
                 {
-                    registers[register_i] = register;
-                    saved_register_count += 1;
+                    reg.size = byte_count;
+                    reg.value = value;
+                    return @intToEnum(Encoding.Register, @intCast(u8, reg_i));
                 }
             }
 
-            log("Registers to be saved: {}\n", .{saved_register_count});
-
-            if (saved_register_count > 0)
-            {
-                for (registers) |register, register_i|
-                {
-                    _ = register_i;
-                    if (register.value != null)
-                    {
-                        panic("IR value: {}\n", .{register.value.?});
-                    }
-                }
-            }
-
-            if (saved_register_count > 0) unreachable;
-            return std.mem.zeroes(State);
+            panic("Registers are full\n", .{});
         }
 
-        fn allocate_argument(self: *Register.Allocator, argument_reference: IR.Reference, byte_count: u8) Encoding.Register
+        fn allocate_argument(self: *Register.Manager, argument_reference: IR.Reference, byte_count: u8) Encoding.Register
         {
             for (self.argument_registers) |r|
             {
                 const register_index = @enumToInt(r);
 
                 var register = &self.registers[register_index];
-                if (register.value == null)
+                if (register.size == 0)
                 {
                     register.value = argument_reference;
                     register.size = byte_count;
@@ -583,11 +910,11 @@ const Register = struct
             panic("No argument register ready\n", .{});
         }
 
-        fn allocate_return(self: *Register.Allocator, reference: IR.Reference, byte_count: u16) Encoding.Register
+        fn allocate_return(self: *Register.Manager, reference: IR.Reference, byte_count: u16) Encoding.Register
         {
             assert(byte_count <= 8);
             var register = &self.registers[@enumToInt(Encoding.Register.A)];
-            if (register.value == null)
+            if (register.size == 0)
             {
                 register.value = reference;
                 register.size = @intCast(u8, byte_count);
@@ -596,6 +923,53 @@ const Register = struct
             }
 
             panic("Return register A is busy\n", .{});
+        }
+
+        fn get_register(self: *Register.Manager, reference: IR.Reference) struct { value: Encoding.Register, size: u8 }
+        {
+            for (self.registers) |reg, reg_i|
+            {
+                if (reg.value.value == reference.value and reg.size > 0)
+                {
+                    return .{ .value = @intToEnum(Encoding.Register, @intCast(u8, reg_i)), .size = reg.size };
+                }
+            }
+
+            panic("Register is not allocated for that load value\n", .{});
+        }
+
+        fn spill_registers_before_call(self: *Register.Manager) State
+        {
+            log("Saving registers before call...\n", .{});
+
+            var saved_register_count: u32 = 0;
+
+            var registers = std.mem.zeroes(Register.ArrayType);
+
+            for (self.registers) |register, register_i|
+            {
+                if (register.size > 0 and must_save(@intToEnum(Encoding.Register, @intCast(u8, register_i))))
+                {
+                    registers[register_i] = register;
+                    saved_register_count += 1;
+                }
+            }
+
+            log("Registers to be saved: {}\n", .{saved_register_count});
+
+            if (saved_register_count > 0)
+            {
+                for (registers) |register|
+                {
+                    if (register.size > 0)
+                    {
+                        panic("IR value: {}\n", .{register.value});
+                    }
+                }
+            }
+
+            if (saved_register_count > 0) unreachable;
+            return std.mem.zeroes(State);
         }
 
         const State = struct
@@ -611,6 +985,7 @@ const Register = struct
             return switch (register)
             {
                 .A => true,
+                .SP => false,
                 else => panic("ni: {}\n", .{register}),
             };
         }
@@ -656,6 +1031,11 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
         else
             panic("Not implemented: {}\n", .{abi});
 
+    const stack_register =
+        if (abi == .msvc) Encoding.Register.SP
+        else if (abi == .gnu) Encoding.Register.BP
+        else panic("NI: {}\n", .{abi});
+
     const function_count = program.functions.len;
     assert(function_count > 0);
 
@@ -666,19 +1046,17 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
     for (program.functions) |*function|
     {
+        var stack_allocator = Stack.Manager.new(allocator, stack_register);
         const basic_block_count = function.basic_blocks.len;
         var labels = ArrayList(Label).initCapacity(allocator, basic_block_count) catch unreachable;
         labels.resize(basic_block_count) catch unreachable;
-        log("Creating {} labels...\n", .{basic_block_count});
 
         for (function.basic_blocks[0].instructions) |instruction|
         {
             if (IR.Instruction.get_ID(instruction) == .alloca)
             {
-                const alloca_size = get_alloca_size(function, instruction);
-                _ = alloca_size;
-                // stack allocate this
-                unreachable;
+                const alloca_size = @intCast(u32, get_alloca_size(program, instruction));
+                _ = stack_allocator.allocate(alloca_size, instruction.get_index());
             }
         }
 
@@ -698,12 +1076,12 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
             {
                 .instructions = ArrayList(Instruction).init(allocator),
                 .labels = labels,
-                .rsp = 0,
                 .max_call_parameter_size = 0,
                 .previous_patches = ArrayList(BackwardPatch).init(allocator),
                 .code_buffer_offset = 0,
                 .terminator = .noreturn,
-                .register_allocator = Register.Allocator.new(argument_registers),
+                .register_allocator = Register.Manager.new(argument_registers),
+                .stack_allocator = stack_allocator,
             }) catch unreachable;
 
         // @TODO:
@@ -740,28 +1118,26 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                         const argument_count = call.arguments.len;
 
                         var function_type: Type.Function = undefined;
-                        var call_operand_kind: Instruction.Operand.Kind = undefined;
-                        var operand_offset: u8 = undefined;
-
-                        switch (callee_id)
+                        const call_instruction = blk:
                         {
-                            .global_function =>
+                            switch (callee_id)
                             {
-                                assert(callee_index <= std.math.maxInt(i32));
-                                function_type = program.functions[callee_index].type;
-                                call_operand_kind = .relative_global;
-                                operand_offset = 1;
-                            },
-                            .external_function =>
-                            {
-                                const external_function = program.external.functions[callee_index];
-                                function_type = external_function.declaration.type;
-                                callee_index = external_function.index.to_u32();
-                                call_operand_kind = .relative_external;
-                                operand_offset = 3;
-                            },
-                            else => unreachable,
-                        }
+                                .global_function =>
+                                {
+                                    assert(callee_index <= std.math.maxInt(i32));
+                                    function_type = program.functions[callee_index].type;
+                                    break :blk call_rel32(callee_index);
+                                },
+                                .external_function =>
+                                {
+                                    const external_function = program.external.functions[callee_index];
+                                    function_type = external_function.declaration.type;
+                                    callee_index = external_function.index.to_u32();
+                                    break :blk call_rip_rel32(callee_index);
+                                },
+                                else => unreachable,
+                            }
+                        };
 
                         assert(argument_count <= function.register_allocator.argument_registers.len);
                         var register_allocator_state = function.register_allocator.spill_registers_before_call();
@@ -786,7 +1162,6 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                                 codegen_error("Expected integer\n", .{});
                                             }
 
-                                            log("Integer literal index: {}\n", .{argument_array_index});
                                             const integer_literal = program.integer_literals[argument_array_index];
                                             //@TODO: typecheck signedness
                                             assert(!integer_literal.signed);
@@ -797,13 +1172,11 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                             assert((integer_bit_count & 0x7) == 0);
                                             const integer_byte_count = @truncate(u8, integer_bit_count >> 3);
                                             const argument_register = function.register_allocator.allocate_argument(argument, integer_byte_count);
-                                            log("Argument register: {}\n", .{argument_register});
-                                            log("Byte count: {}\n", .{integer_byte_count});
 
                                             if (literal == 0)
                                             {
                                                 // do xor
-                                                function.instructions.append(Instruction.create_resolved(.xor, xor_register(argument_register, integer_byte_count)[0..])) catch unreachable;
+                                                function.instructions.append(xor_register(argument_register, integer_byte_count)) catch unreachable;
                                             }
                                             else
                                             {
@@ -818,7 +1191,6 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                             }
                         }
 
-                        const call_instruction = Instruction.create_unresolved_operand(.call, call_rel32_bytes[0..], operand_offset, call_operand_kind, callee_index);
                         function.instructions.append(call_instruction) catch unreachable;
 
                         // @TODO: do we need to do this?
@@ -889,15 +1261,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                                 if (!integer_literal.signed)
                                                 {
                                                     const register = function.register_allocator.allocate_return(return_expr, byte_count);
-                                                    const ret_mov = switch (byte_count)
-                                                    {
-                                                        1 => Instruction.create_resolved(.mov, mov_register_literal_1_bytes(register, @truncate(u8, integer_literal.value))[0..]),
-                                                        2 => Instruction.create_resolved(.mov, mov_register_literal_2_bytes(register, @truncate(u16, integer_literal.value))[0..]),
-                                                        4 => Instruction.create_resolved(.mov, mov_register_literal_4_bytes(register, @truncate(u32, integer_literal.value))[0..]),
-                                                        8 => Instruction.create_resolved(.mov, mov_register_literal_8_bytes(register, @truncate(u64, integer_literal.value))[0..]),
-                                                        else => unreachable,
-                                                    };
-
+                                                    const ret_mov = mov_register_literal(register, integer_literal.value, byte_count);
                                                     function.instructions.append(ret_mov) catch unreachable;
                                                 }
                                                 else
@@ -913,12 +1277,92 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                         else => panic("Constant ID: {}\n", .{constant_id}),
                                     }
                                 },
+                                .instruction =>
+                                {
+                                    const ret_expr_instruction_id = IR.Instruction.get_ID(return_expr);
+                                    assert(ret_expr_instruction_id != .alloca);
+                                    switch (ret_expr_instruction_id)
+                                    {
+                                        .load =>
+                                        {
+                                            const allocated_register = function.register_allocator.get_register(return_expr);
+                                            if (allocated_register.value != .A)
+                                            {
+                                                panic("Badly allocated register\n", .{});
+                                            }
+                                        },
+                                        else => panic("Instruction: {}\n", .{ret_expr_instruction_id}),
+                                    }
+                                },
                                 else => panic("RE: {}\n", .{return_expr_id}),
                             }
                         }
 
                         function.terminator = .ret;
-                        //function.instructions.append(Instruction.create_resolved(.ret, ret_bytes[0..])) catch unreachable;
+                    },
+                    .alloca =>
+                    {
+                        log("Alloca. Ignoring...\n", .{});
+                    },
+                    .store =>
+                    {
+                        const store = program.instructions.store[instruction_index];
+                        // assert this is an alloca
+                        assert(store.pointer.get_ID() == .instruction);
+                        assert(IR.Instruction.get_ID(store.pointer) == .alloca);
+                        const alloca_i = store.pointer.get_index(); 
+                        const alloca = program.instructions.alloca[alloca_i];
+                        const allocation = function.stack_allocator.get_allocation(alloca_i);
+
+                        const store_value_id = store.value.get_ID();
+                        switch (store_value_id)
+                        {
+                            .constant =>
+                            {
+                                const constant_id = IR.Constant.get_ID(store.value);
+                                switch (constant_id)
+                                {
+                                    .int =>
+                                    {
+                                        const integer_literal = program.integer_literals[store.value.get_index()];
+                                        const alloca_type = alloca.alloca_type;
+                                        if (alloca_type.get_ID() != .integer)
+                                        {
+                                            codegen_error("Expected type {}\n", .{alloca_type.get_ID()});
+                                        }
+
+                                        const bit_count = Type.Integer.get_bit_count(alloca_type);
+                                        assert((bit_count & 0b111) == 0);
+                                        const byte_count = bit_count >> 3;
+
+                                        if (!integer_literal.signed)
+                                        {
+                                            log("Allocation offset: {}\n", .{allocation.offset});
+                                            const mov_stack_literal = mov_indirect_immediate_unsigned(stack_register, allocation.offset, integer_literal.value, byte_count);
+                                            function.instructions.append(mov_stack_literal) catch unreachable;
+                                        }
+                                        else
+                                        {
+                                            unreachable;
+                                        }
+                                    },
+                                    else => panic("Constant ID: {}\n", .{constant_id}),
+                                }
+                            },
+                            else => panic("Store value id: {}\n", .{store_value_id}),
+                        }
+                    },
+                    .load =>
+                    {
+                        const load = program.instructions.load[instruction_index];
+                        assert(load.value.get_ID() == .instruction);
+                        assert(IR.Instruction.get_ID(load.value) == .alloca);
+                        const allocation = function.stack_allocator.get_allocation(load.value.get_index());
+                        assert(allocation.size <= 8);
+                        const load_register = function.register_allocator.allocate(instruction, @intCast(u8, allocation.size));
+
+                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, allocation.size), stack_register, allocation.offset);
+                        function.instructions.append(mov_register_stack) catch unreachable;
                     },
                     else => panic("Not implemented: {}\n", .{instruction_id}),
                 }
@@ -930,20 +1374,15 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
         {
             .msvc =>
             {
+                log("Initial stack offset: {}\n", .{function.stack_allocator.offset});
+                log("Max call parameter stack size: {}\n", .{function.max_call_parameter_size});
                 const alignment = 0x8;
-                function.rsp += function.max_call_parameter_size;
-                function.rsp = @boolToInt(function.rsp > 0) * (@intCast(i32, alignForward(@intCast(u32, function.rsp), 0x10)) + alignment);
+                function.stack_allocator.offset += function.max_call_parameter_size;
+                // @TODO: this can cause bugs
+                function.stack_allocator.offset = @boolToInt(function.stack_allocator.offset > 0) * (@intCast(i32, alignForward(@intCast(u32, function.stack_allocator.offset), alignment)) + 0x10);
+                log("Stack offset: 0x{x:0>2}\n", .{function.stack_allocator.offset});
             },
             else => panic("not implemented: {}\n", .{abi}),
-        }
-    }
-
-    for (functions.items) |function, function_i|
-    {
-        log("\nFunction #{}\n", .{function_i});
-        for (function.instructions.items) |instruction, instruction_i|
-        {
-            log("#{} {}\n", .{instruction_i, instruction.id});
         }
     }
 

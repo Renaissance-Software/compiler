@@ -17,7 +17,7 @@ const Compiler = @import("compiler.zig");
 
 pub fn log(comptime format: []const u8, arguments: anytype) void
 {
-    Compiler.log(.semantics, format, arguments);
+    Compiler.log(.semantics, "[SEMANTICS] " ++ format, arguments);
 }
 
 pub fn report_error(comptime format: []const u8, args: anytype) noreturn
@@ -25,134 +25,24 @@ pub fn report_error(comptime format: []const u8, args: anytype) noreturn
     panic(format, args);
 }
 
-fn analyze_type_declaration(allocator: *Allocator, type_in_analysis: *Node, types: *TypeBuffer, node_buffer: *NodeBuffer) *Type
+// @TODO: make this fast
+pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_offsets: []ModuleStats, module_index: u64) struct { start: u64, end: u64 }
 {
-    switch (type_in_analysis.value)
-    {
-        Node.ID.type_identifier =>
+    const this_module_offsets = module_offsets[module_index];
+    const internal_item_start = this_module_offsets.counters[@enumToInt(module_stats_id)];
+    const next_module_index = module_index + 1;
+    const internal_item_end =
+        if (next_module_index < module_offsets.len)
+            module_offsets[next_module_index].counters[@enumToInt(module_stats_id)]
+        else switch (comptime module_stats_id)
         {
-            switch (type_in_analysis.value.type_identifier.value)
-            {
-                TypeIdentifier.ID.structure =>
-                {
-                    const name = type_in_analysis.value.type_identifier.value.structure.name;
-                    if (Type.get_type_by_name(types, name)) |type_found|
-                    {
-                        log("Type already found\n", .{});
-                        return type_found;
-                    }
-                    else
-                    {
-                        log("Type not found. Must create\n", .{});
-                    }
+            .internal_functions => analyzer.functions.items.len,
+            .external_functions => analyzer.external_functions.items.len,
+            .integer_literals => analyzer.integer_literals.items.len,
+            else => unreachable,
+        };
 
-                    var fields = ArrayList(Type.Struct.Field).init(allocator);
-
-                    for (type_in_analysis.value.type_identifier.value.structure.fields.items) |ast_field, i|
-                    {
-                        // @Info: struct fields are var decls
-                        assert(ast_field.value == Node.ID.var_decl);
-                        const field_type = analyze_type_declaration(allocator, ast_field.value.var_decl.var_type, types, node_buffer);
-                        const field_name = ast_field.value.var_decl.name;
-
-                        const new_field = Type.Struct.Field
-                        {
-                            .name = field_name,
-                            .type = field_type,
-                            .parent = undefined,
-                            .index =  i,
-                        };
-
-                        fields.append(new_field) catch {
-                            panic("Failed to allocate memory for struct field\n", .{});
-                        };
-                    }
-
-                    const result = Type.create_struct_type(types, fields.items, name);
-                    return result;
-                },
-                TypeIdentifier.ID.function =>
-                {
-                    var function_type = Type.Function
-                    {
-                        .arg_types = TypeRefBuffer.init(allocator),
-                        .ret_type = undefined,
-                    };
-
-                    if (type_in_analysis.value.type_identifier.value.function.return_type) |return_type_node|
-                    {
-                        const return_type = analyze_type_declaration(allocator, return_type_node, types, node_buffer);
-                        function_type.ret_type = return_type;
-                    }
-                    else
-                    {
-                        const return_type = Type.get_void_type(types);
-                        function_type.ret_type = return_type;
-                    }
-
-                    for (type_in_analysis.value.type_identifier.value.function.arg_types.items) |*arg_type_node|
-                    {
-                        const arg_type = analyze_type_declaration(allocator, arg_type_node.*, types, node_buffer);
-                        function_type.arg_types.append(arg_type) catch {
-                            panic("Error allocating argument type\n", .{});
-                        };
-                    }
-
-                    const result = Type.get_function_type(types, function_type);
-
-                    return result;
-                },
-                TypeIdentifier.ID.simple =>
-                {
-                    const name = type_in_analysis.value.type_identifier.value.simple;
-                    if (Type.get_type_by_name(types, name)) |simple_type|
-                    {
-                        return simple_type;
-                    }
-                    else
-                    {
-                        report_error("Type {s} not found\n", .{name});
-                    }
-                },
-                TypeIdentifier.ID.pointer =>
-                {
-                    const appointee_node = type_in_analysis.value.type_identifier.value.pointer.type;
-                    const appointee_type = analyze_type_declaration(allocator, appointee_node, types, node_buffer);
-                    const pointer_type = Type.get_pointer_type(appointee_type, types);
-                    return pointer_type;
-                },
-                TypeIdentifier.ID.array =>
-                {
-                    const array_elem_type_node = type_in_analysis.value.type_identifier.value.array.type;
-                    const array_length_node = type_in_analysis.value.type_identifier.value.array.len_expr;
-                    const array_elem_type = analyze_type_declaration(allocator, array_elem_type_node, types, node_buffer);
-                    const array_length_constant = resolve_compile_time_uint_constant(array_length_node);
-                    const array_type = Type.get_array_type(array_elem_type, array_length_constant, types);
-                    return array_type;
-                },
-                else => panic("not implemented: {}\n", .{type_in_analysis.value.type_identifier.value}),
-            }
-        },
-        else => panic("Unreachable or ni: {}\n", .{type_in_analysis.value}),
-    }
-}
-
-fn resolve_compile_time_uint_constant(node: *Node) u64
-{
-    switch (node.value)
-    {
-        Node.ID.int_lit =>
-        {
-            const int_lit_value = node.value.int_lit.value;
-            if (node.value.int_lit.signed)
-            {
-                report_error("Expected unsigned element, value is signed: {}\n", .{- @intCast(i64, int_lit_value)});
-            }
-
-            return int_lit_value;
-        },
-        else => panic("ni: {}\n", .{node.value}),
-    }
+    return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
 pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
@@ -169,7 +59,6 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                 {
                     assert(right.type.value == Type.ID.unresolved);
                     right.type = lvalue_type;
-                    log("Integer literal type resolved\n", .{});
                     // @TODO: make sure we have enough bytes in the lvalue type
 
                     return lvalue_type;
@@ -184,7 +73,6 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
                 =>
                 {
                     const rvalue_type = right.type;
-                    log("{}\n", .{rvalue_type});
                     if (lvalue_type == rvalue_type)
                     {
                         return lvalue_type;
@@ -288,107 +176,6 @@ pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
     }
 
     report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
-}
-
-pub fn find_variable(current_function: *Node, name: []const u8) *Node
-{
-    for (current_function.value.function_decl.arguments.items) |arg|
-    {
-        if (std.mem.eql(u8, arg.value.var_decl.name, name))
-        {
-            return arg;
-        }
-    }
-
-    for (current_function.value.function_decl.variables.items) |variable_decl|
-    {
-        if (std.mem.eql(u8, variable_decl.value.var_decl.name, name))
-        {
-            return variable_decl;
-        }
-    }
-
-    report_error("Can't find variable name: {s}\n", .{name});
-}
-
-pub fn find_function_decl(name: []const u8, functions: *NodeRefBuffer) *Node
-{
-    for (functions.items) |function_decl|
-    {
-        if (std.mem.eql(u8, function_decl.value.function_decl.name, name))
-        {
-            return function_decl;
-        }
-    }
-
-    report_error("Can't find function name: {s}\n", .{name});
-}
-
-fn find_field_from_struct(structure_type: *Type, field_name: []const u8) *Type.Struct.Field
-{
-    for (structure_type.value.structure.fields) |*field|
-    {
-        if (std.mem.eql(u8, field.name,  field_name))
-        {
-            return field;
-        }
-    }
-
-    report_error("Couldn't match field expression with structure\n", .{});
-}
-
-fn find_field_from_resolved_identifier(resolved_id_node: *Node, name: []const u8) *Type.Struct.Field
-{
-    const decl_node = resolved_id_node.value.resolved_identifier;
-    switch (decl_node.value)
-    {
-        Node.ID.var_decl =>
-        {
-            const decl_type = decl_node.type;
-            switch (decl_type.value)
-            {
-                Type.ID.pointer =>
-                {
-                    const appointee_type = decl_type.value.pointer.type;
-                    switch (appointee_type.value)
-                    {
-                        Type.ID.structure =>
-                        {
-                            const field = find_field_from_struct(appointee_type, name);
-                            return field;
-                        },
-                        else => panic("ni: {}\n", .{appointee_type.value}),
-                    }
-                },
-                Type.ID.structure =>
-                {
-                    const field = find_field_from_struct(decl_type, name);
-                    return field;
-                },
-                else => panic("ni: {}\n", .{decl_type.value}),
-            }
-        },
-        else => panic("ni: {}\n", .{decl_node.value}),
-    }
-}
-
-fn new_field_node(node_buffer: *NodeBuffer, field: *Type.Struct.Field, parent_node: *Node) *Node
-{
-    const field_node = Node
-    {
-        .value = Node.Value {
-            .field_expr = field,
-        },
-        .parent = parent_node,
-        .value_type = Node.ValueType.RValue,
-        .type = field.type,
-    };
-
-    const result = node_buffer.append(field_node) catch {
-        panic("Error allocating memory for type node\n", .{});
-    };
-
-    return result;
 }
 
 pub fn explore_field_identifier_expression(node: *Node, node_buffer: *NodeBuffer) *Node
@@ -643,48 +430,7 @@ fn analyze_type(analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_t
         },
         else => panic("Type ID: {}\n", .{type_id}),
     }
-    //const array_index = unresolved_type.get_array_index();
-    //switch (type_level)
-    //{
-        //.builtin =>
-        //{
-            //const builtin_id = @intToEnum(Parser.Identifier.BuiltinID, array_index);
-            //return switch (builtin_id)
-            //{
-                //.void_type => BuiltinType.void_type,
-                //.noreturn_type => BuiltinType.noreturn_type,
-                //else => unreachable,
-            //};
-        //},
-        //.global =>
-        //{
-            //unreachable;
-        //},
-        //.module =>
-        //{
-            //const module_id = @intToEnum(Parser.Identifier.ModuleID, array_index);
-            //switch (module_id)
-            //{
-                //.unresolved_types =>
-                //{
-                    //const base_index = unresolved_type.index;
-                    //const t = ast.modules[module_index].unresolved_types[base_index];
-                    //panic("T: {s}\n", .{t});
-                //},
-                //else => panic("ni: {}\n", .{module_id}),
-            //}
-        //},
-        //else => panic("ni: {}\n", .{type_level}),
-    //}
 }
-
-const TypeStore = struct
-{
-    function_types: []Type.Function,
-    array_types: []Type.Array,
-    pointer_types: []Type.Pointer,
-    structure_types: []Type.Struct,
-};
 
 const ModuleStats = struct
 {
@@ -733,25 +479,25 @@ const ModuleStats = struct
     };
 };
 
-
-// @TODO: make this fast
-pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_offsets: []ModuleStats, module_index: u64) struct { start: u64, end: u64 }
+pub fn resolve_entity_index(analyzer: *Analyzer, comptime module_stats_id: ModuleStats.ID, entity: *Entity, module_offsets: []ModuleStats, module_index: u64) void
 {
-    const this_module_offsets = module_offsets[module_index];
-    const internal_item_start = this_module_offsets.counters[@enumToInt(module_stats_id)];
-    const next_module_index = module_index + 1;
-    const internal_item_end =
-        if (next_module_index < module_offsets.len)
-            module_offsets[next_module_index].counters[@enumToInt(module_stats_id)]
-        else switch (comptime module_stats_id)
-        {
-            .internal_functions => analyzer.functions.items.len,
-            .external_functions => analyzer.external_functions.items.len,
-            .integer_literals => analyzer.integer_literals.items.len,
-            else => unreachable,
-        };
+    const item_range = get_module_item_slice_range(module_stats_id, analyzer, module_offsets, module_index);
+    const real_index = @intCast(u32, item_range.start) + entity.get_index();
+    entity.set_index(real_index);
+}
 
-    return .{ .start = internal_item_start, .end = internal_item_end };
+// @TODO: make this more robust
+pub fn find_variable_declaration(scope: *Parser.Scope, name: []const u8) Entity
+{
+    for (scope.variable_declarations) |variable_declaration, variable_declaration_i|
+    {
+        if (std.mem.eql(u8, variable_declaration.name, name))
+        {
+            return Entity.new(variable_declaration_i, Entity.ScopeID.variable_declarations);
+        }
+    }
+
+    report_error("Variable declaration \"{s}\" not found\n", .{name});
 }
 
 pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
@@ -763,28 +509,25 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
         const statement_index = statement.get_index();
         const statement_level = statement.get_level();
         assert(statement_level == .scope);
-        const statement_type = statement.get_array_index(.scope);
-        switch (statement_type)
+        const statement_id = statement.get_array_index(.scope);
+        switch (statement_id)
         {
             .invoke_expressions =>
             {
                 const invoke_expression = &scope.invoke_expressions[statement_index];
                 const expression_to_invoke = invoke_expression.expression;
-                log("{}\n", .{invoke_expression});
                 const expression_to_invoke_index = expression_to_invoke.get_index();
                 const expression_to_invoke_level = expression_to_invoke.get_level();
                 assert(expression_to_invoke_level == .scope);
                 const expression_to_invoke_id = expression_to_invoke.get_array_index(.scope);
-                log("{}\n", .{expression_to_invoke_id});
 
                 const resolved_expression_to_invoke: Entity = blk:
                 {
                     if (expression_to_invoke_id == .identifier_expressions)
                     {
-                        const invoke_expression_name = scope.identifier_expressions[expression_to_invoke_index].name;
+                        const invoke_expression_name = scope.identifier_expressions[expression_to_invoke_index];
                         for (analyzer.functions.items) |function, i|
                         {
-                            log("Comparing {s} with {s}...\n", .{function.declaration.name, invoke_expression_name});
                             if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
                             {
                                 continue;
@@ -798,14 +541,13 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                     else if (expression_to_invoke_id == .field_access_expressions)
                     {
                         const field_expression = scope.field_access_expressions[expression_to_invoke_index];
-                        log("{}\n", .{field_expression});
                         const left = field_expression.left_expression;
                         const left_level = left.get_level();
                         assert(left_level == .scope);
                         const left_array_index = left.get_array_index(.scope);
                         assert(left_array_index == .identifier_expressions);
                         const left_index = left.get_index();
-                        const left_name = scope.identifier_expressions[left_index].name;
+                        const left_name = scope.identifier_expressions[left_index];
 
                         const field = field_expression.field_expression;
                         const field_level = field.get_level();
@@ -813,7 +555,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         const field_array_index = field.get_array_index(.scope);
                         assert(field_array_index == .identifier_expressions);
                         const field_index = field.get_index();
-                        const field_name = scope.identifier_expressions[field_index].name;
+                        const field_name = scope.identifier_expressions[field_index];
 
                         const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_offsets, module_index);
                         const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
@@ -821,10 +563,8 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         for (imported_modules) |imported_module|
                         {
                             assert(imported_module.alias != null);
-                            std.debug.print("Looking for {s} in module {s}\n", .{field_name, imported_module.alias.?});
                             if (!std.mem.eql(u8, imported_module.alias.?, left_name))
                             {
-                                std.debug.print("Module name didn't match. Expected: {s}. Have: {s}\n", .{left_name, imported_module.alias.?});
                                 continue;
                             }
 
@@ -832,11 +572,9 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                             const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, module_offsets, imported_module_index);
                             const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
-                            log("Internal functions\n", .{});
 
                             for (internal_functions) |function, function_i|
                             {
-                                std.debug.print("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
                                 if (!std.mem.eql(u8, function.declaration.name, field_name))
                                 {
                                     continue;
@@ -847,12 +585,10 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                             const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, module_offsets, imported_module_index);
                             const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
-                            log("External functions\n", .{});
 
                             // @TODO: is this faster than double for loop [library_i, symbol_i]?
                             for (external_functions) |function, function_i|
                             {
-                                std.debug.print("Comparing {s} with {s}...\n", .{function.declaration.name, field_name});
                                 if (!std.mem.eql(u8, function.declaration.name, field_name))
                                 {
                                     continue;
@@ -870,7 +606,6 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                 invoke_expression.expression = resolved_expression_to_invoke;
 
-                log("Argument count: {}\n", .{invoke_expression.arguments.len});
                 if (invoke_expression.arguments.len > 0)
                 {
                     const resolved_expression_array_index = resolved_expression_to_invoke.get_array_index(.global);
@@ -884,7 +619,6 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                     for (invoke_expression.arguments) |*arg, arg_i|
                     {
-                        log("Argument: {}\n", .{arg});
                         const arg_level = arg.get_level();
                         assert(arg_level == .scope);
                         const array_index = arg.get_array_index(.scope);
@@ -901,6 +635,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
             {
                 const return_expression = &scope.return_expressions[statement_index];
                 const return_type = current_function.declaration.type.return_type;
+                
                 if (return_expression.expression) |expression_to_return|
                 {
                     const ret_expr_lvl = expression_to_return.get_level();
@@ -916,11 +651,13 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                 report_error("Expected return type: {s}\n", .{@tagName(return_type.get_ID())});
                             }
 
-                            std.debug.print("Integer literal count: {}\n", .{analyzer.integer_literals.items.len});
-                            const integer_literal_range = get_module_item_slice_range(.integer_literals, analyzer, module_offsets, module_index);
-                            const real_index = @intCast(u32, integer_literal_range.start) + expression_to_return.get_index();
-                            return_expression.expression.?.set_index(real_index);
+                            resolve_entity_index(analyzer, .integer_literals, &return_expression.expression.?, module_offsets, module_index);
                             // @TODO: do further checks?
+                        },
+                        .identifier_expressions =>
+                        {
+                            const identifier = scope.identifier_expressions[expression_to_return.get_index()];
+                            return_expression.expression.? = find_variable_declaration(scope, identifier);
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_index}),
                     }
@@ -933,7 +670,46 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                     }
                 }
             },
-            else => unreachable,
+            .variable_declarations =>
+            {
+                var variable_declaration = &scope.variable_declarations[statement_index];
+                variable_declaration.type = analyze_type(analyzer, module_offsets, variable_declaration.type);
+            },
+            .assignments =>
+            {
+                var assignment = &scope.assignments[statement_index];
+                assert(assignment.left.get_level() == .scope);
+                const left_id = assignment.left.get_array_index(.scope);
+
+                const left_type = switch (left_id)
+                {
+                    .variable_declarations => var_blk:
+                    {
+                        const variable_declaration = scope.variable_declarations[assignment.left.get_index()];
+                        break :var_blk variable_declaration.type;
+                    },
+                    else => panic("NI: {}\n", .{left_id}),
+                };
+
+                assert(assignment.right.get_level() == .scope);
+                const right_id = assignment.right.get_array_index(.scope);
+
+                switch (right_id)
+                {
+                    .integer_literals =>
+                    {
+                        const left_type_id = left_type.get_ID();
+                        if (left_type_id != .integer)
+                        {
+                            report_error("Expected type: {}\n", .{left_type_id});
+                        }
+
+                        resolve_entity_index(analyzer, .integer_literals, &assignment.right, module_offsets, module_index);
+                    },
+                    else => panic("NI: {}", .{right_id}),
+                }
+            },
+            else => panic("NI: {}", .{statement_id}),
         }
     }
 }
@@ -986,10 +762,6 @@ pub const External = struct
 
 pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 {
-    log("\n==============\nSEMANTICS\n==============\n\n", .{});
-
-    log("{}\n", .{ast});
-
     var module_array = ast.modules[0..ast.module_len];
     var total = std.mem.zeroes(ModuleStats);
     var module_offsets = ArrayList(ModuleStats).initCapacity(allocator, ast.module_len) catch unreachable;
@@ -1117,7 +889,6 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         //}
     //}
 
-    //std.debug.print("Library count: {}\n", .{library_names.items.len});
 
     //for (library_names.items) |library_name|
     //{
@@ -1288,6 +1059,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_offsets.items, module_index);
         for (analyzer.functions.items[function_range.start..function_range.end]) |*function|
         {
+            log("Analyzing {s}()...\n", .{function.declaration.name});
             const main_block = &function.scopes[0];
             analyze_scope(&analyzer, module_offsets.items, main_block, function, module_index);
         }

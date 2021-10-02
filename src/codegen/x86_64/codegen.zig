@@ -3,7 +3,6 @@ const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
-const print = std.debug.print;
 const os = std.Target.current.os.tag;
 
 const IR = @import("../../bytecode.zig");
@@ -1742,10 +1741,11 @@ const StackAllocator = struct
         size: u64,
         alignment: u64,
         offset: u64,
+        alloca: ?u32,
     };
 
 
-    fn allocate(self: *StackAllocator, size: u64) Operand
+    fn allocate(self: *StackAllocator, size: u64, alloca: ?u32) Operand
     {
         self.stack_offset = align_number(self.stack_offset + size, size);
 
@@ -1754,6 +1754,7 @@ const StackAllocator = struct
                 .size = size,
                 .alignment = size,
                 .offset = self.stack_offset,
+                .alloca = alloca,
             }) catch {
             panic("Error allocating in the stack\n", .{});
         };

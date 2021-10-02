@@ -57,10 +57,10 @@ pub const Import = struct
     };
 };
 
-pub fn write_executable(name: []const u8, content: []const u8) void
+pub fn write_executable(filename: []const u8, content: []const u8) void
 {
-    std.debug.print("Creating executable: {s}\n", .{name});
-    const file = std.fs.cwd().createFile(name, comptime if (std.builtin.target.os.tag == .windows) .{} else .{ .mode = 0o777}) catch |err| panic("Error creating file {s}: {}\n", .{name, err});
+    log("Writing executable {s}\n", .{filename});
+    const file = std.fs.cwd().createFile(filename, comptime if (std.builtin.target.os.tag == .windows) .{} else .{ .mode = 0o777}) catch |err| panic("Error creating file {s}: {}\n", .{filename, err});
     defer file.close();
 
     file.writeAll(content) catch |file_wr_err| {

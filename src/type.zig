@@ -1,5 +1,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
+const panic = std.debug.panic;
 const ArrayList = std.ArrayList;
 usingnamespace @import("entity.zig");
 
@@ -109,6 +110,11 @@ pub const Struct = struct
 pub const Pointer = struct
 {
     type: Type,
+
+    pub fn new(index: u64) Type
+    {
+        return .{ .value = (@as(u64, @enumToInt(Type.ID.pointer)) << Type.ID.position) | @intCast(u32, index) };
+    }
 };
 
 pub const Slice = struct
@@ -156,10 +162,20 @@ pub fn is_resolved(self: Type) bool
 
 pub fn get_ID(self: Type) ID
 {
-    return @intToEnum(ID, (self.value & (std.math.maxInt(ID.IntType) << ID.position)) >> ID.position);
+    return @intToEnum(ID, @intCast(u4, (self.value & (std.math.maxInt(ID.IntType) << ID.position)) >> ID.position));
 }
 
 pub fn get_module_index(self: Type) u64
 {
     return (self.value & (Module.mask << Module.position)) >> Module.position;
+}
+
+pub fn get_size(self: Type) u64
+{
+    const id = self.get_ID();
+    switch (id)
+    {
+        .integer => return Integer.get_bit_count(self) >> 3,
+        else => panic("ID: {}\n", .{id}),
+    }
 }

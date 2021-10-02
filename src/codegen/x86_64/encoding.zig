@@ -56,8 +56,6 @@ pub const Register = enum(u8)
     pub const NFlag: u8 = 0b1000;
 };
 
-
-
 pub const Operand = struct
 {
     id: ID,

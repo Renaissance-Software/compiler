@@ -4,6 +4,8 @@ const Allocator = std.mem.Allocator;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
 
+// @INFO: this is just for alloca variable references
+usingnamespace @import("entity.zig");
 const Parser = @import("parser.zig");
 const AST = Parser.AST;
 const Semantics = @import("semantics.zig");
@@ -13,7 +15,7 @@ const Compiler = @import("compiler.zig");
 
 fn log(comptime format: []const u8, arguments: anytype) void
 {
-    Compiler.log(.ir, format, arguments);
+    Compiler.log(.ir, "[IR] " ++ format, arguments);
 }
 
 pub const Constant = struct
@@ -40,7 +42,7 @@ pub const Constant = struct
 
     pub fn get_ID(reference: Reference) ID
     {
-        return @intToEnum(ID, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
+        return @intToEnum(ID, @intCast(u8, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position));
     }
 };
 
@@ -54,7 +56,7 @@ pub const Reference = struct
 
     pub fn get_ID (self: Reference) ID
     {
-        return @intToEnum(ID, (self.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
+        return @intToEnum(ID, @intCast(u8, (self.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position));
     }
 
     pub fn get_index(self: Reference) u32
@@ -162,7 +164,7 @@ pub const Instruction = struct
     pub fn get_ID(reference: Reference) ID
     {
         assert(reference.get_ID() == .instruction);
-        return @intToEnum(ID, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position);
+        return @intToEnum(ID, @intCast(u8, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position));
     }
 
     pub const ID = enum(u8)
@@ -258,8 +260,9 @@ pub const Instruction = struct
     {
         type: Type,
         alloca_type: Type,
+        reference: Reference,
 
-        fn create(builder: *Program.Builder, alloca_type: Type, array_size: ?*Reference) Reference
+        fn create(builder: *Program.Builder, reference: Reference, alloca_type: Type, array_size: ?*Reference) Reference
         {
             assert(array_size == null);
 
@@ -267,6 +270,7 @@ pub const Instruction = struct
             builder.instructions.alloca.append(.{
                 .type = builder.get_or_create_pointer_type(alloca_type),
                 .alloca_type = alloca_type,
+                .reference = reference,
             }) catch unreachable;
 
             const alloca_instruction = Instruction.new(.alloca, alloca_array_index);
@@ -371,6 +375,28 @@ pub const Instruction = struct
             }
         }
     };
+
+    const Load = struct
+    {
+        type: Type,
+        value: Reference,
+
+        fn new(builder: *Program.Builder, load_type: Type, load_value: Reference) Reference
+        {
+            const load_array_index = builder.instructions.load.items.len;
+            builder.instructions.load.append(
+                .{
+                    .type = load_type,
+                    .value = load_value,
+                }) catch unreachable;
+
+            const load_instruction = Instruction.new(.load, load_array_index);
+            var function_builder = &builder.function_builders.items[builder.current_function];
+            function_builder.basic_blocks.items[function_builder.current_block].instructions.append(load_instruction) catch unreachable;
+
+            return load_instruction;
+        }
+    };
 };
 
 pub const Function = struct
@@ -379,7 +405,6 @@ pub const Function = struct
     argument_names: [][]const u8,
     type: Type.Function,
     basic_blocks: []BasicBlock,
-    instructions: []Reference,
 
     const Builder = struct
     {
@@ -387,7 +412,6 @@ pub const Function = struct
         argument_names: [][]const u8,
         type: Type.Function,
         basic_blocks: ArrayList(BasicBlock.Builder),
-        instructions: ArrayList(Reference),
         current_block: u32,
         next_alloca_index: u32,
         allocator: *Allocator,
@@ -400,7 +424,6 @@ pub const Function = struct
                 .argument_names = function.argument_names,
                 .type = function.type,
                 .basic_blocks = ArrayList(BasicBlock.Builder).init(allocator),
-                .instructions = ArrayList(Reference).init(allocator),
                 .allocator = allocator,
                 .current_block = 0,
                 .next_alloca_index = 0,
@@ -433,6 +456,15 @@ pub const Function = struct
         }
     };
 
+    const VariableDeclaration = struct
+    {
+        fn new(index: u32) Reference
+        {
+            // @TODO: we use instruction here but we know it is a variable declaration
+            return .{ .value = (@as(u64, @enumToInt(Reference.ID.instruction)) << Reference.ID.position) | index };
+        }
+    };
+
     fn new(index: u32) Reference
     {
         return .{ .value = (@as(u64, @enumToInt(Reference.ID.global_function)) << Reference.ID.position) | index };
@@ -455,6 +487,7 @@ pub const Program = struct
     instructions: struct
     {
         alloca: []Instruction.Alloca,
+        load: []Instruction.Load,
         store: []Instruction.Store,
         call: []Instruction.Call,
         ret: []Instruction.Ret,
@@ -475,6 +508,7 @@ pub const Program = struct
         instructions: struct
         {
             alloca: ArrayList(Instruction.Alloca),
+            load: ArrayList(Instruction.Load),
             store: ArrayList(Instruction.Store),
             call: ArrayList(Instruction.Call),
             ret: ArrayList(Instruction.Ret),
@@ -497,6 +531,7 @@ pub const Program = struct
                 .instructions = .
                 {
                     .alloca = ArrayList(Instruction.Alloca).init(allocator),
+                    .load = ArrayList(Instruction.Load).init(allocator),
                     .store = ArrayList(Instruction.Store).init(allocator),
                     .call = ArrayList(Instruction.Call).init(allocator),
                     .ret = ArrayList(Instruction.Ret).init(allocator),
@@ -512,7 +547,6 @@ pub const Program = struct
                 .current_function = 0,
             };
 
-            std.debug.print("AST semantics integer literal count: {}\n", .{result.integer_literals.len});
             
             //for (result.external_functions) |external_function|
             //{
@@ -536,8 +570,9 @@ pub const Program = struct
 
         fn get_or_create_pointer_type(self: *Self, p_type: Type) Type
         {
-            _ = self; _ = p_type;
-            panic("not implemented\n", .{});
+            const pointer_type = Type.Pointer.new(self.pointer_types.items.len);
+            self.pointer_types.append(.{ .type = p_type }) catch unreachable;
+            return pointer_type;
         }
     };
 };
@@ -548,6 +583,20 @@ const ReturnKind = enum
     noreturn,
     something,
 };
+
+fn find_expression_alloca(builder: *Program.Builder, function_builder: *Function.Builder, expression: Entity) Reference
+{
+    for (function_builder.basic_blocks.items[0].instructions.items[0..function_builder.next_alloca_index]) |alloca|
+    {
+        const alloca_i = alloca.get_index();
+        if (builder.instructions.alloca.items[alloca_i].reference.get_index() == expression.get_index())
+        {
+            return alloca;
+        }
+    }
+
+    panic("Not Found\n", .{});
+}
 
 pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 {
@@ -620,9 +669,9 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         log("Processing arguments...\n", .{});
         for (function_type.argument_types) |argument_type, argument_i|
         {
-            const argument_alloca = Instruction.Alloca.create(&builder, argument_type, null);
-            builder.function_builders.items[builder.current_function].argument_allocas.append(argument_alloca) catch unreachable;
             const argument_ref = Function.Argument.new(@intCast(u32, argument_i));
+            const argument_alloca = Instruction.Alloca.create(&builder, argument_ref, argument_type, null);
+            builder.function_builders.items[builder.current_function].argument_allocas.append(argument_alloca) catch unreachable;
             _ = Instruction.Store.new(&builder, argument_ref, argument_alloca);
         }
 
@@ -650,13 +699,11 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 
                             if (expression.get_array_index(.global) == .resolved_internal_functions)
                             {
-                                std.debug.print("Internal function\n", .{});
                                 called_function_reference = Function.new(called_function_index);
                                 ast_called_function_declaration = result.functions[called_function_index].declaration;
                             }
                             else if (expression.get_array_index(.global) == .resolved_external_functions)
                             {
-                                std.debug.print("External function\n", .{});
                                 called_function_reference = ExternalFunction.new(called_function_index);
                                 ast_called_function_declaration = result.external.functions[called_function_index].declaration;
                             }
@@ -666,7 +713,6 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             const called_function_type = ast_called_function_declaration.type;
 
                             const called_function_argument_count = ast_called_function_declaration.argument_names.len;
-                            std.debug.print("Argument count: {}\n", .{called_function_argument_count});
                             if (called_function_argument_count > 0)
                             {
                                 var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
@@ -729,6 +775,13 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                                 const int_literal = Constant.new(.int, ret_expr_index);
                                                 break :blk int_literal;
                                             },
+                                            .variable_declarations =>
+                                            {
+                                                const alloca_ref = find_expression_alloca(&builder, function_builder, ast_expression_to_return);
+                                                const alloca = builder.instructions.alloca.items[alloca_ref.get_index()];
+                                                const load = Instruction.Load.new(&builder, alloca.alloca_type, alloca_ref);
+                                                break :blk load;
+                                            },
                                             else => panic("NI AI: {}\n", .{ret_array_index}),
                                         }
                                     },
@@ -750,6 +803,33 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                     unreachable;
                                 }
                             }
+                        },
+                        .variable_declarations =>
+                        {
+                            const variable_declaration = ast_main_block.variable_declarations[statement_index];
+                            const var_type = variable_declaration.type;
+                            _ = Instruction.Alloca.create(&builder, Function.VariableDeclaration.new(statement_index), var_type, null);
+                        },
+                        .assignments =>
+                        {
+                            const assignment = ast_main_block.assignments[statement_index];
+                            assert(assignment.left.get_level() == .scope);
+                            const left_id = assignment.left.get_array_index(.scope);
+                            const pointer_reference = switch (left_id)
+                            {
+                                .variable_declarations => find_expression_alloca(&builder, function_builder, assignment.left),
+                                else => panic("NI: {}\n", .{left_id}),
+                            };
+
+                            assert(assignment.right.get_level() == .scope);
+                            const right_id = assignment.right.get_array_index(.scope);
+                            const value_reference = switch (right_id)
+                            {
+                                .integer_literals => Constant.new(.int, assignment.right.get_index()),
+                                else => panic("Right ID: {}\n", .{right_id}),
+                            };
+
+                            _ = Instruction.Store.new(&builder, value_reference, pointer_reference);
                         },
                         else => panic("ni: {}\n", .{array_index}),
                     }
@@ -795,16 +875,15 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             .argument_names = fb.argument_names,
             .type = fb.type,
             .basic_blocks = bb_list.items,
-            .instructions = fb.instructions.items,
         }) catch unreachable;
     }
 
-    std.debug.print("Integer literal count: {}\n", .{builder.integer_literals.items.len});
     return Program
     {
         .instructions = .
         {
             .alloca = builder.instructions.alloca.items,
+            .load = builder.instructions.load.items,
             .store = builder.instructions.store.items,
             .call = builder.instructions.call.items,
             .ret = builder.instructions.ret.items,
