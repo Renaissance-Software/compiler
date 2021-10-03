@@ -14,7 +14,9 @@ const LexerResult = Lexer.LexerResult;
 const Compiler = @import("compiler.zig");
 
 const Type = @import("type.zig");
-usingnamespace @import("entity.zig");
+const Entity = @import("entity.zig").Entity;
+
+const IR = @import("ir.zig");
 
 pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
 {
@@ -31,6 +33,19 @@ pub const IntegerLiteral = struct
     value: u64,
     signed: bool,
     // padding
+    //
+    fn new(list: *ArrayList(IntegerLiteral), value: u64, signed: bool) Entity
+    {
+        const index = list.items.len;
+        const id = Entity.new(index, Entity.ScopeID.integer_literals);
+        list.append(.
+            {
+                .value = value,
+                .signed = signed,
+            }) catch unreachable;
+
+        return id;
+    }
 };
 
 const FieldAccessExpression = struct
@@ -44,17 +59,32 @@ pub const VariableDeclaration = struct
 {
     name: []const u8,
     type: Type,
-//const VariableDeclaration = struct
-//{
-    //name: []const u8,
-    //var_type: *Node,
-    //var_scope: *Node,
-    //backend_ref: usize,
-    //is_function_arg: bool,
-//};
+
+    fn new(current_scope: *Scope.Builder, name: []const u8, var_type: Type) Entity
+    {
+        const var_decl_index = current_scope.variable_declarations.items.len;
+        current_scope.variable_declarations.append(.
+            {
+                .name = name,
+                .type = var_type,
+            }) catch unreachable;
+
+        const var_decl_id = Entity.new(var_decl_index, Entity.ScopeID.variable_declarations);
+        current_scope.statements.append(var_decl_id) catch unreachable;
+
+        return var_decl_id;
+    }
 };
 
 pub const IdentifierExpression = []const u8;
+
+fn new_identifier_expression(current_scope: *Scope.Builder, name: IdentifierExpression) Entity
+{
+    const index = current_scope.identifier_expressions.items.len;
+    const identifier_expression = Entity.new(index, Entity.ScopeID.identifier_expressions);
+    current_scope.identifier_expressions.append(name) catch unreachable;
+    return identifier_expression;
+}
 
 pub const ReturnExpression = struct
 {
@@ -65,6 +95,21 @@ pub const Assignment = struct
 {
     left: Entity,
     right: Entity,
+
+    fn new(current_scope: *Scope.Builder, left: Entity, right: Entity) Entity
+    {
+        const index = current_scope.assignments.items.len;
+        const assignment = Entity.new(index, Entity.ScopeID.assignments);
+        current_scope.assignments.append(.{
+            .left = left,
+            .right = right,
+        }) catch unreachable;
+
+        // @TODO: think if assignments are always an statement
+        current_scope.statements.append(assignment) catch unreachable;
+
+        return assignment;
+    }
 };
 
 pub const Operation = struct
@@ -76,11 +121,107 @@ pub const Operation = struct
     };
 };
 
-pub const ModifiedAssignment = struct
+pub const ComposedAssignment = struct
 {
     left: Entity,
     right: Entity,
-    id: Operation.ID,
+    id: ID,
+
+    const ID = enum(u8)
+    {
+        add,
+        sub,
+    };
+
+    fn new(current_scope: *Scope.Builder, id: ID, left: Entity, right: Entity) Entity
+    {
+        const composed_assignment = ComposedAssignment
+        {
+            .left = left,
+            .right = right,
+            .id = id,
+        };
+
+        const index = current_scope.composed_assignments.items.len;
+        current_scope.composed_assignments.append(composed_assignment) catch unreachable;
+        const composed_assignment_id = Entity.new(index, Entity.ScopeID.composed_assignments);
+        // @TODO: think if assignments are always an statement
+        current_scope.statements.append(composed_assignment_id) catch unreachable;
+
+        return composed_assignment_id;
+    }
+};
+
+pub const Loop = struct
+{
+    prefix_scope_index: u32,
+    body_scope_index: u32,
+    postfix_scope_index: u32,
+    exit_block: IR.Reference,
+    continue_block: IR.Reference,
+};
+
+pub const Branch = struct
+{
+    condition: Entity,
+    if_scope: u32,
+    else_scope: ?u32,
+    exit_block: IR.Reference,
+};
+
+pub const Comparison = struct
+{
+    left: Entity,
+    right: Entity,
+    id: ID,
+
+    const ID = enum(u8)
+    {
+        equal,
+        not_equal,
+        less,
+        greater,
+        less_or_equal,
+        greater_or_equal,
+    };
+
+    fn new(current_scope: *Scope.Builder, id: ID, left: Entity, right: Entity) Entity
+    {
+        const comparison = Comparison
+        {
+            .left = left,
+            .right = right,
+            .id = id,
+        };
+
+        const index = current_scope.comparisons.items.len;
+        const comparison_id = Entity.new(index, Entity.ScopeID.comparisons);
+        current_scope.comparisons.append(comparison) catch unreachable;
+        log("Just appended a comparison here: {}\n", .{current_scope.comparisons.items.len});
+        // @TODO: this may be just an expression and not an statement; remove
+
+        return comparison_id;
+    }
+};
+
+pub const ArithmeticExpression = struct
+{
+    left: Entity,
+    right: Entity,
+    id: ID,
+
+    const ID = enum(u8)
+    {
+        add,
+        sub,
+        mul,
+        div,
+    };
+};
+
+pub const BreakExpression = struct
+{
+    loop_to_break: u32,
 };
 
 pub const Scope = struct
@@ -92,6 +233,66 @@ pub const Scope = struct
     field_access_expressions: []FieldAccessExpression,
     return_expressions: []ReturnExpression,
     assignments: []Assignment,
+    comparisons: []Comparison,
+    loops: []Loop,
+    branches: []Branch,
+    arithmetic_expressions: []ArithmeticExpression,
+    break_expressions: []BreakExpression,
+    parent: Parent,
+
+    pub const Builder = struct
+    {
+        statements: ArrayList(Entity),
+        variable_declarations: ArrayList(VariableDeclaration),
+        identifier_expressions: ArrayList(IdentifierExpression),
+        invoke_expressions: ArrayList(InvokeExpression),
+        field_access_expressions: ArrayList(FieldAccessExpression),
+        return_expressions: ArrayList(ReturnExpression),
+        assignments: ArrayList(Assignment),
+        comparisons: ArrayList(Comparison),
+        composed_assignments: ArrayList(ComposedAssignment),
+        loops: ArrayList(Loop),
+        branches: ArrayList(Branch),
+        arithmetic_expressions: ArrayList(ArithmeticExpression),
+        break_expressions: ArrayList(BreakExpression),
+        parent: Parent,
+        last_loop_index: u32,
+
+        fn new(allocator: *Allocator, builder: *Function.Builder, parent_expression: Entity, parent_scope: u32) u32
+        {
+            const last_loop_index = if (builder.scope_builders.items.len == 0) std.math.maxInt(u32) else builder.scope_builders.items[builder.current_scope].last_loop_index;
+
+            builder.current_scope = @intCast(u32, builder.scope_builders.items.len);
+            log("NEW SCOPE: {}\n", .{builder.current_scope});
+            builder.scopes.append(undefined) catch unreachable;
+            builder.scope_builders.append(Scope.Builder
+                {
+                    .statements = ArrayList(Entity).init(allocator),
+                    .variable_declarations = ArrayList(VariableDeclaration).init(allocator),
+                    .identifier_expressions = ArrayList(IdentifierExpression).init(allocator),
+                    .invoke_expressions = ArrayList(InvokeExpression).init(allocator),
+                    .field_access_expressions = ArrayList(FieldAccessExpression).init(allocator),
+                    .return_expressions = ArrayList(ReturnExpression).init(allocator),
+                    .assignments = ArrayList(Assignment).init(allocator),
+                    .comparisons = ArrayList(Comparison).init(allocator),
+                    .composed_assignments = ArrayList(ComposedAssignment).init(allocator),
+                    .loops = ArrayList(Loop).init(allocator),
+                    .branches = ArrayList(Branch).init(allocator),
+                    .arithmetic_expressions = ArrayList(ArithmeticExpression).init(allocator),
+                    .break_expressions = ArrayList(BreakExpression).init(allocator),
+                    .parent = .{ .expression = parent_expression, .scope = parent_scope },
+                    .last_loop_index = last_loop_index,
+                }) catch unreachable;
+
+            return builder.current_scope;
+        }
+    };
+
+    const Parent = struct
+    {
+        expression: Entity,
+        scope: u32,
+    };
 };
 
 pub const Function = struct
@@ -129,6 +330,13 @@ pub const Function = struct
         declaration: Function,
         scopes: []Scope,
     };
+
+    const Builder = struct
+    {
+        scope_builders: ArrayList(Scope.Builder),
+        scopes: ArrayList(Scope),
+        current_scope: u32,
+    };
 };
 
 pub const Library = struct
@@ -165,8 +373,8 @@ pub const ModuleParser = struct
     const CountersType = [TokenTypeCount]u32;
 
     lexer: TokenWalker,
-    function_builder: FunctionBuilder,
-    module_builder: ModuleBuilder,
+    function_builder: Function.Builder,
+    module_builder: Module.Builder,
     allocator: *Allocator,
 
     const TokenWalker = struct
@@ -181,43 +389,6 @@ pub const ModuleParser = struct
         keywords: []Lexer.Keyword,
         signs: []Lexer.Sign,
         operators: []Lexer.Operator,
-    };
-
-    const ScopeBuilder = struct
-    {
-        statements: ArrayList(Entity),
-        variable_declarations: ArrayList(VariableDeclaration),
-        identifier_expressions: ArrayList(IdentifierExpression),
-        invoke_expressions: ArrayList(InvokeExpression),
-        field_access_expressions: ArrayList(FieldAccessExpression),
-        return_expressions: ArrayList(ReturnExpression),
-        assignments: ArrayList(Assignment),
-    };
-
-    const FunctionBuilder = struct
-    {
-        scope_builders: ArrayList(ScopeBuilder),
-        scopes: ArrayList(Scope),
-        current_scope: u32,
-    };
-
-    pub const ModuleBuilder = struct
-    {
-        internal_functions: ArrayList(Function.Internal),
-        external_functions: ArrayList(Function.External),
-        library_names: ArrayList([]const u8),
-        libraries: ArrayList(Library.Builder),
-
-        imported_modules: ArrayList(ImportedModule),
-        integer_literals: ArrayList(IntegerLiteral),
-
-        unresolved_types: ArrayList([]const u8),
-        pointer_types: ArrayList(Type.Pointer),
-        slice_types: ArrayList(Type.Slice),
-        function_types: ArrayList(Type.Function),
-        array_types: ArrayList(Type.Array),
-        struct_types: ArrayList(Type.Struct),
-        index: u32,
     };
 
     fn get_and_consume_token(self: *Self, comptime token: Token) TokenTypeMap[@enumToInt(token)]
@@ -287,20 +458,16 @@ pub const ModuleParser = struct
     fn parse_prefix_identifier(self: *Self) Entity
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
-        const left_expression = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.items.len, Entity.ScopeID.identifier_expressions);
-        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(identifier_name) catch unreachable;
+        const left_expression = new_identifier_expression(&self.function_builder.scope_builders.items[self.function_builder.current_scope], identifier_name);
         return left_expression;
     }
 
     fn parse_precedence_identifier(self: *Self, comptime precedence: Precedence) Entity
     {
-        const identifier_name = self.get_and_consume_token(.identifier).value;
-        const left_expression = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.items.len, Entity.ScopeID.identifier_expressions);
-        self.function_builder.scope_builders.items[self.function_builder.current_scope].identifier_expressions.append(identifier_name) catch unreachable;
-        return self.parse_infix(precedence, left_expression);
+        return self.parse_infix(precedence, self.parse_prefix_identifier());
     }
 
-    fn parse_precedence(self: *Self, comptime precedence: Precedence) Entity
+    fn parse_precedence(self: *Self, precedence: Precedence) Entity
     {
         // Parse prefix
         const prefix_token = self.lexer.tokens[self.lexer.next_index];
@@ -311,18 +478,10 @@ pub const ModuleParser = struct
                 .identifier => break :blk self.parse_prefix_identifier(),
                 .int_lit =>
                 {
+                    // @TODO: implement signedness parsing
+                    const signed = false;
                     const integer_value = self.get_and_consume_token(.int_lit).value;
-                    //const integer_literal_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].integer_literals.items.len, Entity.ScopeID.integer_literals);
-                    const index = self.module_builder.integer_literals.items.len;
-                    const integer_literal_id = Entity.new(index, Entity.ScopeID.integer_literals);
-                    self.module_builder.integer_literals.append(.
-                        {
-                            .value = integer_value,
-                            // @TODO: implement signedness parsing
-                            .signed = false,
-                        }) catch unreachable;
-
-                    break :blk integer_literal_id;
+                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, integer_value, signed);
                 },
                 .operator =>
                 {
@@ -371,7 +530,7 @@ pub const ModuleParser = struct
         return self.parse_precedence(Precedence.Assignment);
     }
 
-    fn parse_infix(self: *Self, comptime precedence: Precedence, left_expr: Entity) Entity
+    fn parse_infix(self: *Self, precedence: Precedence, left_expr: Entity) Entity
     {
         var left_expression = left_expr;
         var has_less_precedence = true;
@@ -427,80 +586,71 @@ pub const ModuleParser = struct
             };
 
             has_less_precedence = @enumToInt(precedence) <= @enumToInt(new_precedence);
+
             if (has_less_precedence)
             {
                 assert(token == .operator);
                 const operator = self.get_and_consume_token(.operator).value;
-                left_expression = blk:
+                left_expression = switch (operator)
                 {
-                    switch (operator)
+                    .Equal, .GreaterThan => self.parse_comparison(left_expr, operator, new_precedence),
+                    .Assignment => self.parse_assignment(left_expr, new_precedence),
+                    .Plus, .Minus, .Multiplication => self.parse_arithmetic_expression(left_expr, operator, new_precedence),
+                    .LeftParenthesis => blk:
                     {
-                        .Equal,
-                        .GreaterThan,
-                        .Assignment,
-                        .Plus,
-                        .Minus,
-                        .Multiplication =>
-                        {
-                            //break :blk self.parse_binary_expression(allocator, self, parent_node, left_expr, operator, new_precedence);
-                            unreachable;
-                        },
-                        .LeftParenthesis =>
-                        {
-                            var arguments_left_to_parse = self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .RightParenthesis;
+                        var arguments_left_to_parse = self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .RightParenthesis;
 
-                            var argument_list = ArrayList(Entity).init(self.allocator);
+                        var argument_list = ArrayList(Entity).init(self.allocator);
 
-                            while (arguments_left_to_parse)
+                        while (arguments_left_to_parse)
+                        {
+                            const argument_id = self.parse_expression();
+                            argument_list.append(argument_id) catch unreachable;
+
+                            arguments_left_to_parse = !(self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .RightParenthesis);
+                            if (arguments_left_to_parse and (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ','))
                             {
-                                const argument_id = self.parse_expression();
-                                argument_list.append(argument_id) catch unreachable;
-
-                                arguments_left_to_parse = !(self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .RightParenthesis);
-                                if (arguments_left_to_parse and (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ','))
-                                {
-                                    parser_error("Expected comma after argument in argument list\n", .{});
-                                }
+                                parser_error("Expected comma after argument in argument list\n", .{});
                             }
+                        }
 
-                            if (self.get_and_consume_token(.operator).value != .RightParenthesis)
+                        if (self.get_and_consume_token(.operator).value != .RightParenthesis)
+                        {
+                            parser_error("Expected right parenthesis to finish argument list\n", .{});
+                        }
+
+                        const invoke_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.items.len, Entity.ScopeID.invoke_expressions);
+                        self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.append(.
                             {
-                                parser_error("Expected right parenthesis to finish argument list\n", .{});
-                            }
+                                .arguments = argument_list.items,
+                                .expression = left_expression,
+                            }) catch unreachable;
 
-                            const invoke_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.items.len, Entity.ScopeID.invoke_expressions);
-                            self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.append(.
-                                {
-                                    .arguments = argument_list.items,
-                                    .expression = left_expression,
-                                }) catch unreachable;
+                        break :blk invoke_expression_id;
+                    },
+                    .Declaration => 
+                    {
+                        // break :blk self.parse_declaration(allocator, parser, parent_node, left_expr);
+                        unreachable;
+                    },
+                    .LeftBracket =>
+                    {
+                        //break :blk self.parse_array_subscript(allocator, parser, parent_node, left_expr);
+                        unreachable;
+                    },
+                    .Dot => blk:
+                    {
+                        const field_access_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.items.len, Entity.ScopeID.field_access_expressions);
+                        self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.append(
+                            .{
+                                .left_expression = left_expression,
+                                .field_expression = self.parse_precedence(comptime Precedence.Call.increment()),
+                                .type = Type.unresolved_type,
+                            }) catch unreachable;
 
-                            break :blk invoke_expression_id;
-                        },
-                        .Declaration => 
-                        {
-                            // break :blk self.parse_declaration(allocator, parser, parent_node, left_expr);
-                            unreachable;
-                        },
-                        .LeftBracket =>
-                        {
-                            //break :blk self.parse_array_subscript(allocator, parser, parent_node, left_expr);
-                            unreachable;
-                        },
-                        .Dot =>
-                        {
-                            const field_access_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.items.len, Entity.ScopeID.field_access_expressions);
-                            self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.append(
-                                .{
-                                    .left_expression = left_expression,
-                                    .field_expression = self.parse_precedence(comptime Precedence.Call.increment()),
-                                    .type = Type.unresolved_type,
-                                }) catch unreachable;
-
-                            break :blk field_access_expression_id;
-                        },
-                        else => panic("operator not implemented: {}\n", .{operator}),
-                    }
+                        break :blk field_access_expression_id;
+                    },
+                    else => panic("operator not implemented: {}\n", .{operator}),
                 };
             }
         }
@@ -508,12 +658,71 @@ pub const ModuleParser = struct
         return left_expression;
     }
 
-    
+    fn parse_arithmetic_expression(self: *Self, left_expression: Entity, operator: Operator.ID, precedence: Precedence) Entity
+    {
+        const arithmetic_id = switch (operator)
+        {
+            .Plus => ArithmeticExpression.ID.add,
+            .Minus => ArithmeticExpression.ID.sub,
+            .Multiplication => ArithmeticExpression.ID.mul,
+            .Division => ArithmeticExpression.ID.div,
+            else => panic("NI: {}\n", .{operator}),
+        };
 
-    fn parse_statement(self: *Self) void
+        const right_expression = self.parse_precedence(@intToEnum(Precedence, @enumToInt(precedence) + 1));
+        const arithmetic_expression = ArithmeticExpression
+        {
+            .id = arithmetic_id,
+            .left = left_expression,
+            .right = right_expression,
+        };
+
+        var current_scope = self.function_builder.scope_builders.items[self.function_builder.current_scope];
+        const arithmetic_expression_index = current_scope.arithmetic_expressions.items.len;
+        current_scope.arithmetic_expressions.append(arithmetic_expression) catch unreachable;
+        const arithmetic_expression_id = Entity.new(arithmetic_expression_index, Entity.ScopeID.arithmetic_expressions);
+
+        return arithmetic_expression_id;
+    }
+
+    fn parse_comparison(self: *Self, left_expression: Entity, operator: Operator.ID, precedence: Precedence) Entity
+    {
+        const id = switch (operator)
+        {
+            .Equal => Comparison.ID.equal,
+            .GreaterThan => Comparison.ID.greater,
+            else => panic("NI: {}\n", .{operator}),
+        };
+
+        const right_expression = self.parse_precedence(@intToEnum(Precedence, @enumToInt(precedence) + 1));
+        const expression = Comparison
+        {
+            .id = id,
+            .left = left_expression,
+            .right = right_expression,
+        };
+
+        var current_scope = self.function_builder.scope_builders.items[self.function_builder.current_scope];
+        const expression_index = current_scope.comparisons.items.len;
+        current_scope.comparisons.append(expression) catch unreachable;
+        const expression_id = Entity.new(expression_index, Entity.ScopeID.comparisons);
+
+        return expression_id;
+    }
+
+    fn parse_assignment(self: *Self, left_expression: Entity, precedence: Precedence) Entity
+    {
+        const right_expression = self.parse_precedence(@intToEnum(Precedence, @enumToInt(precedence) + 1));
+        return Assignment.new(&self.function_builder.scope_builders.items[self.function_builder.current_scope], left_expression, right_expression);
+    }
+
+    fn parse_statement(self: *Self, parent_scope: u32) void
     {
         const next_token = self.lexer.tokens[self.lexer.next_index];
         log("Statement token: {}\n", .{next_token});
+
+        var current_scope = &self.function_builder.scope_builders.items[parent_scope];
+
         switch (next_token)
         {
             .identifier =>
@@ -527,17 +736,7 @@ pub const ModuleParser = struct
                     self.consume_token(.identifier);
                     self.consume_token(.operator);
 
-                    var current_scope = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
-                    const var_decl_index = current_scope.variable_declarations.items.len;
-                    current_scope.variable_declarations.append(.
-                        {
-                            .name = identifier_name,
-                            .type = self.parse_type(),
-                        }) catch unreachable;
-
-                    const var_decl_id = Entity.new(var_decl_index, Entity.ScopeID.variable_declarations);
-                    current_scope.statements.append(var_decl_id) catch unreachable;
-
+                    const var_decl_id = VariableDeclaration.new(current_scope, identifier_name, self.parse_type());
                     const var_next_token = self.lexer.tokens[self.lexer.next_index];
 
                     if (var_next_token == .operator)
@@ -608,12 +807,12 @@ pub const ModuleParser = struct
             },
             .keyword =>
             {
-                const keyword = self.get_token(.keyword).value;
+                const keyword = self.get_and_consume_token(.keyword).value;
+
                 switch (keyword)
                 {
                     .@"return" =>
                     {
-                        self.consume_token(.keyword);
                         const return_next_token = self.lexer.tokens[self.lexer.next_index];
                         const return_expression = blk:
                         {
@@ -628,7 +827,6 @@ pub const ModuleParser = struct
                             }
                         };
 
-                        var current_scope = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
                         const return_expression_index = current_scope.return_expressions.items.len;
                         const return_expression_id = Entity.new(return_expression_index, Entity.ScopeID.return_expressions);
                         current_scope.return_expressions.append(.{
@@ -636,6 +834,173 @@ pub const ModuleParser = struct
                         }) catch unreachable;
 
                         current_scope.statements.append(return_expression_id) catch unreachable;
+                    },
+                    .@"for" =>
+                    {
+                        const for_loop_index = @intCast(u32, current_scope.loops.items.len);
+                        current_scope.last_loop_index = for_loop_index;
+                        current_scope.loops.append(undefined) catch unreachable;
+
+                        const for_loop_id = Entity.new(for_loop_index, Entity.ScopeID.loops);
+                        current_scope.statements.append(for_loop_id) catch unreachable;
+
+                        const expected_identifier = self.lexer.tokens[self.lexer.next_index];
+                        if (expected_identifier != .identifier)
+                        {
+                            parser_error("Expected identifier, found {s}\n", .{@tagName(expected_identifier)});
+                        }
+
+                        const it_decl_identifier = self.get_and_consume_token(.identifier).value;
+
+                        const it_decl_value = IntegerLiteral.new(&self.module_builder.integer_literals, 0, false);
+                        const it_decl_type = self.add_unresolved_type("u32");
+                        const it_decl = VariableDeclaration.new(current_scope, it_decl_identifier, it_decl_type);
+
+                        _ = Assignment.new(current_scope, it_decl, it_decl_value);
+
+                        // Prefix block
+                        const prefix_scope_index = Scope.Builder.new(self.allocator, &self.function_builder, for_loop_id, parent_scope);
+                        current_scope = &self.function_builder.scope_builders.items[prefix_scope_index];
+                        
+                        if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .Declaration)
+                        {
+                            parser_error("Expected declaration operator\n", .{});
+                        }
+
+                        self.consume_token(.operator);
+
+                        const right_token = self.lexer.tokens[self.lexer.next_index];
+                        const right_expression = blk:
+                        {
+                            switch (right_token)
+                            {
+                                .int_lit =>
+                                {
+                                    const int_lit = self.get_and_consume_token(.int_lit).value;
+                                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, int_lit, false);
+                                },
+                                else => panic("NI: {}\n", .{right_token}),
+                            }
+                        };
+
+                        const prefix_comparison = Comparison.new(current_scope, .less, it_decl, right_expression);
+                        log("At {}, {}\n", .{self.function_builder.current_scope, prefix_scope_index});
+                        current_scope.statements.append(prefix_comparison) catch unreachable;
+
+                        self.end_scope(prefix_scope_index);
+
+                        // Body
+                        assert(self.function_builder.current_scope == parent_scope);
+                        const body_scope_index = self.parse_scope(for_loop_id);
+
+                        // Postfix
+                        assert(self.function_builder.current_scope == parent_scope);
+                        const postfix_scope_index = Scope.Builder.new(self.allocator, &self.function_builder, for_loop_id, parent_scope);
+                        const postfix_increment_value = IntegerLiteral.new(&self.module_builder.integer_literals, 1, false);
+                        _ = ComposedAssignment.new(current_scope, .add, it_decl, postfix_increment_value);
+
+                        self.end_scope(postfix_scope_index);
+
+                        assert(self.function_builder.current_scope == parent_scope);
+                        current_scope = &self.function_builder.scope_builders.items[parent_scope];
+                        var for_loop = &current_scope.loops.items[for_loop_index];
+                        for_loop.* = .
+                        {
+                            .prefix_scope_index = prefix_scope_index,
+                            .body_scope_index = body_scope_index,
+                            .postfix_scope_index = postfix_scope_index,
+                            .exit_block = std.mem.zeroes(IR.Reference),
+                            .continue_block = std.mem.zeroes(IR.Reference),
+                        };
+                        // we don't want to consume ';' token
+                        return;
+                    },
+                    .@"if" =>
+                    {
+                        const branch_index = current_scope.branches.items.len;
+                        current_scope.branches.append(undefined) catch unreachable;
+
+                        const branch_id = Entity.new(branch_index, Entity.ScopeID.branches);
+                        current_scope.statements.append(branch_id) catch unreachable;
+                        log("######## branch scope: {}\n", .{parent_scope});
+
+                        const branch_condition = self.parse_expression();
+
+                        const if_scope_index = self.parse_scope(branch_id);
+                        assert(self.function_builder.current_scope == parent_scope);
+
+                        const else_scope_index = blk:
+                        {
+                            if (self.lexer.tokens[self.lexer.next_index] == .keyword and self.get_token(.keyword).value == .@"else")
+                            {
+                                self.consume_token(.keyword);
+                                break :blk self.parse_scope(branch_id);
+                            }
+                            else
+                            {
+                                break :blk null;
+                            }
+                        };
+
+                        assert(self.function_builder.current_scope == parent_scope);
+                        current_scope = &self.function_builder.scope_builders.items[parent_scope];
+                        var branch = &current_scope.branches.items[branch_index];
+
+                        branch.* = Branch
+                        {
+                            .condition = branch_condition,
+                            .if_scope = if_scope_index,
+                            .else_scope = else_scope_index,
+                            .exit_block = std.mem.zeroes(IR.Reference),
+                        };
+
+                        // @INFO: skip consuming ';' token
+                        return;
+                    },
+                    .@"break" =>
+                    {
+                        var scope = &self.function_builder.scope_builders.items[parent_scope];
+
+                        const last_loop_index = scope.last_loop_index;
+                        if (last_loop_index == std.math.maxInt(u32))
+                        {
+                            parser_error("No loops found\n", .{});
+                        }
+
+                        
+                        //fn parse_break(self: *Parser, parser: *ModuleParser, parent_node: *Node) *Node
+                        //{
+                        //// consuming break keyword
+                        //parser.consume();
+                        //var target = self.current_block;
+
+                        //while (target.value != Node.ID.loop_expr)
+                        //{
+                        //if (target.parent) |parent|
+                        //{
+                        //target = parent;
+                        //}
+                        //else
+                        //{
+                        //panic("Couldn't find any parent\n", .{});
+                        //}
+                        //}
+
+                        //const break_value = Node
+                        //{
+                        //.value = Node.Value {
+                        //.break_expr = BreakExpression {
+                        //.target = target, 
+                        //}
+                        //},
+                        //.parent = parent_node,
+                        //.value_type = Node.ValueType.RValue,
+                        //.type = undefined,
+                        //};
+
+                        //const result = self.append_and_get(break_value);
+                        //return result;
+                        //}
                     },
                     else => panic("Ni: {}\n", .{keyword}),
                 }
@@ -657,86 +1022,39 @@ pub const ModuleParser = struct
         }
 
         parser_error("Expected semicolon to end statement\n", .{});
-        //while (should_keep_parsing)
-        //{
-            //const token = parser.peek();
-
-            //switch (token.value)
-            //{
-                //Token.ID.keyword =>
-                //{
-                    //const keyword = token.value.keyword;
-                    //switch (keyword)
-                    //{
-                        //KeywordID.@"for" =>
-                        //{
-                            //const for_st = self.parse_for(allocator, parser, block_node);
-                            //block_node.value.block_expr.statements.append(for_st) catch {
-                                //panic("Failed to allocate memory for statement", .{});
-                            //};
-
-                        //},
-                        //KeywordID.@"if" =>
-                        //{
-                            //const if_st = self.parse_if(allocator, parser, block_node);
-                            //block_node.value.block_expr.statements.append(if_st) catch {
-                                //panic("Failed to allocate memory for statement", .{});
-                            //};
-                        //},
-                        //KeywordID.@"break" =>
-                        //{
-                            //const break_st = self.parse_break(parser, block_node);
-                            //if (parser.expect_and_consume_sign(';') == null)
-                            //{
-                                //parser_error("Expected semicolon at the end of the statement\n", .{});
-                            //}
-                            //block_node.value.block_expr.statements.append(break_st) catch {
-                                //panic("Failed to allocate memory for statement", .{});
-                            //};
-                        //},
-                        //else =>
-                        //{
-                            //panic("Keyword unhandled: {}\n", .{keyword});
-                        //},
-                    //}
-
-                //},
-                //else =>
-                //{
-                    //panic("ni: {}\n", .{token.value});
-                //},
-            //}
-
-            //should_keep_parsing = has_braces and parser.expect_sign('}') == null;
-        //}
-
-        //if (has_braces)
-        //{
-            //const end = parser.expect_and_consume_sign('}');
-            //if (end == null)
-            //{
-                //parser_error("Expected end sign at the end of the block", .{});
-            //}
-        //}
-    //}
     }
 
-    fn parse_scope(self: *Self) void
+    fn end_scope(self: *Self, scope_index: u32) void
+    {
+        var scope_builder = &self.function_builder.scope_builders.items[scope_index];
+        // @TODO: DEBUG THIS SHIT
+        self.function_builder.scopes.items[scope_index] = .
+        {
+            .statements = scope_builder.statements.items,
+            .variable_declarations = scope_builder.variable_declarations.items,
+            .identifier_expressions = scope_builder.identifier_expressions.items,
+            .invoke_expressions = scope_builder.invoke_expressions.items,
+            .field_access_expressions = scope_builder.field_access_expressions.items,
+            .return_expressions = scope_builder.return_expressions.items,
+            .assignments = scope_builder.assignments.items,
+            .comparisons = scope_builder.comparisons.items,
+            .loops = scope_builder.loops.items,
+            .branches = scope_builder.branches.items,
+            .break_expressions = scope_builder.break_expressions.items,
+            .arithmetic_expressions = scope_builder.arithmetic_expressions.items,
+            .parent = scope_builder.parent,
+        };
+
+        log("[{}] Scope builder comparisons: {}\n", .{scope_index, scope_builder.comparisons.items.len});
+
+        self.function_builder.current_scope = scope_builder.parent.scope;
+    }
+
+    fn parse_scope(self: *Self, parent_expression: Entity) u32
     {
         const previous_scope = self.function_builder.current_scope;
 
-        self.function_builder.current_scope = @intCast(u32, self.function_builder.scope_builders.items.len);
-        self.function_builder.scopes.append(undefined) catch unreachable;
-        self.function_builder.scope_builders.append(ScopeBuilder
-        {
-            .statements = ArrayList(Entity).init(self.allocator),
-            .variable_declarations = ArrayList(VariableDeclaration).init(self.allocator),
-            .identifier_expressions = ArrayList(IdentifierExpression).init(self.allocator),
-            .invoke_expressions = ArrayList(InvokeExpression).init(self.allocator),
-            .field_access_expressions = ArrayList(FieldAccessExpression).init(self.allocator),
-            .return_expressions = ArrayList(ReturnExpression).init(self.allocator),
-            .assignments = ArrayList(Assignment).init(self.allocator),
-        }) catch unreachable;
+        const new_current_scope = Scope.Builder.new(self.allocator, &self.function_builder, parent_expression, previous_scope);
 
         // @TODO: should we move this outside the function?
         const expected_left_brace = self.lexer.tokens[self.lexer.next_index];
@@ -750,13 +1068,11 @@ pub const ModuleParser = struct
         var next_token = self.lexer.tokens[self.lexer.next_index];
         var block_ends = next_token == .sign and self.get_token(.sign).value == '}';
 
-        while (!block_ends):
-        ({
+        while (!block_ends)
+        {
+            self.parse_statement(self.function_builder.current_scope);
             next_token = self.lexer.tokens[self.lexer.next_index];
             block_ends = next_token == .sign and self.get_token(.sign).value == '}';
-        })
-        {
-            self.parse_statement();
         }
 
         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
@@ -764,22 +1080,11 @@ pub const ModuleParser = struct
             parser_error("Expected closing brace for scope\n", .{});
         }
 
-        var scope_builder = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
-        // @TODO: DEBUG THIS SHIT
-        self.function_builder.scopes.items[self.function_builder.current_scope] = .
-        {
-            .statements = scope_builder.statements.items,
-            .variable_declarations = scope_builder.variable_declarations.items,
-            .identifier_expressions = scope_builder.identifier_expressions.items,
-            .invoke_expressions = scope_builder.invoke_expressions.items,
-            .field_access_expressions = scope_builder.field_access_expressions.items,
-            .return_expressions = scope_builder.return_expressions.items,
-            .assignments = scope_builder.assignments.items,
-        };
+        self.end_scope(new_current_scope);
 
-        self.function_builder.current_scope = previous_scope;
+        return new_current_scope;
     }
-    
+
     fn add_unresolved_type(self: *Self, type_identifier: []const u8) Type
     {
         for (self.module_builder.unresolved_types.items) |t, i|
@@ -1054,7 +1359,8 @@ pub const ModuleParser = struct
                                                 block_ends = next_token == .sign and self.get_token(.sign).value == '}';
                                             })
                                         {
-                                            self.parse_statement();
+                                            // @TODO: this might be buggy
+                                            self.parse_statement(self.function_builder.current_scope);
                                         }
 
                                         if (!(self.lexer.tokens[self.lexer.next_index] == .sign and self.get_and_consume_token(.sign).value == '}'))
@@ -1069,7 +1375,8 @@ pub const ModuleParser = struct
                                     }
                                     else
                                     {
-                                        self.parse_statement();
+                                        // @TODO: this might be buggy
+                                        self.parse_statement(self.function_builder.current_scope);
                                     }
                                 }
                                 else
@@ -1211,6 +1518,25 @@ pub const Module = struct
     function_types: []Type.Function,
     array_types: []Type.Array,
     struct_types: []Type.Struct,
+
+    pub const Builder = struct
+    {
+        internal_functions: ArrayList(Function.Internal),
+        external_functions: ArrayList(Function.External),
+        library_names: ArrayList([]const u8),
+        libraries: ArrayList(Library.Builder),
+
+        imported_modules: ArrayList(ImportedModule),
+        integer_literals: ArrayList(IntegerLiteral),
+
+        unresolved_types: ArrayList([]const u8),
+        pointer_types: ArrayList(Type.Pointer),
+        slice_types: ArrayList(Type.Slice),
+        function_types: ArrayList(Type.Function),
+        array_types: ArrayList(Type.Array),
+        struct_types: ArrayList(Type.Struct),
+        index: u32,
+    };
 };
 
 pub const AST = struct
@@ -1485,15 +1811,16 @@ pub const AST = struct
 
                             if (has_body)
                             {
-                                //const current_function_index = parser.module_builder.internal_functions.items.len;
-                                //_ = current_function_index;
-                                parser.function_builder = ModuleParser.FunctionBuilder
+                                const current_function_index = parser.module_builder.internal_functions.items.len;
+                                const function_id = Entity.new(current_function_index, Entity.ModuleID.internal_functions);
+                                parser.function_builder = Function.Builder
                                 {
-                                    .scope_builders = ArrayList(ModuleParser.ScopeBuilder).init(allocator),
+                                    .scope_builders = ArrayList(Scope.Builder).init(allocator),
                                     .scopes = ArrayList(Scope).init(allocator),
                                     .current_scope = 0,
                                 };
-                                parser.parse_scope();
+
+                                _ = parser.parse_scope(function_id);
 
                                 parser.module_builder.internal_functions.append(Function.Internal
                                     {
@@ -1718,331 +2045,330 @@ pub const AST = struct
     }
 };
 
-pub const Node = struct
-{
-    value: Value,
-    parent: ?*Node,
-    value_type: ValueType,
-    type: *Type,
+//pub const Node = struct
+//{
+    //value: Value,
+    //parent: ?*Node,
+    //value_type: ValueType,
+    //type: *Type,
 
-    pub const Value = union(ID)
-    {
-        var_decl: VariableDeclaration,
-        function_decl: FunctionDeclaration,
-        syscall_decl: Intrinsic.Syscall,
-        int_lit: IntegerLiteral,
-        array_lit: ArrayLiteral,
-        struct_lit: StructLiteral,
-        unary_expr: UnaryExpression,
-        binary_expr: BinaryExpression,
-        return_expr: ReturnExpression,
-        identifier_expr: IdentifierExpression,
-        resolved_identifier: *Node,
-        field_expr: *Type.Struct.Field,
-        invoke_expr: InvokeExpression,
-        block_expr: BlockExpression,
-        branch_expr: BranchExpression,
-        loop_expr: LoopExpression,
-        break_expr: BreakExpression,
-        array_subscript_expr: ArraySubscriptExpression,
-        field_access_expr: FieldAccessExpression,
-        module: Module,
-    };
+    //pub const Value = union(ID)
+    //{
+        //var_decl: VariableDeclaration,
+        //function_decl: FunctionDeclaration,
+        //syscall_decl: Intrinsic.Syscall,
+        //int_lit: IntegerLiteral,
+        //array_lit: ArrayLiteral,
+        //struct_lit: StructLiteral,
+        //unary_expr: UnaryExpression,
+        //binary_expr: BinaryExpression,
+        //return_expr: ReturnExpression,
+        //identifier_expr: IdentifierExpression,
+        //resolved_identifier: *Node,
+        //field_expr: *Type.Struct.Field,
+        //invoke_expr: InvokeExpression,
+        //block_expr: BlockExpression,
+        //branch_expr: BranchExpression,
+        //loop_expr: LoopExpression,
+        //break_expr: BreakExpression,
+        //array_subscript_expr: ArraySubscriptExpression,
+        //field_access_expr: FieldAccessExpression,
+        //module: Module,
+    //};
 
-    pub const ID = enum
-    {
-        var_decl,
-        function_decl,
-        syscall_decl,
-        int_lit,
-        array_lit,
-        struct_lit,
-        unary_expr,
-        binary_expr,
-        return_expr,
-        identifier_expr,
-        resolved_identifier,
-        field_expr,
-        invoke_expr,
-        block_expr,
-        branch_expr,
-        loop_expr,
-        break_expr,
-        array_subscript_expr,
-        field_access_expr,
-        module,
-    };
+    //pub const ID = enum
+    //{
+        //var_decl,
+        //function_decl,
+        //syscall_decl,
+        //int_lit,
+        //array_lit,
+        //struct_lit,
+        //unary_expr,
+        //binary_expr,
+        //return_expr,
+        //identifier_expr,
+        //resolved_identifier,
+        //field_expr,
+        //invoke_expr,
+        //block_expr,
+        //branch_expr,
+        //loop_expr,
+        //break_expr,
+        //array_subscript_expr,
+        //field_access_expr,
+        //module,
+    //};
 
-    pub const ValueType = enum
-    {
-        RValue,
-        LValue,
-    };
+    //pub const ValueType = enum
+    //{
+        //RValue,
+        //LValue,
+    //};
 
-    pub fn format(self: *const Node, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
-    {
-        _ = fmt;
+    //pub fn format(self: *const Node, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
+    //{
+        //_ = fmt;
 
-        switch (self.value)
-        {
-            Node.ID.function_decl =>
-            {
-                try std.fmt.format(writer, "{s} :: (", .{self.value.function_decl.name});
-                for (self.value.function_decl.arguments.items) |arg|
-                {
-                    try std.fmt.format(writer, "{}, ", .{arg});
-                }
-                try writer.writeAll(")");
-                const type_node = self.value.function_decl.type;
-                if (type_node.value.type_identifier.value.function.return_type) |return_type|
-                {
-                    try std.fmt.format(writer, " -> {}", .{return_type.value.type_identifier});
-                }
-                try writer.writeAll("\n{\n");
-                const block_count = self.value.function_decl.blocks.items.len;
-                if (block_count > 0)
-                {
-                    // @Info: we only need to log the first one since the others are dependent
-                    try std.fmt.format(writer, "{}", .{self.value.function_decl.blocks.items[0]});
-                }
-                try writer.writeAll("}\n");
-            },
-            Node.ID.syscall_decl =>
-            {
-                const syscall_decl = self.value.syscall_decl;
-                try std.fmt.format(writer, "{s} : syscall({}) : (", .{syscall_decl.name, syscall_decl.id});
-                for (syscall_decl.arg_bytes) |bytes|
-                {
-                    if (bytes == 0)
-                    {
-                        break;
-                    }
+        //switch (self.value)
+        //{
+            //Node.ID.function_decl =>
+            //{
+                //try std.fmt.format(writer, "{s} :: (", .{self.value.function_decl.name});
+                //for (self.value.function_decl.arguments.items) |arg|
+                //{
+                    //try std.fmt.format(writer, "{}, ", .{arg});
+                //}
+                //try writer.writeAll(")");
+                //const type_node = self.value.function_decl.type;
+                //if (type_node.value.type_identifier.value.function.return_type) |return_type|
+                //{
+                    //try std.fmt.format(writer, " -> {}", .{return_type.value.type_identifier});
+                //}
+                //try writer.writeAll("\n{\n");
+                //const block_count = self.value.function_decl.blocks.items.len;
+                //if (block_count > 0)
+                //{
+                    //// @Info: we only need to log the first one since the others are dependent
+                    //try std.fmt.format(writer, "{}", .{self.value.function_decl.blocks.items[0]});
+                //}
+                //try writer.writeAll("}\n");
+            //},
+            //Node.ID.syscall_decl =>
+            //{
+                //const syscall_decl = self.value.syscall_decl;
+                //try std.fmt.format(writer, "{s} : syscall({}) : (", .{syscall_decl.name, syscall_decl.id});
+                //for (syscall_decl.arg_bytes) |bytes|
+                //{
+                    //if (bytes == 0)
+                    //{
+                        //break;
+                    //}
 
-                    try std.fmt.format(writer, "u{},", .{bytes * 8});
-                }
+                    //try std.fmt.format(writer, "u{},", .{bytes * 8});
+                //}
 
-                try writer.writeAll(");");
-            },
-            Node.ID.block_expr =>
-            {
-                for (self.value.block_expr.statements.items) |statement|
-                {
-                    try std.fmt.format(writer, "    {};\n", .{statement});
-                }
-            },
-            Node.ID.var_decl =>
-            {
-                    try std.fmt.format(writer, "{s}: {}", .{self.value.var_decl.name, self.value.var_decl.var_type});
-            },
-            Node.ID.int_lit =>
-            {
-                if (self.value.int_lit.signed)
-                {
-                    try writer.writeAll("-");
-                }
-                try std.fmt.format(writer, "{}", .{self.value.int_lit.value});
-            },
-            Node.ID.array_lit =>
-            {
-                try std.fmt.format(writer, "[", .{});
-                for (self.value.array_lit.elements.items) |array_lit_elem|
-                {
-                    try std.fmt.format(writer, "{}, ", .{array_lit_elem});
-                }
-                try writer.writeAll("]");
-            },
-            Node.ID.struct_lit =>
-            {
-                panic("Struct literal formatting not implemented:\n", .{});
-            },
-            Node.ID.binary_expr =>
-            {
-                if (self.value.binary_expr.parenthesis)
-                {
-                    try writer.writeAll("(");
-                }
-                switch (self.value.binary_expr.id)
-                {
-                    BinaryExpression.ID.Plus =>
-                    {
-                        try std.fmt.format(writer, "{} + {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Minus =>
-                    {
-                        try std.fmt.format(writer, "{} - {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Multiplication =>
-                    {
-                        try std.fmt.format(writer, "{} * {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Assignment =>
-                    {
-                        try std.fmt.format(writer, "{} = {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Compare_Equal =>
-                    {
-                        try std.fmt.format(writer, "{} == {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Compare_LessThan =>
-                    {
-                        try std.fmt.format(writer, "{} < {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    BinaryExpression.ID.Compare_GreaterThan =>
-                    {
-                        try std.fmt.format(writer, "{} > {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
-                    },
-                    else => panic("Not implemented: {}\n", .{self.value.binary_expr.id}),
-                }
-                if (self.value.binary_expr.parenthesis)
-                {
-                    try writer.writeAll(")");
-                }
-            },
-            Node.ID.array_subscript_expr =>
-            {
-                try std.fmt.format(writer, "{}[{}]", .{self.value.array_subscript_expr.expression, self.value.array_subscript_expr.index});
-            },
-            Node.ID.identifier_expr =>
-            {
-                const id_reference_name = self.value.identifier_expr.name;
-                try std.fmt.format(writer, "{s}", .{id_reference_name});
-            },
-            Node.ID.return_expr =>
-            {
-                try std.fmt.format(writer, "return {}", .{self.value.return_expr.expression});
-            },
-            Node.ID.loop_expr =>
-            {
-                try writer.writeAll("while (");
-                for (self.value.loop_expr.prefix.value.block_expr.statements.items) |prefix_st|
-                {
-                    try std.fmt.format(writer, "{}", .{prefix_st});
-                }
-                try writer.writeAll(")\n{\n");
-                for (self.value.loop_expr.body.value.block_expr.statements.items) |loop_st|
-                {
-                    try std.fmt.format(writer, "{};\n", .{loop_st});
-                }
-                for (self.value.loop_expr.postfix.value.block_expr.statements.items) |postfix_st|
-                {
-                    try std.fmt.format(writer, "{};\n", .{postfix_st});
-                }
-                try writer.writeAll("}");
-            },
-            Node.ID.branch_expr =>
-            {
-                try writer.writeAll("if (");
-                try std.fmt.format(writer, "{}", .{self.value.branch_expr.condition});
-                try writer.writeAll(")\n{\n");
-                for (self.value.branch_expr.if_block.value.block_expr.statements.items) |if_st|
-                {
-                    try std.fmt.format(writer, "{};\n", .{if_st});
-                }
-                try writer.writeAll("}\n");
-                if (self.value.branch_expr.else_block) |else_block|
-                {
-                    try writer.writeAll("else\n{\n");
-                    for (else_block.value.block_expr.statements.items) |else_st|
-                    {
-                        try std.fmt.format(writer, "{};\n", .{else_st});
-                    }
-                    try writer.writeAll("}");
-                }
-            },
-            Node.ID.break_expr =>
-            {
-                try writer.writeAll("break");
-            },
-            Node.ID.invoke_expr =>
-            {
-                const invoke_expr = self.value.invoke_expr.expression;
-                switch (invoke_expr.value)
-                {
-                    Node.ID.function_decl =>
-                    {
-                        try std.fmt.format(writer, "{s}(", .{invoke_expr.value.function_decl.name});
-                    },
-                    Node.ID.identifier_expr =>
-                    {
-                        try std.fmt.format(writer, "{s}(", .{invoke_expr.value.identifier_expr.name});
-                    },
-                    else =>
-                    {
-                        panic("ni: {}\n", .{invoke_expr.value});
-                    }
-                }
-                for (self.value.invoke_expr.arguments.items) |arg|
-                {
-                    try std.fmt.format(writer, "{}, ", .{arg});
-                }
-                try writer.writeAll(")");
-            },
-            Node.ID.unary_expr =>
-            {
-                switch (self.value.unary_expr.id)
-                {
-                    UnaryExpression.ID.AddressOf =>
-                    {
-                        try std.fmt.format(writer, "&{}", .{self.value.unary_expr.node_ref});
-                    },
-                    UnaryExpression.ID.Dereference =>
-                    {
-                        try std.fmt.format(writer, "@{}", .{self.value.unary_expr.node_ref});
-                    },
-                }
-            },
-            Node.ID.field_access_expr =>
-            {
-                try std.fmt.format(writer, "{}.{}", .{self.value.field_access_expr.expression, self.value.field_access_expr.field_expr});
-            },
-            Node.ID.type_identifier =>
-            {
-                try std.fmt.format(writer, "{}", .{self.value.type_identifier});
-            },
-            Node.ID.resolved_identifier =>
-            {
-                panic("ni\n", .{});
-            },
-            Node.ID.field_expr =>
-            {
-                try std.fmt.format(writer, "{}", .{self.value.field_expr});
-            },
-            Node.ID.module =>
-            {
-            },
-            //else => panic("Not implemented: {}\n", .{self.value}),
-        }
-    }
-};
+                //try writer.writeAll(");");
+            //},
+            //Node.ID.block_expr =>
+            //{
+                //for (self.value.block_expr.statements.items) |statement|
+                //{
+                    //try std.fmt.format(writer, "    {};\n", .{statement});
+                //}
+            //},
+            //Node.ID.var_decl =>
+            //{
+                    //try std.fmt.format(writer, "{s}: {}", .{self.value.var_decl.name, self.value.var_decl.var_type});
+            //},
+            //Node.ID.int_lit =>
+            //{
+                //if (self.value.int_lit.signed)
+                //{
+                    //try writer.writeAll("-");
+                //}
+                //try std.fmt.format(writer, "{}", .{self.value.int_lit.value});
+            //},
+            //Node.ID.array_lit =>
+            //{
+                //try std.fmt.format(writer, "[", .{});
+                //for (self.value.array_lit.elements.items) |array_lit_elem|
+                //{
+                    //try std.fmt.format(writer, "{}, ", .{array_lit_elem});
+                //}
+                //try writer.writeAll("]");
+            //},
+            //Node.ID.struct_lit =>
+            //{
+                //panic("Struct literal formatting not implemented:\n", .{});
+            //},
+            //Node.ID.binary_expr =>
+            //{
+                //if (self.value.binary_expr.parenthesis)
+                //{
+                    //try writer.writeAll("(");
+                //}
+                //switch (self.value.binary_expr.id)
+                //{
+                    //BinaryExpression.ID.Plus =>
+                    //{
+                        //try std.fmt.format(writer, "{} + {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Minus =>
+                    //{
+                        //try std.fmt.format(writer, "{} - {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Multiplication =>
+                    //{
+                        //try std.fmt.format(writer, "{} * {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Assignment =>
+                    //{
+                        //try std.fmt.format(writer, "{} = {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Compare_Equal =>
+                    //{
+                        //try std.fmt.format(writer, "{} == {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Compare_LessThan =>
+                    //{
+                        //try std.fmt.format(writer, "{} < {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //BinaryExpression.ID.Compare_GreaterThan =>
+                    //{
+                        //try std.fmt.format(writer, "{} > {}", .{self.value.binary_expr.left, self.value.binary_expr.right});
+                    //},
+                    //else => panic("Not implemented: {}\n", .{self.value.binary_expr.id}),
+                //}
+                //if (self.value.binary_expr.parenthesis)
+                //{
+                    //try writer.writeAll(")");
+                //}
+            //},
+            //Node.ID.array_subscript_expr =>
+            //{
+                //try std.fmt.format(writer, "{}[{}]", .{self.value.array_subscript_expr.expression, self.value.array_subscript_expr.index});
+            //},
+            //Node.ID.identifier_expr =>
+            //{
+                //const id_reference_name = self.value.identifier_expr.name;
+                //try std.fmt.format(writer, "{s}", .{id_reference_name});
+            //},
+            //Node.ID.return_expr =>
+            //{
+                //try std.fmt.format(writer, "return {}", .{self.value.return_expr.expression});
+            //},
+            //Node.ID.loop_expr =>
+            //{
+                //try writer.writeAll("while (");
+                //for (self.value.loop_expr.prefix.value.block_expr.statements.items) |prefix_st|
+                //{
+                    //try std.fmt.format(writer, "{}", .{prefix_st});
+                //}
+                //try writer.writeAll(")\n{\n");
+                //for (self.value.loop_expr.body.value.block_expr.statements.items) |loop_st|
+                //{
+                    //try std.fmt.format(writer, "{};\n", .{loop_st});
+                //}
+                //for (self.value.loop_expr.postfix.value.block_expr.statements.items) |postfix_st|
+                //{
+                    //try std.fmt.format(writer, "{};\n", .{postfix_st});
+                //}
+                //try writer.writeAll("}");
+            //},
+            //Node.ID.branch_expr =>
+            //{
+                //try writer.writeAll("if (");
+                //try std.fmt.format(writer, "{}", .{self.value.branch_expr.condition});
+                //try writer.writeAll(")\n{\n");
+                //for (self.value.branch_expr.if_block.value.block_expr.statements.items) |if_st|
+                //{
+                    //try std.fmt.format(writer, "{};\n", .{if_st});
+                //}
+                //try writer.writeAll("}\n");
+                //if (self.value.branch_expr.else_block) |else_block|
+                //{
+                    //try writer.writeAll("else\n{\n");
+                    //for (else_block.value.block_expr.statements.items) |else_st|
+                    //{
+                        //try std.fmt.format(writer, "{};\n", .{else_st});
+                    //}
+                    //try writer.writeAll("}");
+                //}
+            //},
+            //Node.ID.break_expr =>
+            //{
+                //try writer.writeAll("break");
+            //},
+            //Node.ID.invoke_expr =>
+            //{
+                //const invoke_expr = self.value.invoke_expr.expression;
+                //switch (invoke_expr.value)
+                //{
+                    //Node.ID.function_decl =>
+                    //{
+                        //try std.fmt.format(writer, "{s}(", .{invoke_expr.value.function_decl.name});
+                    //},
+                    //Node.ID.identifier_expr =>
+                    //{
+                        //try std.fmt.format(writer, "{s}(", .{invoke_expr.value.identifier_expr.name});
+                    //},
+                    //else =>
+                    //{
+                        //panic("ni: {}\n", .{invoke_expr.value});
+                    //}
+                //}
+                //for (self.value.invoke_expr.arguments.items) |arg|
+                //{
+                    //try std.fmt.format(writer, "{}, ", .{arg});
+                //}
+                //try writer.writeAll(")");
+            //},
+            //Node.ID.unary_expr =>
+            //{
+                //switch (self.value.unary_expr.id)
+                //{
+                    //UnaryExpression.ID.AddressOf =>
+                    //{
+                        //try std.fmt.format(writer, "&{}", .{self.value.unary_expr.node_ref});
+                    //},
+                    //UnaryExpression.ID.Dereference =>
+                    //{
+                        //try std.fmt.format(writer, "@{}", .{self.value.unary_expr.node_ref});
+                    //},
+                //}
+            //},
+            //Node.ID.field_access_expr =>
+            //{
+                //try std.fmt.format(writer, "{}.{}", .{self.value.field_access_expr.expression, self.value.field_access_expr.field_expr});
+            //},
+            //Node.ID.type_identifier =>
+            //{
+                //try std.fmt.format(writer, "{}", .{self.value.type_identifier});
+            //},
+            //Node.ID.resolved_identifier =>
+            //{
+                //panic("ni\n", .{});
+            //},
+            //Node.ID.field_expr =>
+            //{
+                //try std.fmt.format(writer, "{}", .{self.value.field_expr});
+            //},
+            //Node.ID.module =>
+            //{
+            //},
+            ////else => panic("Not implemented: {}\n", .{self.value}),
+        //}
+    //}
+//};
 
+//const Intrinsic = struct
+//{
+    //const Value = union(ID)
+    //{
+        //syscall: Syscall,
+    //};
 
-const Intrinsic = struct
-{
-    const Value = union(ID)
-    {
-        syscall: Syscall,
-    };
+    //const ID = enum
+    //{
+        //syscall,
+    //};
 
-    const ID = enum
-    {
-        syscall,
-    };
+    //const Syscall = struct
+    //{
+        //id: u64,
+        //arg_bytes: [max_arg_count]u8,
+        //name: []const u8,
 
-    const Syscall = struct
-    {
-        id: u64,
-        arg_bytes: [max_arg_count]u8,
-        name: []const u8,
+        //const max_arg_count = 6;
 
-        const max_arg_count = 6;
-
-        const Invocation = struct
-        {
-            declaration: *Syscall,
-            arguments: [max_arg_count]Argument,
-        };
-    };
-};
+        //const Invocation = struct
+        //{
+            //declaration: *Syscall,
+            //arguments: [max_arg_count]Argument,
+        //};
+    //};
+//};
 
 const Precedence = enum
 {
@@ -2072,13 +2398,6 @@ const Precedence = enum
 
     //const Self = @This();
 
-
-
-    //fn parse_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //const result = self.parse_precedence(allocator, parser, parent_node, Precedence.Assignment);
-        //return result;
-    //}
 
     //fn parse_unary_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, operator: Operator) *Node
     //{
@@ -2239,35 +2558,6 @@ const Precedence = enum
     //}
 
 
-
-    //fn parse_declaration(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node) *Node
-    //{
-        //const type_expr = self.parse_type(allocator, parser, parent_node);
-
-        //assert(left_expr.value == Node.ID.identifier_expr);
-        //const var_name = left_expr.value.identifier_expr.name;
-
-        //const declaration_node = Node
-        //{
-            //.value = Node.Value {
-                //.var_decl = VariableDeclaration 
-                //{
-                    //.name = var_name,
-                    //.var_type = type_expr,
-                    //.var_scope = parent_node,
-                    //.backend_ref = 0,
-                    //.is_function_arg = false,
-                //},
-            //},
-            //.value_type = Node.ValueType.LValue,
-            //.parent = parent_node,
-            //.type = undefined,
-        //};
-
-        //const declaration = self.append_and_get(declaration_node);
-        //return declaration;
-    //}
-
     //fn parse_array_subscript(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node) *Node
     //{
         //const subscript_node_value = Node
@@ -2339,428 +2629,9 @@ const Precedence = enum
         //return binary_node;
     //}
 
-    //fn parse_return(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //parser.consume();
-        //var return_node_value = Node{
-            //.value = Node.Value{
-                //.return_expr = ReturnExpression{
-                    //.expression = null,
-                //},
-            //},
-            //.value_type = Node.ValueType.RValue,
-            //.parent = parent_node,
-            //.type = undefined,
-        //};
 
-        //var return_node = self.append_and_get(return_node_value);
 
-        //if (parser.expect_sign(';') == null)
-        //{
-            //const ret_expr = self.parse_expression(allocator, parser, return_node);
-            //return_node.value.return_expr.expression = ret_expr;
-        //}
 
-        //return return_node;
-    //}
-
-    //fn _create_loop_block(self: *Parser, allocator: *Allocator, for_node: *Node, block_type : BlockExpression.ID) *Node
-    //{
-        //const loop_block_value = Node
-        //{
-            //.value = Node.Value {
-                //.block_expr = BlockExpression {
-                    //.statements = NodeRefBuffer.init(allocator),
-                    //.id = block_type,
-                //},
-                //},
-            //.parent = for_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-        //const loop_block_node = self.append_and_get(loop_block_value);
-        //self.current_function.value.function_decl.blocks.append(loop_block_node) catch {
-            //panic("Failed to allocate a block reference to function block list\n", .{});
-        //};
-        //return loop_block_node;
-    //}
-
-    //fn parse_for(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //if (parser.expect_and_consume_keyword(KeywordID.@"for") == null)
-        //{
-            //panic("Internal compiler error: expected 'for' keyword\n", .{});
-        //}
-
-        //const for_loop_node_value = Node
-        //{
-            //.value = Node.Value {
-                //.loop_expr = LoopExpression {
-                    //.prefix = undefined,
-                    //.body = undefined,
-                    //.postfix = undefined,
-                    //.exit_block_ref = undefined,
-                    //.continue_block_ref = undefined,
-                //},
-            //},
-            //.parent = parent_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-
-        //var for_node = self.append_and_get(for_loop_node_value);
-        //const parent_scope = self.current_block;
-
-        //for_node.value.loop_expr.prefix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPrefix);
-        //for_node.value.loop_expr.body = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopBody);
-        //for_node.value.loop_expr.postfix = self._create_loop_block(allocator, for_node, BlockExpression.ID.LoopPostfix);
-
-        //if (parser.expect_and_consume(Token.ID.identifier)) |it_identifier|
-        //{
-            //const it_decl_decl_value = Node
-            //{
-                //.value = Node.Value {
-                    //.int_lit = IntegerLiteral {
-                        //.value = 0,
-                        //.signed = false,
-                    //}
-                //},
-                //// @Info: this is set later
-                //.parent = undefined,
-                //.value_type = Node.ValueType.RValue,
-                //.type = undefined,
-            //};
-
-            //const value_type = Node
-            //{
-                //.value = Node.Value {
-                    //.type_identifier = TypeIdentifier {
-                        //.value = TypeIdentifier.Value {
-                            //.simple = "s32",
-                        //},
-                    //},
-                //},
-                //.parent = parent_node,
-                //.value_type = Node.ValueType.RValue,
-                //.type = undefined,
-            //};
-
-            //var it_decl_literal_node = self.append_and_get(it_decl_decl_value);
-            //const it_decl_type_node = self.append_and_get(value_type);
-            //const it_decl_value = Node
-            //{
-                //.value = Node.Value {
-                    //.var_decl = VariableDeclaration {
-                        //.name = it_identifier.value.identifier,
-                        //.is_function_arg = false,
-                        //.var_scope = self.current_block,
-                        //.var_type = it_decl_type_node,
-                        //.backend_ref = 0,
-                    //},
-                //},
-                //.parent = parent_node,
-                //.value_type = Node.ValueType.LValue,
-                //.type = undefined,
-            //};
-
-            //const it_decl_node = self.append_and_get(it_decl_value);
-            //it_decl_literal_node.parent = it_decl_node;
-
-            //self.current_function.value.function_decl.variables.append(it_decl_node) catch {
-                //panic("Error allocating variable reference to function variable list\n", .{});
-            //};
-            //self.current_block.value.block_expr.statements.append(it_decl_node) catch {
-                //panic("Error allocating statement reference to block statement list\n", .{});
-            //};
-
-            //const it_decl_ref = Node {
-                //.value = Node.Value {
-                    //.identifier_expr = IdentifierExpression {
-                        //.name = it_decl_node.value.var_decl.name,
-                    //},
-                //},
-                //.value_type = Node.ValueType.LValue,
-                //.parent = parent_node,
-                //.type = undefined,
-            //};
-
-            //const it_decl_var_ref_node = self.append_and_get(it_decl_ref);
-
-            //const assignment = Node
-            //{
-                //.value = Node.Value {
-                    //.binary_expr = BinaryExpression {
-                        //.left = it_decl_var_ref_node,
-                        //.right = it_decl_literal_node,
-                        //.id = BinaryExpression.ID.Assignment,
-                        //.parenthesis = false,
-                    //}
-                //},
-                //.value_type = Node.ValueType.RValue,
-                //.parent = parent_node,
-                //.type = undefined,
-            //};
-
-            //const assignment_node = self.append_and_get(assignment);
-            //self.current_block.value.block_expr.statements.append(assignment_node) catch {
-                //panic("Error allocating statement reference to block statement list\n", .{});
-            //};
-
-            //// Prefix
-            //{
-                //self.current_block = for_node.value.loop_expr.prefix;
-                //if (parser.expect_and_consume_operator(Operator.Declaration) == null)
-                //{
-                    //panic("Expected colon after a loop variable declaration\n", .{});
-                //}
-                //const right_token = parser.peek();
-                //parser.consume();
-
-                //var right_node : *Node = undefined;
-
-                //switch (right_token.value)
-                //{
-                    //Token.ID.int_lit =>
-                    //{
-                        //const literal_value = right_token.value.int_lit;
-                        //const literal_node_value = Node {
-                            //.value = Node.Value {
-                                //.int_lit = IntegerLiteral {
-                                    //.value = literal_value,
-                                    //.signed = false,
-                                //}
-                            //},
-                            //.parent = self.current_block,
-                            //.value_type = Node.ValueType.RValue,
-                            //.type = undefined,
-                        //};
-
-                        //right_node = self.append_and_get(literal_node_value);
-                    //},
-                    //else =>
-                    //{
-                        //panic("Right token not implemented: {}\n", .{right_token.value});
-                    //}
-                //}
-
-                //const iterator_ref_expr_value = Node
-                //{
-                    //.value = Node.Value {
-                        //.identifier_expr = IdentifierExpression {
-                            //.name = it_identifier.value.identifier,
-                        //}
-                    //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.RValue,
-                    //.type = undefined,
-                //};
-
-                //const iterator_ref_expr = self.append_and_get(iterator_ref_expr_value);
-
-                //const prefix_comparison_value = Node
-                //{
-                    //.value = Node.Value {
-                        //.binary_expr = BinaryExpression {
-                            //.left = iterator_ref_expr,
-                            //.right =  right_node,
-                            //.id = BinaryExpression.ID.Compare_LessThan,
-                            //.parenthesis = false,
-                        //}
-                    //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.RValue,
-                    //.type = undefined,
-                //};
-
-                //const prefix_comparison_node = self.append_and_get(prefix_comparison_value);
-                //// @Info: in other kind of loops we should support multiple statements
-                //self.current_block.value.block_expr.statements.append(prefix_comparison_node) catch {
-                    //panic("Couldn't allocate prefix statement\n", .{});
-                //};
-            //}
-
-            //// Block
-            //{
-                //// @Info: this sets the target block as current block, so no need here to set it in advance
-                //self.block(allocator, parser, for_node.value.loop_expr.body, true);
-            //}
-
-            //// Postfix
-            //{
-                //self.current_block = for_node.value.loop_expr.postfix;
-                //const identifier_expr_lvalue = Node
-                //{
-                    //.value = Node.Value {
-                        //.identifier_expr = IdentifierExpression {
-                            //.name = it_identifier.value.identifier,
-                        //}
-                    //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.LValue,
-                    //.type = undefined,
-                //};
-                //var identifier_expr_rvalue = identifier_expr_lvalue;
-                //identifier_expr_rvalue.value_type = Node.ValueType.RValue;
-                //const identifier_lvalue = self.append_and_get(identifier_expr_lvalue);
-                //const identifier_rvalue = self.append_and_get(identifier_expr_rvalue);
-
-                //const one_lit_value = Node
-                //{
-                    //.value = Node.Value {
-                        //.int_lit = IntegerLiteral {
-                            //.value = 1,
-                            //.signed = false,
-                        //}
-                    //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.RValue,
-                    //.type = undefined,
-                //};
-                //const one_lit_node = self.append_and_get(one_lit_value);
-
-                //const postfix_increment_value = Node
-                //{
-                    //.value = Node.Value {
-                        //.binary_expr = BinaryExpression {
-                            //.left = identifier_rvalue,
-                            //.right =  one_lit_node,
-                            //.id =  BinaryExpression.ID.Plus,
-                            //.parenthesis = false,
-                        //},
-                        //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.RValue,
-                    //.type = undefined,
-                //};
-
-                //const postfix_increment_node = self.append_and_get(postfix_increment_value);
-
-                //const postfix_assignment_value = Node
-                //{
-                    //.value = Node.Value {
-                        //.binary_expr = BinaryExpression {
-                            //.left = identifier_lvalue,
-                            //.right =  postfix_increment_node,
-                            //.id =  BinaryExpression.ID.Assignment,
-                            //.parenthesis = false,
-                        //},
-                        //},
-                    //.parent = self.current_block,
-                    //.value_type = Node.ValueType.RValue,
-                    //.type = undefined,
-                //};
-
-                //const postfix_assignment_node = self.append_and_get(postfix_assignment_value);
-                //self.current_block.value.block_expr.statements.append(postfix_assignment_node) catch {
-                    //panic("Couldn't allocate postfix statement\n", .{});
-                //};
-            //}
-
-            //self.current_block = parent_scope;
-            //return for_node;
-        //}
-        //else
-        //{
-            //panic("Expected identifier declaration for loop iteration\n", .{});
-        //}
-    //}
-
-    //fn parse_if(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //// consume if keyword
-        //parser.consume();
-
-        //const branch_node_value = Node
-        //{
-            //.value = Node.Value {
-                //.branch_expr = BranchExpression {
-                    //.condition = undefined,
-                    //.if_block = undefined,
-                    //.else_block = null,
-                    //.exit_block_ref = 0,
-                //}
-            //},
-            //.parent = parent_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-
-        //var branch_node = self.append_and_get(branch_node_value);
-        //const condition_node = self.parse_expression(allocator, parser, parent_node);
-        //branch_node.value.branch_expr.condition = condition_node;
-        //const if_block_value = Node
-        //{
-            //.value = Node.Value {
-                //.block_expr = BlockExpression {
-                    //.statements = NodeRefBuffer.init(allocator),
-                    //.id = BlockExpression.ID.IfBlock,
-                //}
-            //},
-            //.parent = branch_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-        //const if_block_node = self.append_and_get(if_block_value);
-        //self.block(allocator, parser, if_block_node, true);
-        //branch_node.value.branch_expr.if_block = if_block_node;
-
-        //self.current_block = parent_node;
-
-        //if (parser.expect_and_consume_keyword(KeywordID.@"else") != null)
-        //{
-            //const else_block_value = Node
-            //{
-                //.value = Node.Value {
-                    //.block_expr = BlockExpression {
-                        //.statements = NodeRefBuffer.init(allocator),
-                        //.id = BlockExpression.ID.ElseBlock,
-                    //}
-                //},
-                //.parent = branch_node,
-                //.value_type = Node.ValueType.RValue,
-                //.type = undefined,
-            //};
-            //const else_block_node = self.append_and_get(else_block_value);
-            //self.block(allocator, parser, else_block_node, true);
-            //branch_node.value.branch_expr.else_block = else_block_node;
-        //}
-
-        //return branch_node;
-    //}
-
-    //fn parse_break(self: *Parser, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //// consuming break keyword
-        //parser.consume();
-        //var target = self.current_block;
-
-        //while (target.value != Node.ID.loop_expr)
-        //{
-            //if (target.parent) |parent|
-            //{
-                //target = parent;
-            //}
-            //else
-            //{
-                //panic("Couldn't find any parent\n", .{});
-            //}
-        //}
-
-        //const break_value = Node
-        //{
-            //.value = Node.Value {
-                //.break_expr = BreakExpression {
-                    //.target = target, 
-                //}
-            //},
-            //.parent = parent_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-
-        //const result = self.append_and_get(break_value);
-        //return result;
-    //}
 
 
     //fn parse_intrinsic(self: *Parser, allocator: *Allocator, parser: *ModuleParser, intrinsic_name: []const u8) void
@@ -2941,33 +2812,6 @@ const Precedence = enum
     //};
 //};
 
-//pub const BinaryExpression = struct
-//{
-    //left: *Node,
-    //right: *Node,
-    //id: ID,
-    //parenthesis: bool,
-
-    //pub const ID = enum
-    //{
-        //Plus,
-        //Minus,
-        //Multiplication,
-        //VariableDeclaration,
-        //Assignment,
-        //Compare_Equal,
-        //Compare_NotEqual,
-        //Compare_LessThan,
-        //Compare_GreaterThan,
-        //Compare_LessThanOrEqual,
-        //Compare_GreaterThanOrEqual,
-    //};
-//};
-
-//const ReturnExpression = struct
-//{
-    //expression: ?*Node,
-//};
 
 //const BlockExpression = struct
 //{
@@ -2983,39 +2827,6 @@ const Precedence = enum
         //Function,
     //};
 //};
-
-
-//const BranchExpression = struct
-//{
-    //condition: *Node,
-    //if_block: *Node,
-    //else_block: ?*Node,
-    //exit_block_ref: usize,
-//};
-
-//const LoopExpression = struct
-//{
-    //prefix: *Node,
-    //body: *Node,
-    //postfix: *Node,
-    //exit_block_ref: usize,
-    //continue_block_ref: usize,
-//};
-
-//const BreakExpression = struct
-//{
-    //target: *Node,
-//};
-
-//const FunctionDeclaration = struct
-//{
-    //blocks: NodeRefBuffer,
-    //arguments: NodeRefBuffer,
-    //variables: NodeRefBuffer,
-    //name: []const u8,
-    //type: *Node,
-//};
-
 
 //const ArraySubscriptExpression = struct
 //{

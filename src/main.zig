@@ -7,7 +7,6 @@ const Compiler = @import("compiler.zig");
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Semantics = @import("semantics.zig");
-const IR = @import("bytecode.zig");
 const Codegen = @import("codegen.zig");
 const Types = @import("ast_types.zig");
 const Type = Types.Type;
@@ -66,25 +65,25 @@ pub fn main() anyerror!void
 {
     const all_tests = false;
     var page_allocator = std.heap.page_allocator;
-    const cwd = std.fs.cwd();
     const target = std.builtin.target;
 
     // mac os workaround
-    if (false)
-    {
-        const filename = "macho_exe";
-        var arena = std.heap.ArenaAllocator.init(page_allocator);
-        defer arena.deinit();
-        const allocator = &arena.allocator;
-        const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
-            panic("Error reading file: {s}\n", .{filename});
-        };
+    //if (false)
+    //{
+        //const cwd = std.fs.cwd();
+        //const filename = "macho_exe";
+        //var arena = std.heap.ArenaAllocator.init(page_allocator);
+        //defer arena.deinit();
+        //const allocator = &arena.allocator;
+        //const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
+            //panic("Error reading file: {s}\n", .{filename});
+        //};
 
-        defer allocator.free(file_content);
-        var fake_code = [_]u8{ 0x00, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
-        macho.experiment(allocator, file_content, fake_code[0..]);
-        return;
-    }
+        //defer allocator.free(file_content);
+        //var fake_code = [_]u8{ 0x00, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
+        //macho.experiment(allocator, file_content, fake_code[0..]);
+        //return;
+    //}
 
     if (all_tests)
     {
@@ -96,7 +95,7 @@ pub fn main() anyerror!void
     }
     else
     {
-        const index = 3;
+        const index = 4;
         //const index = test_files.len - 1;
         const test_file = test_files[index];
         Compiler.make_executable(page_allocator, test_file, make_exe_name(page_allocator, test_file, target), target);

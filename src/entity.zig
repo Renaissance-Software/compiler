@@ -62,6 +62,11 @@ pub const Entity = packed struct
         return_expressions,
         assignments,
         argument,
+        comparisons,
+        composed_assignments,
+        loops,
+        branches,
+        arithmetic_expressions,
     };
 
     const LevelToArrayIDMap = blk:
@@ -98,15 +103,6 @@ pub const Entity = packed struct
             .value = (@intCast(Self.Type, @enumToInt(level)) << Level.position) | (@intCast(Self.Type, @enumToInt(array_id)) << array_id_position) | base_index,
         };
 
-        const type_match = (@TypeOf(array_id) == ModuleID);
-        if (type_match)
-        {
-            if (array_id == Self.ModuleID.unresolved_types)
-            {
-                print("[#] New identifier: {} {} {}\n{}\n", .{base_index, level, array_id, result});
-            }
-        }
-
         return result;
     }
 
@@ -116,24 +112,14 @@ pub const Entity = packed struct
     }
 
     // @TODO: make this compile time and fast
-    pub fn from_builtin_id(comptime id: BuiltinID) Self
-    {
-        return comptime Self
-        {
-            .index = @intCast(u32, id_integer),
-            .features = (@enumToInt(Level.builtin) << Level.position) | @as(u32, @enumToInt(id)),
-        };
-    }
-
-    pub fn get_void_type() TypeID
-    {
-        return Self.new(0, Self.BuiltinID.void_type);
-    }
-
-    pub fn get_noreturn_type() TypeID
-    {
-        return Self.new(0, Self.BuiltinID.noreturn_type);
-    }
+    //pub fn from_builtin_id(comptime id: BuiltinID) Self
+    //{
+        //return comptime Self
+        //{
+            //.index = @intCast(u32, id_integer),
+            //.features = (@enumToInt(Level.builtin) << Level.position) | @as(u32, @enumToInt(id)),
+        //};
+    //}
 
     pub fn get_builtin_os() Self
     {

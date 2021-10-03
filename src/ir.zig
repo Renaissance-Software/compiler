@@ -5,7 +5,7 @@ const assert = std.debug.assert;
 const panic = std.debug.panic;
 
 // @INFO: this is just for alloca variable references
-usingnamespace @import("entity.zig");
+const Entity = @import("entity.zig").Entity;
 const Parser = @import("parser.zig");
 const AST = Parser.AST;
 const Semantics = @import("semantics.zig");

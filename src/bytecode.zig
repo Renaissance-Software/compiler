@@ -2778,17 +2778,17 @@ const SlotTracker = struct
     starting_id: u64,
     map: ArrayList(*Value),
 
-    fn find(self: *SlotTracker, value: *Value) u64
-    {
-        var i : u64 = 0;
-        while (i < self.map.items.len) : (i += 1)
-        {
-            if (self.map.items[i] == value)
-            {
-                return i + starting_id;
-            }
-        }
-    }
+    //fn find(self: *SlotTracker, value: *Value) u64
+    //{
+        //var i : u64 = 0;
+        //while (i < self.map.items.len) : (i += 1)
+        //{
+            //if (self.map.items[i] == value)
+            //{
+                //return i + starting_id;
+            //}
+        //}
+    //}
 
     fn new_id(self: *SlotTracker, value: *Value) u64
     {

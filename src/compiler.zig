@@ -7,7 +7,6 @@ const logger = std.log.scoped(.compiler);
 const Lexer = @import("lexer.zig");
 const Parser = @import("parser.zig");
 const Semantics = @import("semantics.zig");
-const IR = @import("bytecode.zig");
 const NewIR = @import("ir.zig");
 const Codegen = @import("codegen.zig");
 

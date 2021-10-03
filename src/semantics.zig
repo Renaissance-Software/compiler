@@ -11,7 +11,7 @@ const BinaryExpression = Parser.BinaryExpression;
 const UnaryExpression = Parser.UnaryExpression;
 
 const Type = @import("type.zig");
-usingnamespace @import("entity.zig");
+const Entity = @import("entity.zig").Entity;
 
 const Compiler = @import("compiler.zig");
 
@@ -45,355 +45,355 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
     return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
-pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
-{
-    log("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
+//pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
+//{
+    //log("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
 
-    switch (lvalue_type.value)
-    {
-        Type.ID.integer =>
-        {
-            switch (right.value)
-            {
-                Node.ID.int_lit =>
-                {
-                    assert(right.type.value == Type.ID.unresolved);
-                    right.type = lvalue_type;
-                    // @TODO: make sure we have enough bytes in the lvalue type
+    //switch (lvalue_type.value)
+    //{
+        //Type.ID.integer =>
+        //{
+            //switch (right.value)
+            //{
+                //Node.ID.int_lit =>
+                //{
+                    //assert(right.type.value == Type.ID.unresolved);
+                    //right.type = lvalue_type;
+                    //// @TODO: make sure we have enough bytes in the lvalue type
 
-                    return lvalue_type;
-                },
-                Node.ID.identifier_expr,
-                Node.ID.binary_expr,
-                Node.ID.resolved_identifier,
-                Node.ID.invoke_expr,
-                Node.ID.unary_expr,
-                Node.ID.array_subscript_expr,
-                Node.ID.field_access_expr,
-                =>
-                {
-                    const rvalue_type = right.type;
-                    if (lvalue_type == rvalue_type)
-                    {
-                        return lvalue_type;
-                    }
-                    else
-                    {
-                        panic("reached here\n", .{});
-                    }
-                },
-                else => panic("ni: {}\n", .{right.value}),
-            }
-        },
-        Type.ID.pointer =>
-        {
-            switch (right.value)
-            {
-                Node.ID.unary_expr =>
-                {
-                    const unary_expr = right.value.unary_expr.id;
-                    switch (unary_expr)
-                    {
-                        UnaryExpression.ID.AddressOf =>
-                        {
-                            // @TODO: change base type for pointer type and get_type of pointer rvalue
-                            const rvalue_base_type = right.value.unary_expr.node_ref.type;
-                            const lvalue_base_type = lvalue_type.value.pointer.type;
-                            if (lvalue_base_type == rvalue_base_type)
-                            {
-                                return lvalue_type;
-                            }
-                        },
-                        else => panic("ni: {}\n", .{unary_expr}),
-                    }
-                },
-                Node.ID.invoke_expr =>
-                {
-                    const rvalue_type = right.type;
-                    if (rvalue_type == lvalue_type)
-                    {
-                        return lvalue_type;
-                    }
-                },
-                Node.ID.field_access_expr =>
-                {
-                    const rvalue_type = right.type;
-                    if (rvalue_type == lvalue_type)
-                    {
-                        return lvalue_type;
-                    }
-                },
-                else => panic("ni: {}\n", .{right.value}),
-            }
-        },
-        Type.ID.array =>
-        {
-            switch (right.value)
-            {
-                Node.ID.array_lit =>
-                {
-                    const result = typecheck(lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
-                    assert(result.value != Type.ID.unresolved);
-                    // @TODO: typecheck here
-                    log("Array literal resolved into {}\n", .{result});
-                    right.type = lvalue_type;
-                    return lvalue_type;
-                },
-                else => panic("ni: {}\n", .{right.value}),
-            }
-        },
-        Type.ID.structure =>
-        {
-            switch (right.value)
-            {
-                Node.ID.struct_lit =>
-                {
-                    for (right.value.struct_lit.field_names.items) |field_id, field_index|
-                    {
-                        const field_expr = right.value.struct_lit.field_expressions.items[field_index];
-                        _ = typecheck(field_id.type, field_expr, types);
-                    }
+                    //return lvalue_type;
+                //},
+                //Node.ID.identifier_expr,
+                //Node.ID.binary_expr,
+                //Node.ID.resolved_identifier,
+                //Node.ID.invoke_expr,
+                //Node.ID.unary_expr,
+                //Node.ID.array_subscript_expr,
+                //Node.ID.field_access_expr,
+                //=>
+                //{
+                    //const rvalue_type = right.type;
+                    //if (lvalue_type == rvalue_type)
+                    //{
+                        //return lvalue_type;
+                    //}
+                    //else
+                    //{
+                        //panic("reached here\n", .{});
+                    //}
+                //},
+                //else => panic("ni: {}\n", .{right.value}),
+            //}
+        //},
+        //Type.ID.pointer =>
+        //{
+            //switch (right.value)
+            //{
+                //Node.ID.unary_expr =>
+                //{
+                    //const unary_expr = right.value.unary_expr.id;
+                    //switch (unary_expr)
+                    //{
+                        //UnaryExpression.ID.AddressOf =>
+                        //{
+                            //// @TODO: change base type for pointer type and get_type of pointer rvalue
+                            //const rvalue_base_type = right.value.unary_expr.node_ref.type;
+                            //const lvalue_base_type = lvalue_type.value.pointer.type;
+                            //if (lvalue_base_type == rvalue_base_type)
+                            //{
+                                //return lvalue_type;
+                            //}
+                        //},
+                        //else => panic("ni: {}\n", .{unary_expr}),
+                    //}
+                //},
+                //Node.ID.invoke_expr =>
+                //{
+                    //const rvalue_type = right.type;
+                    //if (rvalue_type == lvalue_type)
+                    //{
+                        //return lvalue_type;
+                    //}
+                //},
+                //Node.ID.field_access_expr =>
+                //{
+                    //const rvalue_type = right.type;
+                    //if (rvalue_type == lvalue_type)
+                    //{
+                        //return lvalue_type;
+                    //}
+                //},
+                //else => panic("ni: {}\n", .{right.value}),
+            //}
+        //},
+        //Type.ID.array =>
+        //{
+            //switch (right.value)
+            //{
+                //Node.ID.array_lit =>
+                //{
+                    //const result = typecheck(lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
+                    //assert(result.value != Type.ID.unresolved);
+                    //// @TODO: typecheck here
+                    //log("Array literal resolved into {}\n", .{result});
+                    //right.type = lvalue_type;
+                    //return lvalue_type;
+                //},
+                //else => panic("ni: {}\n", .{right.value}),
+            //}
+        //},
+        //Type.ID.structure =>
+        //{
+            //switch (right.value)
+            //{
+                //Node.ID.struct_lit =>
+                //{
+                    //for (right.value.struct_lit.field_names.items) |field_id, field_index|
+                    //{
+                        //const field_expr = right.value.struct_lit.field_expressions.items[field_index];
+                        //_ = typecheck(field_id.type, field_expr, types);
+                    //}
 
-                    right.type = lvalue_type;
+                    //right.type = lvalue_type;
 
-                    return lvalue_type;
-                },
-                else => panic("ni: {}\n", .{right.value}),
-            }
-        },
-        Type.ID.unresolved =>
-        {
-            switch (right.type.value)
-            {
-                Type.ID.unresolved =>
-                {
-                    return lvalue_type;
-                },
-                else => panic("ni: {}\n", .{right.type.value}),
-            }
-        },
-        else => panic("ni: {}\n", .{lvalue_type.value}),
-    }
+                    //return lvalue_type;
+                //},
+                //else => panic("ni: {}\n", .{right.value}),
+            //}
+        //},
+        //Type.ID.unresolved =>
+        //{
+            //switch (right.type.value)
+            //{
+                //Type.ID.unresolved =>
+                //{
+                    //return lvalue_type;
+                //},
+                //else => panic("ni: {}\n", .{right.type.value}),
+            //}
+        //},
+        //else => panic("ni: {}\n", .{lvalue_type.value}),
+    //}
 
-    report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
-}
+    //report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
+//}
 
-pub fn explore_field_identifier_expression(node: *Node, node_buffer: *NodeBuffer) *Node
-{
-    switch (node.value)
-    {
-        Node.ID.identifier_expr =>
-        {
-            const name = node.value.identifier_expr.name;
-            if (node.parent) |parent|
-            {
-                switch (parent.value)
-                {
-                    Node.ID.field_access_expr =>
-                    {
-                        const struct_var_node = parent.value.field_access_expr.expression;
-                        switch (struct_var_node.value)
-                        {
-                            Node.ID.resolved_identifier =>
-                            {
-                                const field = find_field_from_resolved_identifier(struct_var_node, name);
-                                const field_node = new_field_node(node_buffer, field, parent);
-                                return field_node;
-                            },
-                            else => panic("ni: {}\n", .{struct_var_node.value}),
-                        }
-                    },
-                    Node.ID.struct_lit =>
-                    {
-                        assert(parent.value_type == Node.ValueType.RValue);
-                        const parent_of_parent = parent.parent.?;
-                        switch (parent_of_parent.value)
-                        {
-                            Node.ID.binary_expr =>
-                            {
-                                assert(parent_of_parent.value.binary_expr.id == BinaryExpression.ID.Assignment);
-                                const left = parent_of_parent.value.binary_expr.left;
-                                const right = parent_of_parent.value.binary_expr.right;
-                                assert(parent == right);
+//pub fn explore_field_identifier_expression(node: *Node, node_buffer: *NodeBuffer) *Node
+//{
+    //switch (node.value)
+    //{
+        //Node.ID.identifier_expr =>
+        //{
+            //const name = node.value.identifier_expr.name;
+            //if (node.parent) |parent|
+            //{
+                //switch (parent.value)
+                //{
+                    //Node.ID.field_access_expr =>
+                    //{
+                        //const struct_var_node = parent.value.field_access_expr.expression;
+                        //switch (struct_var_node.value)
+                        //{
+                            //Node.ID.resolved_identifier =>
+                            //{
+                                //const field = find_field_from_resolved_identifier(struct_var_node, name);
+                                //const field_node = new_field_node(node_buffer, field, parent);
+                                //return field_node;
+                            //},
+                            //else => panic("ni: {}\n", .{struct_var_node.value}),
+                        //}
+                    //},
+                    //Node.ID.struct_lit =>
+                    //{
+                        //assert(parent.value_type == Node.ValueType.RValue);
+                        //const parent_of_parent = parent.parent.?;
+                        //switch (parent_of_parent.value)
+                        //{
+                            //Node.ID.binary_expr =>
+                            //{
+                                //assert(parent_of_parent.value.binary_expr.id == BinaryExpression.ID.Assignment);
+                                //const left = parent_of_parent.value.binary_expr.left;
+                                //const right = parent_of_parent.value.binary_expr.right;
+                                //assert(parent == right);
 
-                                switch (left.value)
-                                {
-                                    Node.ID.resolved_identifier =>
-                                    {
-                                        const field = find_field_from_resolved_identifier(left, name);
-                                        const field_node = new_field_node(node_buffer, field, parent);
-                                        return field_node;
-                                    },
-                                    else => panic("left value: {}\n", .{left.value}),
-                                }
-                            },
-                            else => panic("ni: {}\n", .{parent_of_parent.value}),
-                        }
-                    },
-                    else => panic("ni: {}\n", .{parent.value}),
-                }
-            }
-            else
-            {
-                panic("Field identifier must have a parent\n", .{});
-            }
-        },
-        else => panic("ni: {}\n", .{node.value}),
-    }
-}
+                                //switch (left.value)
+                                //{
+                                    //Node.ID.resolved_identifier =>
+                                    //{
+                                        //const field = find_field_from_resolved_identifier(left, name);
+                                        //const field_node = new_field_node(node_buffer, field, parent);
+                                        //return field_node;
+                                    //},
+                                    //else => panic("left value: {}\n", .{left.value}),
+                                //}
+                            //},
+                            //else => panic("ni: {}\n", .{parent_of_parent.value}),
+                        //}
+                    //},
+                    //else => panic("ni: {}\n", .{parent.value}),
+                //}
+            //}
+            //else
+            //{
+                //panic("Field identifier must have a parent\n", .{});
+            //}
+        //},
+        //else => panic("ni: {}\n", .{node.value}),
+    //}
+//}
 
-pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, functions: *NodeRefBuffer, node_buffer: *NodeBuffer, types: *TypeBuffer) *Node
-{
-    switch (node.value)
-    {
-        Node.ID.var_decl =>
-        {
-            node.type = analyze_type_declaration(allocator, node.value.var_decl.var_type, types, node_buffer);
-        },
-        Node.ID.binary_expr =>
-        {
-            node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, functions, node_buffer, types);
-            node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, functions, node_buffer, types);
-            node.type = typecheck(node.value.binary_expr.left.type, node.value.binary_expr.right, types);
-        },
-        Node.ID.identifier_expr =>
-        {
-            const name = node.value.identifier_expr.name;
-            const decl_node = find_variable(current_function, name);
-            const new_node_value = Node
-            {
-                .value = Node.Value {
-                    .resolved_identifier = decl_node,
-                },
-                .value_type = node.value_type,
-                .parent = node.parent,
-                .type = decl_node.type,
-            };
+//pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, functions: *NodeRefBuffer, node_buffer: *NodeBuffer, types: *TypeBuffer) *Node
+//{
+    //switch (node.value)
+    //{
+        //Node.ID.var_decl =>
+        //{
+            //node.type = analyze_type_declaration(allocator, node.value.var_decl.var_type, types, node_buffer);
+        //},
+        //Node.ID.binary_expr =>
+        //{
+            //node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, functions, node_buffer, types);
+            //node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, functions, node_buffer, types);
+            //node.type = typecheck(node.value.binary_expr.left.type, node.value.binary_expr.right, types);
+        //},
+        //Node.ID.identifier_expr =>
+        //{
+            //const name = node.value.identifier_expr.name;
+            //const decl_node = find_variable(current_function, name);
+            //const new_node_value = Node
+            //{
+                //.value = Node.Value {
+                    //.resolved_identifier = decl_node,
+                //},
+                //.value_type = node.value_type,
+                //.parent = node.parent,
+                //.type = decl_node.type,
+            //};
 
-            var new_node = node_buffer.append(new_node_value) catch {
-                panic("Error allocating memory for resolved identifier node\n", .{});
-            };
+            //var new_node = node_buffer.append(new_node_value) catch {
+                //panic("Error allocating memory for resolved identifier node\n", .{});
+            //};
 
-            return new_node;
-        },
-        Node.ID.return_expr =>
-        {
-            if (node.value.return_expr.expression) |return_expr|
-            {
-                node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, functions, node_buffer, types);
-            }
-            node.type = Type.get_void_type(types);
-        },
-        Node.ID.block_expr =>
-        {
-            for (node.value.block_expr.statements.items) |*statement|
-            {
-                const new_current_block = node;
-                statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, functions, node_buffer, types);
-            }
-            node.type = Type.get_void_type(types);
-        },
-        Node.ID.loop_expr =>
-        {
-            node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, functions, node_buffer, types);
-            node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, functions, node_buffer, types);
-            node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, functions, node_buffer, types);
-            node.type = Type.get_void_type(types);
-        },
-        Node.ID.branch_expr =>
-        {
-            node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, functions, node_buffer, types);
-            node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, functions, node_buffer, types);
-            if (node.value.branch_expr.else_block) |else_block|
-            {
-                node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, functions, node_buffer, types);
-            }
-            node.type = Type.get_void_type(types);
-        },
-        Node.ID.invoke_expr =>
-        {
-            const function_call_id_node = node.value.invoke_expr.expression;
-            assert(function_call_id_node.value == Node.ID.identifier_expr);
-            const function_call_name = function_call_id_node.value.identifier_expr.name;
-            log("function call name: {s}\n", .{function_call_name});
-            const function_decl = find_function_decl(function_call_name, functions);
-            node.type = function_decl.type.value.function.ret_type;
-            node.value.invoke_expr.expression = function_decl;
+            //return new_node;
+        //},
+        //Node.ID.return_expr =>
+        //{
+            //if (node.value.return_expr.expression) |return_expr|
+            //{
+                //node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, functions, node_buffer, types);
+            //}
+            //node.type = Type.get_void_type(types);
+        //},
+        //Node.ID.block_expr =>
+        //{
+            //for (node.value.block_expr.statements.items) |*statement|
+            //{
+                //const new_current_block = node;
+                //statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, functions, node_buffer, types);
+            //}
+            //node.type = Type.get_void_type(types);
+        //},
+        //Node.ID.loop_expr =>
+        //{
+            //node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, functions, node_buffer, types);
+            //node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, functions, node_buffer, types);
+            //node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, functions, node_buffer, types);
+            //node.type = Type.get_void_type(types);
+        //},
+        //Node.ID.branch_expr =>
+        //{
+            //node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, functions, node_buffer, types);
+            //node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, functions, node_buffer, types);
+            //if (node.value.branch_expr.else_block) |else_block|
+            //{
+                //node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, functions, node_buffer, types);
+            //}
+            //node.type = Type.get_void_type(types);
+        //},
+        //Node.ID.invoke_expr =>
+        //{
+            //const function_call_id_node = node.value.invoke_expr.expression;
+            //assert(function_call_id_node.value == Node.ID.identifier_expr);
+            //const function_call_name = function_call_id_node.value.identifier_expr.name;
+            //log("function call name: {s}\n", .{function_call_name});
+            //const function_decl = find_function_decl(function_call_name, functions);
+            //node.type = function_decl.type.value.function.ret_type;
+            //node.value.invoke_expr.expression = function_decl;
 
-            for (node.value.invoke_expr.arguments.items) |*arg|
-            {
-                arg.* = explore_expression(allocator, current_function, current_block, arg.*, functions, node_buffer, types);
-            }
-        },
-        Node.ID.unary_expr =>
-        {
-            // @TODO: check anything more with unary expression id?
-            node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, functions, node_buffer, types);
-            switch (node.value.unary_expr.id)
-            {
-                UnaryExpression.ID.AddressOf =>
-                {
-                    node.type = Type.get_pointer_type(node.value.unary_expr.node_ref.type, types);
-                },
-                UnaryExpression.ID.Dereference =>
-                {
-                    node.type = node.value.unary_expr.node_ref.type.value.pointer.type;
-                },
-            }
-        },
-        Node.ID.break_expr =>
-        {
-            // @TODO: check if we are in a loop
-        },
-        Node.ID.int_lit,  =>
-        {
-            // @Info: this is a literal type which is resolved later
-            node.type = Type.get_literal_type(types);
-        },
-        Node.ID.array_lit =>
-        {
-            const first_elem = node.value.array_lit.elements.items[0];
-            const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, functions, node_buffer, types);
-            const first_elem_type = first_elem_analyzed.type;
+            //for (node.value.invoke_expr.arguments.items) |*arg|
+            //{
+                //arg.* = explore_expression(allocator, current_function, current_block, arg.*, functions, node_buffer, types);
+            //}
+        //},
+        //Node.ID.unary_expr =>
+        //{
+            //// @TODO: check anything more with unary expression id?
+            //node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, functions, node_buffer, types);
+            //switch (node.value.unary_expr.id)
+            //{
+                //UnaryExpression.ID.AddressOf =>
+                //{
+                    //node.type = Type.get_pointer_type(node.value.unary_expr.node_ref.type, types);
+                //},
+                //UnaryExpression.ID.Dereference =>
+                //{
+                    //node.type = node.value.unary_expr.node_ref.type.value.pointer.type;
+                //},
+            //}
+        //},
+        //Node.ID.break_expr =>
+        //{
+            //// @TODO: check if we are in a loop
+        //},
+        //Node.ID.int_lit,  =>
+        //{
+            //// @Info: this is a literal type which is resolved later
+            //node.type = Type.get_literal_type(types);
+        //},
+        //Node.ID.array_lit =>
+        //{
+            //const first_elem = node.value.array_lit.elements.items[0];
+            //const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, functions, node_buffer, types);
+            //const first_elem_type = first_elem_analyzed.type;
 
-            for (node.value.array_lit.elements.items) |*array_elem|
-            {
-                array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, functions, node_buffer, types);
-                _ = typecheck(first_elem_type, array_elem.*, types);
-            }
+            //for (node.value.array_lit.elements.items) |*array_elem|
+            //{
+                //array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, functions, node_buffer, types);
+                //_ = typecheck(first_elem_type, array_elem.*, types);
+            //}
 
-            // @TODO: improve
-            node.type = Type.get_literal_type(types);
-        },
-        Node.ID.struct_lit =>
-        {
-            for (node.value.struct_lit.field_names.items) |*name_node_ptr|
-            {
-                name_node_ptr.* = explore_field_identifier_expression(name_node_ptr.*, node_buffer);
-            }
+            //// @TODO: improve
+            //node.type = Type.get_literal_type(types);
+        //},
+        //Node.ID.struct_lit =>
+        //{
+            //for (node.value.struct_lit.field_names.items) |*name_node_ptr|
+            //{
+                //name_node_ptr.* = explore_field_identifier_expression(name_node_ptr.*, node_buffer);
+            //}
 
-            for (node.value.struct_lit.field_expressions.items) |*expression_node_ptr|
-            {
-                expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, functions, node_buffer, types);
-            }
-        },
-        Node.ID.array_subscript_expr =>
-        {
-            node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, functions, node_buffer, types);
-            node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, functions, node_buffer, types);
-            node.type = node.value.array_subscript_expr.expression.type.value.array.type;
-        },
-        Node.ID.field_access_expr =>
-        {
-            node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, functions, node_buffer, types);
-            node.value.field_access_expr.field_expr = explore_field_identifier_expression(node.value.field_access_expr.field_expr, node_buffer);
-            node.type = node.value.field_access_expr.field_expr.type;
-        },
-        else => panic("ni: {}\n", .{node.value}),
-    }
+            //for (node.value.struct_lit.field_expressions.items) |*expression_node_ptr|
+            //{
+                //expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, functions, node_buffer, types);
+            //}
+        //},
+        //Node.ID.array_subscript_expr =>
+        //{
+            //node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, functions, node_buffer, types);
+            //node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, functions, node_buffer, types);
+            //node.type = node.value.array_subscript_expr.expression.type.value.array.type;
+        //},
+        //Node.ID.field_access_expr =>
+        //{
+            //node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, functions, node_buffer, types);
+            //node.value.field_access_expr.field_expr = explore_field_identifier_expression(node.value.field_access_expr.field_expr, node_buffer);
+            //node.type = node.value.field_access_expr.field_expr.type;
+        //},
+        //else => panic("ni: {}\n", .{node.value}),
+    //}
 
-    return node;
-}
+    //return node;
+//}
 
 fn analyze_type(analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_type: Type) Type
 {
@@ -500,16 +500,27 @@ pub fn find_variable_declaration(scope: *Parser.Scope, name: []const u8) Entity
     report_error("Variable declaration \"{s}\" not found\n", .{name});
 }
 
+pub fn analyze_comparison(comparison: *Parser.Comparison) void
+{
+    _ = comparison;
+    unreachable;
+}
+
 pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
 {
+    const scope_index = (@ptrToInt(scope) - @ptrToInt(current_function.scopes.ptr)) / @sizeOf(Parser.Scope);
+    log("Scope index: {}\n", .{scope_index});
     const statement_count = scope.statements.len;
     log("Statement count: {}\n", .{statement_count});
+    log("Comparison count: {}\n", .{scope.comparisons.len});
+
     for (scope.statements) |*statement|
     {
         const statement_index = statement.get_index();
         const statement_level = statement.get_level();
         assert(statement_level == .scope);
         const statement_id = statement.get_array_index(.scope);
+
         switch (statement_id)
         {
             .invoke_expressions =>
@@ -708,6 +719,46 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                     },
                     else => panic("NI: {}", .{right_id}),
                 }
+            },
+            .loops =>
+            {
+                var loop = &scope.loops[statement_index];
+                var prefix_scope = &current_function.scopes[loop.prefix_scope_index];
+                analyze_scope(analyzer, module_offsets, prefix_scope, current_function, module_index);
+                var body_scope = &current_function.scopes[loop.body_scope_index];
+                analyze_scope(analyzer, module_offsets, body_scope, current_function, module_index);
+                var postfix_scope = &current_function.scopes[loop.postfix_scope_index];
+                analyze_scope(analyzer, module_offsets, postfix_scope, current_function, module_index);
+            },
+            .branches =>
+            {
+                var branch = &scope.branches[statement_index];
+
+                // @TODO: should we do this here?
+                {
+                    assert(branch.condition.get_level() == .scope);
+                    const array_index = branch.condition.get_array_index(.scope);
+                    if (array_index != .comparisons)
+                    {
+                        report_error("Expected a comparison as the branch condition\n", .{});
+                    }
+                    const branch_comparison_index = branch.condition.get_index();
+                    log("Branch comparison index: {}\n", .{branch_comparison_index});
+                    var branch_comparison = &scope.comparisons[branch_comparison_index];
+                    analyze_comparison(branch_comparison);
+                }
+
+                var if_scope = &current_function.scopes[branch.if_scope];
+                analyze_scope(analyzer, module_offsets, if_scope, current_function, module_index);
+                if (branch.else_scope) |else_scope_index|
+                {
+                    var else_scope = &current_function.scopes[else_scope_index];
+                    analyze_scope(analyzer, module_offsets, else_scope, current_function, module_index);
+                }
+            },
+            .comparisons =>
+            {
+                unreachable;
             },
             else => panic("NI: {}", .{statement_id}),
         }
@@ -1059,6 +1110,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_offsets.items, module_index);
         for (analyzer.functions.items[function_range.start..function_range.end]) |*function|
         {
+            std.debug.print("\n", .{});
             log("Analyzing {s}()...\n", .{function.declaration.name});
             const main_block = &function.scopes[0];
             analyze_scope(&analyzer, module_offsets.items, main_block, function, module_index);
