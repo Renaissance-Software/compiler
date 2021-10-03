@@ -684,7 +684,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             {
                 .scope =>
                 {
-                    const array_index = ast_statement.get_array_index(.scope);
+                    const array_index = ast_statement.get_array_id(.scope);
                     switch (array_index)
                     {
                         .invoke_expressions =>
@@ -697,12 +697,12 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             var ast_called_function_declaration: Parser.Function = undefined;
                             const called_function_index = expression.get_index();
 
-                            if (expression.get_array_index(.global) == .resolved_internal_functions)
+                            if (expression.get_array_id(.global) == .resolved_internal_functions)
                             {
                                 called_function_reference = Function.new(called_function_index);
                                 ast_called_function_declaration = result.functions[called_function_index].declaration;
                             }
-                            else if (expression.get_array_index(.global) == .resolved_external_functions)
+                            else if (expression.get_array_id(.global) == .resolved_external_functions)
                             {
                                 called_function_reference = ExternalFunction.new(called_function_index);
                                 ast_called_function_declaration = result.external.functions[called_function_index].declaration;
@@ -726,7 +726,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                     {
                                         .scope =>
                                         {
-                                            const ast_arg_array_index = ast_argument.get_array_index(.scope);
+                                            const ast_arg_array_index = ast_argument.get_array_id(.scope);
                                             switch (ast_arg_array_index)
                                             {
                                                 .integer_literals =>
@@ -767,7 +767,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                                 {
                                     .scope => blk:
                                     {
-                                        const ret_array_index = ast_expression_to_return.get_array_index(.scope);
+                                        const ret_array_index = ast_expression_to_return.get_array_id(.scope);
                                         switch (ret_array_index)
                                         {
                                             .integer_literals =>
@@ -814,7 +814,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                         {
                             const assignment = ast_main_block.assignments[statement_index];
                             assert(assignment.left.get_level() == .scope);
-                            const left_id = assignment.left.get_array_index(.scope);
+                            const left_id = assignment.left.get_array_id(.scope);
                             const pointer_reference = switch (left_id)
                             {
                                 .variable_declarations => find_expression_alloca(&builder, function_builder, assignment.left),
@@ -822,7 +822,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
                             };
 
                             assert(assignment.right.get_level() == .scope);
-                            const right_id = assignment.right.get_array_index(.scope);
+                            const right_id = assignment.right.get_array_id(.scope);
                             const value_reference = switch (right_id)
                             {
                                 .integer_literals => Constant.new(.int, assignment.right.get_index()),

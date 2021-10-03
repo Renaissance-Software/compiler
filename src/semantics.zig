@@ -487,28 +487,69 @@ pub fn resolve_entity_index(analyzer: *Analyzer, comptime module_stats_id: Modul
 }
 
 // @TODO: make this more robust
-pub fn find_variable_declaration(scope: *Parser.Scope, name: []const u8) Entity
+pub fn find_variable_declaration(current_function: *Parser.Function.Internal, scope_index: u32, name: []const u8) Entity
 {
+    const scope = &current_function.scopes[scope_index];
+
     for (scope.variable_declarations) |variable_declaration, variable_declaration_i|
     {
         if (std.mem.eql(u8, variable_declaration.name, name))
         {
-            return Entity.new(variable_declaration_i, Entity.ScopeID.variable_declarations);
+            return Entity.new(variable_declaration_i, Entity.ScopeID.variable_declarations, scope_index);
         }
     }
 
-    report_error("Variable declaration \"{s}\" not found\n", .{name});
+    if (scope_index != 0)
+    {
+        return find_variable_declaration(current_function, scope.parent.scope, name);
+    }
+    else
+    {
+        report_error("Variable declaration \"{s}\" not found\n", .{name});
+    }
 }
 
-pub fn analyze_comparison(comparison: *Parser.Comparison) void
+pub fn analyze_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, expression: Entity) Type
 {
-    _ = comparison;
-    unreachable;
+    _ = analyzer;
+    _ = scope;
+    _ = function;
+
+    const expression_level = expression.get_level();
+    const expression_index = expression.get_index();
+    switch (expression_level)
+    {
+        .scope =>
+        {
+            const array_id = expression.get_array_id(.scope);
+            switch (array_id)
+            {
+                .variable_declarations =>
+                {
+                    _ = expression_index;
+                    unreachable;
+                },
+                else => panic("NI: {}\n", .{array_id}),
+            }
+        },
+        else => panic("NI: {}\n", .{expression_level}),
+    }
+}
+
+pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, left: Entity, right: Entity) void
+{
+    _ = analyze_expression(analyzer, function, scope, left);
+    _ = analyze_expression(analyzer, function, scope, right);
+}
+
+pub fn analyze_comparison(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, comparison: *Parser.Comparison) void
+{
+    analyze_binary_expression(analyzer, function, scope, comparison.left, comparison.right);
 }
 
 pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
 {
-    const scope_index = (@ptrToInt(scope) - @ptrToInt(current_function.scopes.ptr)) / @sizeOf(Parser.Scope);
+    const scope_index = @intCast(u32, (@ptrToInt(scope) - @ptrToInt(current_function.scopes.ptr)) / @sizeOf(Parser.Scope));
     log("Scope index: {}\n", .{scope_index});
     const statement_count = scope.statements.len;
     log("Statement count: {}\n", .{statement_count});
@@ -519,7 +560,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
         const statement_index = statement.get_index();
         const statement_level = statement.get_level();
         assert(statement_level == .scope);
-        const statement_id = statement.get_array_index(.scope);
+        const statement_id = statement.get_array_id(.scope);
 
         switch (statement_id)
         {
@@ -530,7 +571,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                 const expression_to_invoke_index = expression_to_invoke.get_index();
                 const expression_to_invoke_level = expression_to_invoke.get_level();
                 assert(expression_to_invoke_level == .scope);
-                const expression_to_invoke_id = expression_to_invoke.get_array_index(.scope);
+                const expression_to_invoke_id = expression_to_invoke.get_array_id(.scope);
 
                 const resolved_expression_to_invoke: Entity = blk:
                 {
@@ -544,7 +585,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                 continue;
                             }
 
-                            break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions);
+                            break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions, 0);
                         }
 
                         unreachable;
@@ -555,16 +596,16 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         const left = field_expression.left_expression;
                         const left_level = left.get_level();
                         assert(left_level == .scope);
-                        const left_array_index = left.get_array_index(.scope);
-                        assert(left_array_index == .identifier_expressions);
+                        const left_array_id = left.get_array_id(.scope);
+                        assert(left_array_id == .identifier_expressions);
                         const left_index = left.get_index();
                         const left_name = scope.identifier_expressions[left_index];
 
                         const field = field_expression.field_expression;
                         const field_level = field.get_level();
                         assert(field_level == .scope);
-                        const field_array_index = field.get_array_index(.scope);
-                        assert(field_array_index == .identifier_expressions);
+                        const field_array_id = field.get_array_id(.scope);
+                        assert(field_array_id == .identifier_expressions);
                         const field_index = field.get_index();
                         const field_name = scope.identifier_expressions[field_index];
 
@@ -591,7 +632,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                     continue;
                                 }
 
-                                break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions);
+                                break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions, 0);
                             }
 
                             const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, module_offsets, imported_module_index);
@@ -605,7 +646,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                     continue;
                                 }
 
-                                break :blk Entity.new(function_i + external_functions_range.start, Entity.GlobalID.resolved_external_functions);
+                                break :blk Entity.new(function_i + external_functions_range.start, Entity.GlobalID.resolved_external_functions, 0);
                             }
                         }
 
@@ -619,11 +660,11 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                 if (invoke_expression.arguments.len > 0)
                 {
-                    const resolved_expression_array_index = resolved_expression_to_invoke.get_array_index(.global);
+                    const resolved_expression_array_id = resolved_expression_to_invoke.get_array_id(.global);
                     const function_type =
-                        if (resolved_expression_array_index == Entity.GlobalID.resolved_internal_functions)
+                        if (resolved_expression_array_id == Entity.GlobalID.resolved_internal_functions)
                             analyzer.functions.items[resolved_expression_to_invoke.get_index()].declaration.type
-                        else if (resolved_expression_array_index == Entity.GlobalID.resolved_external_functions)
+                        else if (resolved_expression_array_id == Entity.GlobalID.resolved_external_functions)
                             analyzer.external_functions.items[resolved_expression_to_invoke.get_index()].declaration.type
                         else unreachable;
                     const argument_types = function_type.argument_types;
@@ -632,8 +673,8 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                     {
                         const arg_level = arg.get_level();
                         assert(arg_level == .scope);
-                        const array_index = arg.get_array_index(.scope);
-                        assert(array_index == Entity.ScopeID.integer_literals);
+                        const array_id = arg.get_array_id(.scope);
+                        assert(array_id == Entity.ScopeID.integer_literals);
                         // @TODO: typecheck properly
                         if (argument_types[arg_i].get_ID() != .integer)
                         {
@@ -651,9 +692,9 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                 {
                     const ret_expr_lvl = expression_to_return.get_level();
                     assert(ret_expr_lvl == .scope);
-                    const ret_expr_array_index = expression_to_return.get_array_index(.scope);
+                    const ret_expr_array_id = expression_to_return.get_array_id(.scope);
 
-                    switch (ret_expr_array_index)
+                    switch (ret_expr_array_id)
                     {
                         .integer_literals =>
                         {
@@ -668,9 +709,9 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         .identifier_expressions =>
                         {
                             const identifier = scope.identifier_expressions[expression_to_return.get_index()];
-                            return_expression.expression.? = find_variable_declaration(scope, identifier);
+                            return_expression.expression.? = find_variable_declaration(current_function, scope_index, identifier);
                         },
-                        else => panic("NI: {}\n", .{ret_expr_array_index}),
+                        else => panic("NI: {}\n", .{ret_expr_array_id}),
                     }
                 }
                 else
@@ -690,7 +731,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
             {
                 var assignment = &scope.assignments[statement_index];
                 assert(assignment.left.get_level() == .scope);
-                const left_id = assignment.left.get_array_index(.scope);
+                const left_id = assignment.left.get_array_id(.scope);
 
                 const left_type = switch (left_id)
                 {
@@ -703,7 +744,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                 };
 
                 assert(assignment.right.get_level() == .scope);
-                const right_id = assignment.right.get_array_index(.scope);
+                const right_id = assignment.right.get_array_id(.scope);
 
                 switch (right_id)
                 {
@@ -737,15 +778,15 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                 // @TODO: should we do this here?
                 {
                     assert(branch.condition.get_level() == .scope);
-                    const array_index = branch.condition.get_array_index(.scope);
-                    if (array_index != .comparisons)
+                    const array_id = branch.condition.get_array_id(.scope);
+                    if (array_id != .comparisons)
                     {
                         report_error("Expected a comparison as the branch condition\n", .{});
                     }
                     const branch_comparison_index = branch.condition.get_index();
                     log("Branch comparison index: {}\n", .{branch_comparison_index});
                     var branch_comparison = &scope.comparisons[branch_comparison_index];
-                    analyze_comparison(branch_comparison);
+                    analyze_comparison(analyzer, current_function, scope, branch_comparison);
                 }
 
                 var if_scope = &current_function.scopes[branch.if_scope];
@@ -758,7 +799,8 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
             },
             .comparisons =>
             {
-                unreachable;
+                var comparison = &scope.comparisons[statement_index];
+                analyze_comparison(analyzer, current_function, scope, comparison);
             },
             else => panic("NI: {}", .{statement_id}),
         }

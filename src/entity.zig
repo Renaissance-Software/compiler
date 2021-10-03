@@ -15,9 +15,6 @@ pub const Entity = packed struct
         assert(@sizeOf(Self) == @sizeOf(Type));
     }
 
-    const resolved_position = @bitSizeOf(Self) - 1;
-    // @TODO: compute this better
-
     pub const Level = enum(IntType)
     {
         builtin,
@@ -25,12 +22,14 @@ pub const Entity = packed struct
         module,
         scope,
 
-        const position = resolved_position - @bitSizeOf(Level);
+        const position = @bitSizeOf(Type) - @bitSizeOf(Level);
         const IntType = u2;
     };
 
-    const array_id_position = @bitSizeOf(Type) >> 1;
+    const array_id_position = Level.position - @bitSizeOf(ScopeID); 
     const ArrayIDEnumType = std.meta.Int(.unsigned, Level.position - array_id_position);
+    const array_index_position = @bitSizeOf(u32);
+    const ArrayIndexEnumType = std.meta.Int(.unsigned, array_id_position - array_index_position);
 
     pub const BuiltinID = enum
     {
@@ -87,7 +86,7 @@ pub const Entity = packed struct
         break :blk array_ids;
     };
 
-    pub fn new(base_index: u64, comptime array_id: anytype) Self
+    pub fn new(base_index: u64, comptime array_id: anytype, array_index: u64) Self
     {
         const level = comptime switch(@TypeOf(array_id))
         {
@@ -100,7 +99,7 @@ pub const Entity = packed struct
 
         const result = Self
         {
-            .value = (@intCast(Self.Type, @enumToInt(level)) << Level.position) | (@intCast(Self.Type, @enumToInt(array_id)) << array_id_position) | base_index,
+            .value = (@intCast(Self.Type, @enumToInt(level)) << Level.position) | (@intCast(Self.Type, @enumToInt(array_id)) << array_id_position) | (array_index << array_index_position) | base_index,
         };
 
         return result;
@@ -123,7 +122,7 @@ pub const Entity = packed struct
 
     pub fn get_builtin_os() Self
     {
-        return Self.new(0, Self.BuiltinID.os);
+        return Self.new(0, Self.BuiltinID.os, 0);
     }
 
     pub fn get_level(self: Self) Level
@@ -131,9 +130,14 @@ pub const Entity = packed struct
         return @intToEnum(Level, @intCast(Level.IntType, (self.value & (std.math.maxInt(Level.IntType) << Level.position)) >> Level.position));
     }
 
-    pub fn get_array_index(self: Self, comptime level: Level) LevelToArrayIDMap[@enumToInt(level)]
+    pub fn get_array_id(self: Self, comptime level: Level) LevelToArrayIDMap[@enumToInt(level)]
     {
         return @intToEnum(LevelToArrayIDMap[@enumToInt(level)], @intCast(std.meta.Int(.unsigned, @bitSizeOf(LevelToArrayIDMap[@enumToInt(level)])), (self.value & (std.math.maxInt(ArrayIDEnumType) << array_id_position)) >> array_id_position));
+    }
+
+    pub fn get_array_index(self: Self) u32
+    {
+        return @intCast(u32, (self.value & (std.math.maxInt(ArrayIndexEnumType) << array_index_position)) >> array_index_position);
     }
 
     pub fn is_resolved(self: Self) callconv(.Inline) bool

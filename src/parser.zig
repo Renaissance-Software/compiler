@@ -34,10 +34,10 @@ pub const IntegerLiteral = struct
     signed: bool,
     // padding
     //
-    fn new(list: *ArrayList(IntegerLiteral), value: u64, signed: bool) Entity
+    fn new(list: *ArrayList(IntegerLiteral), value: u64, signed: bool, module_index: u64) Entity
     {
         const index = list.items.len;
-        const id = Entity.new(index, Entity.ScopeID.integer_literals);
+        const id = Entity.new(index, Entity.ScopeID.integer_literals, module_index);
         list.append(.
             {
                 .value = value,
@@ -48,20 +48,14 @@ pub const IntegerLiteral = struct
     }
 };
 
-const FieldAccessExpression = struct
-{
-    left_expression: Entity,
-    field_expression: Entity,
-    type: Type,
-};
-
 pub const VariableDeclaration = struct
 {
     name: []const u8,
     type: Type,
 
-    fn new(current_scope: *Scope.Builder, name: []const u8, var_type: Type) Entity
+    fn new(function_builder: *Function.Builder, name: []const u8, var_type: Type) Entity
     {
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
         const var_decl_index = current_scope.variable_declarations.items.len;
         current_scope.variable_declarations.append(.
             {
@@ -69,7 +63,7 @@ pub const VariableDeclaration = struct
                 .type = var_type,
             }) catch unreachable;
 
-        const var_decl_id = Entity.new(var_decl_index, Entity.ScopeID.variable_declarations);
+        const var_decl_id = Entity.new(var_decl_index, Entity.ScopeID.variable_declarations, function_builder.current_scope);
         current_scope.statements.append(var_decl_id) catch unreachable;
 
         return var_decl_id;
@@ -78,11 +72,13 @@ pub const VariableDeclaration = struct
 
 pub const IdentifierExpression = []const u8;
 
-fn new_identifier_expression(current_scope: *Scope.Builder, name: IdentifierExpression) Entity
+fn new_identifier_expression(function_builder: *Function.Builder, name: IdentifierExpression) Entity
 {
+    var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
     const index = current_scope.identifier_expressions.items.len;
-    const identifier_expression = Entity.new(index, Entity.ScopeID.identifier_expressions);
+    const identifier_expression = Entity.new(index, Entity.ScopeID.identifier_expressions, function_builder.current_scope);
     current_scope.identifier_expressions.append(name) catch unreachable;
+
     return identifier_expression;
 }
 
@@ -96,10 +92,11 @@ pub const Assignment = struct
     left: Entity,
     right: Entity,
 
-    fn new(current_scope: *Scope.Builder, left: Entity, right: Entity) Entity
+    fn new(function_builder: *Function.Builder, left: Entity, right: Entity) Entity
     {
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
         const index = current_scope.assignments.items.len;
-        const assignment = Entity.new(index, Entity.ScopeID.assignments);
+        const assignment = Entity.new(index, Entity.ScopeID.assignments, function_builder.current_scope);
         current_scope.assignments.append(.{
             .left = left,
             .right = right,
@@ -133,7 +130,7 @@ pub const ComposedAssignment = struct
         sub,
     };
 
-    fn new(current_scope: *Scope.Builder, id: ID, left: Entity, right: Entity) Entity
+    fn new(function_builder: *Function.Builder, id: ID, left: Entity, right: Entity) Entity
     {
         const composed_assignment = ComposedAssignment
         {
@@ -142,9 +139,10 @@ pub const ComposedAssignment = struct
             .id = id,
         };
 
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
         const index = current_scope.composed_assignments.items.len;
         current_scope.composed_assignments.append(composed_assignment) catch unreachable;
-        const composed_assignment_id = Entity.new(index, Entity.ScopeID.composed_assignments);
+        const composed_assignment_id = Entity.new(index, Entity.ScopeID.composed_assignments, function_builder.current_scope);
         // @TODO: think if assignments are always an statement
         current_scope.statements.append(composed_assignment_id) catch unreachable;
 
@@ -185,7 +183,7 @@ pub const Comparison = struct
         greater_or_equal,
     };
 
-    fn new(current_scope: *Scope.Builder, id: ID, left: Entity, right: Entity) Entity
+    fn new(function_builder: *Function.Builder, id: ID, left: Entity, right: Entity) Entity
     {
         const comparison = Comparison
         {
@@ -194,8 +192,9 @@ pub const Comparison = struct
             .id = id,
         };
 
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
         const index = current_scope.comparisons.items.len;
-        const comparison_id = Entity.new(index, Entity.ScopeID.comparisons);
+        const comparison_id = Entity.new(index, Entity.ScopeID.comparisons, function_builder.current_scope);
         current_scope.comparisons.append(comparison) catch unreachable;
         log("Just appended a comparison here: {}\n", .{current_scope.comparisons.items.len});
         // @TODO: this may be just an expression and not an statement; remove
@@ -222,6 +221,54 @@ pub const ArithmeticExpression = struct
 pub const BreakExpression = struct
 {
     loop_to_break: u32,
+};
+
+pub const InvokeExpression = struct
+{
+    arguments: []Entity,
+    expression: Entity,
+
+    fn new(function_builder: *Function.Builder, arguments: []Entity, expression: Entity) Entity
+    {
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
+        const index = current_scope.invoke_expressions.items.len;
+        const expression_id = Entity.new(index, Entity.ScopeID.invoke_expressions, function_builder.current_scope);
+        current_scope.invoke_expressions.append(.
+            {
+                .arguments = arguments,
+                .expression = expression,
+            }) catch unreachable;
+
+        return expression_id;
+    }
+};
+
+const FieldAccessExpression = struct
+{
+    left_expression: Entity,
+    field_expression: Entity,
+    type: Type,
+
+    fn new(module_parser: *ModuleParser, left_expression: Entity) Entity
+    {
+        var current_scope = &module_parser.function_builder.scope_builders.items[module_parser.function_builder.current_scope];
+        const index = current_scope.field_access_expressions.items.len;
+        const field_access_expression_id = Entity.new(index, Entity.ScopeID.field_access_expressions, module_parser.function_builder.current_scope);
+        current_scope.field_access_expressions.append(
+            .{
+                .left_expression = left_expression,
+                .field_expression = module_parser.parse_precedence(comptime Precedence.Call.increment()),
+                .type = Type.unresolved_type,
+            }) catch unreachable;
+
+        return field_access_expression_id;
+    }
+};
+
+pub const ImportedModule = struct
+{
+    module: Entity,
+    alias: ?[]const u8,
 };
 
 pub const Scope = struct
@@ -458,7 +505,7 @@ pub const ModuleParser = struct
     fn parse_prefix_identifier(self: *Self) Entity
     {
         const identifier_name = self.get_and_consume_token(.identifier).value;
-        const left_expression = new_identifier_expression(&self.function_builder.scope_builders.items[self.function_builder.current_scope], identifier_name);
+        const left_expression = new_identifier_expression(&self.function_builder, identifier_name);
         return left_expression;
     }
 
@@ -481,7 +528,7 @@ pub const ModuleParser = struct
                     // @TODO: implement signedness parsing
                     const signed = false;
                     const integer_value = self.get_and_consume_token(.int_lit).value;
-                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, integer_value, signed);
+                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, integer_value, signed, self.module_builder.index);
                 },
                 .operator =>
                 {
@@ -619,14 +666,7 @@ pub const ModuleParser = struct
                             parser_error("Expected right parenthesis to finish argument list\n", .{});
                         }
 
-                        const invoke_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.items.len, Entity.ScopeID.invoke_expressions);
-                        self.function_builder.scope_builders.items[self.function_builder.current_scope].invoke_expressions.append(.
-                            {
-                                .arguments = argument_list.items,
-                                .expression = left_expression,
-                            }) catch unreachable;
-
-                        break :blk invoke_expression_id;
+                        break :blk InvokeExpression.new(&self.function_builder, argument_list.items, left_expression);
                     },
                     .Declaration => 
                     {
@@ -640,15 +680,7 @@ pub const ModuleParser = struct
                     },
                     .Dot => blk:
                     {
-                        const field_access_expression_id = Entity.new(self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.items.len, Entity.ScopeID.field_access_expressions);
-                        self.function_builder.scope_builders.items[self.function_builder.current_scope].field_access_expressions.append(
-                            .{
-                                .left_expression = left_expression,
-                                .field_expression = self.parse_precedence(comptime Precedence.Call.increment()),
-                                .type = Type.unresolved_type,
-                            }) catch unreachable;
-
-                        break :blk field_access_expression_id;
+                        break :blk FieldAccessExpression.new(self, left_expression);
                     },
                     else => panic("operator not implemented: {}\n", .{operator}),
                 };
@@ -680,7 +712,7 @@ pub const ModuleParser = struct
         var current_scope = self.function_builder.scope_builders.items[self.function_builder.current_scope];
         const arithmetic_expression_index = current_scope.arithmetic_expressions.items.len;
         current_scope.arithmetic_expressions.append(arithmetic_expression) catch unreachable;
-        const arithmetic_expression_id = Entity.new(arithmetic_expression_index, Entity.ScopeID.arithmetic_expressions);
+        const arithmetic_expression_id = Entity.new(arithmetic_expression_index, Entity.ScopeID.arithmetic_expressions, self.function_builder.current_scope);
 
         return arithmetic_expression_id;
     }
@@ -705,7 +737,7 @@ pub const ModuleParser = struct
         var current_scope = self.function_builder.scope_builders.items[self.function_builder.current_scope];
         const expression_index = current_scope.comparisons.items.len;
         current_scope.comparisons.append(expression) catch unreachable;
-        const expression_id = Entity.new(expression_index, Entity.ScopeID.comparisons);
+        const expression_id = Entity.new(expression_index, Entity.ScopeID.comparisons, self.function_builder.current_scope);
 
         return expression_id;
     }
@@ -713,7 +745,7 @@ pub const ModuleParser = struct
     fn parse_assignment(self: *Self, left_expression: Entity, precedence: Precedence) Entity
     {
         const right_expression = self.parse_precedence(@intToEnum(Precedence, @enumToInt(precedence) + 1));
-        return Assignment.new(&self.function_builder.scope_builders.items[self.function_builder.current_scope], left_expression, right_expression);
+        return Assignment.new(&self.function_builder, left_expression, right_expression);
     }
 
     fn parse_statement(self: *Self, parent_scope: u32) void
@@ -736,7 +768,7 @@ pub const ModuleParser = struct
                     self.consume_token(.identifier);
                     self.consume_token(.operator);
 
-                    const var_decl_id = VariableDeclaration.new(current_scope, identifier_name, self.parse_type());
+                    const var_decl_id = VariableDeclaration.new(&self.function_builder, identifier_name, self.parse_type());
                     const var_next_token = self.lexer.tokens[self.lexer.next_index];
 
                     if (var_next_token == .operator)
@@ -754,7 +786,7 @@ pub const ModuleParser = struct
                                     .right = var_init_expression,
                                 }) catch unreachable;
 
-                            const assignment_id = Entity.new(assignment_index, Entity.ScopeID.assignments);
+                            const assignment_id = Entity.new(assignment_index, Entity.ScopeID.assignments, parent_scope);
                             current_scope.statements.append(assignment_id) catch unreachable;
                         }
                         else
@@ -828,7 +860,7 @@ pub const ModuleParser = struct
                         };
 
                         const return_expression_index = current_scope.return_expressions.items.len;
-                        const return_expression_id = Entity.new(return_expression_index, Entity.ScopeID.return_expressions);
+                        const return_expression_id = Entity.new(return_expression_index, Entity.ScopeID.return_expressions, parent_scope);
                         current_scope.return_expressions.append(.{
                             .expression = return_expression,
                         }) catch unreachable;
@@ -841,7 +873,7 @@ pub const ModuleParser = struct
                         current_scope.last_loop_index = for_loop_index;
                         current_scope.loops.append(undefined) catch unreachable;
 
-                        const for_loop_id = Entity.new(for_loop_index, Entity.ScopeID.loops);
+                        const for_loop_id = Entity.new(for_loop_index, Entity.ScopeID.loops, parent_scope);
                         current_scope.statements.append(for_loop_id) catch unreachable;
 
                         const expected_identifier = self.lexer.tokens[self.lexer.next_index];
@@ -852,11 +884,11 @@ pub const ModuleParser = struct
 
                         const it_decl_identifier = self.get_and_consume_token(.identifier).value;
 
-                        const it_decl_value = IntegerLiteral.new(&self.module_builder.integer_literals, 0, false);
+                        const it_decl_value = IntegerLiteral.new(&self.module_builder.integer_literals, 0, false, self.module_builder.index);
                         const it_decl_type = self.add_unresolved_type("u32");
-                        const it_decl = VariableDeclaration.new(current_scope, it_decl_identifier, it_decl_type);
+                        const it_decl = VariableDeclaration.new(&self.function_builder, it_decl_identifier, it_decl_type);
 
-                        _ = Assignment.new(current_scope, it_decl, it_decl_value);
+                        _ = Assignment.new(&self.function_builder, it_decl, it_decl_value);
 
                         // Prefix block
                         const prefix_scope_index = Scope.Builder.new(self.allocator, &self.function_builder, for_loop_id, parent_scope);
@@ -877,13 +909,13 @@ pub const ModuleParser = struct
                                 .int_lit =>
                                 {
                                     const int_lit = self.get_and_consume_token(.int_lit).value;
-                                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, int_lit, false);
+                                    break :blk IntegerLiteral.new(&self.module_builder.integer_literals, int_lit, false, self.module_builder.index);
                                 },
                                 else => panic("NI: {}\n", .{right_token}),
                             }
                         };
 
-                        const prefix_comparison = Comparison.new(current_scope, .less, it_decl, right_expression);
+                        const prefix_comparison = Comparison.new(&self.function_builder, .less, it_decl, right_expression);
                         log("At {}, {}\n", .{self.function_builder.current_scope, prefix_scope_index});
                         current_scope.statements.append(prefix_comparison) catch unreachable;
 
@@ -896,8 +928,8 @@ pub const ModuleParser = struct
                         // Postfix
                         assert(self.function_builder.current_scope == parent_scope);
                         const postfix_scope_index = Scope.Builder.new(self.allocator, &self.function_builder, for_loop_id, parent_scope);
-                        const postfix_increment_value = IntegerLiteral.new(&self.module_builder.integer_literals, 1, false);
-                        _ = ComposedAssignment.new(current_scope, .add, it_decl, postfix_increment_value);
+                        const postfix_increment_value = IntegerLiteral.new(&self.module_builder.integer_literals, 1, false, self.module_builder.index);
+                        _ = ComposedAssignment.new(&self.function_builder, .add, it_decl, postfix_increment_value);
 
                         self.end_scope(postfix_scope_index);
 
@@ -920,7 +952,7 @@ pub const ModuleParser = struct
                         const branch_index = current_scope.branches.items.len;
                         current_scope.branches.append(undefined) catch unreachable;
 
-                        const branch_id = Entity.new(branch_index, Entity.ScopeID.branches);
+                        const branch_id = Entity.new(branch_index, Entity.ScopeID.branches, parent_scope);
                         current_scope.statements.append(branch_id) catch unreachable;
                         log("######## branch scope: {}\n", .{parent_scope});
 
@@ -1491,18 +1523,6 @@ pub const ModuleParser = struct
     }
 };
 
-pub const InvokeExpression = struct
-{
-    arguments: []Entity,
-    expression: Entity,
-};
-
-pub const ImportedModule = struct
-{
-    module: Entity,
-    alias: ?[]const u8,
-};
-
 pub const Module = struct
 {
     internal_functions: []Function.Internal,
@@ -1595,7 +1615,7 @@ pub const AST = struct
         }
 
         log("Parsing module #{} \"{s}\"\n", .{module_index, source_file});
-        const module_id = Entity.new(module_index, Entity.GlobalID.modules);
+        const module_id = Entity.new(module_index, Entity.GlobalID.modules, 0);
 
         const file_content = if (parent_module) |parent_module_id| blk:
         {
@@ -1812,7 +1832,7 @@ pub const AST = struct
                             if (has_body)
                             {
                                 const current_function_index = parser.module_builder.internal_functions.items.len;
-                                const function_id = Entity.new(current_function_index, Entity.ModuleID.internal_functions);
+                                const function_id = Entity.new(current_function_index, Entity.ModuleID.internal_functions, module_index);
                                 parser.function_builder = Function.Builder
                                 {
                                     .scope_builders = ArrayList(Scope.Builder).init(allocator),
@@ -2037,7 +2057,7 @@ pub const AST = struct
             if (std.mem.eql(u8, module_name, source_file))
             {
                 log("Already import module \"{s}\" with ID {}\n", .{source_file, i});
-                return Entity.new(i, Entity.GlobalID.modules);
+                return Entity.new(i, Entity.GlobalID.modules, parent_module.get_index());
             }
         }
 
