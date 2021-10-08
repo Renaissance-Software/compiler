@@ -26,14 +26,14 @@ pub fn report_error(comptime format: []const u8, args: anytype) noreturn
 }
 
 // @TODO: make this fast
-pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_offsets: []ModuleStats, module_index: u64) struct { start: u64, end: u64 }
+pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_index: u64) struct { start: u64, end: u64 }
 {
-    const this_module_offsets = module_offsets[module_index];
+    const this_module_offsets = analyzer.module_offsets[module_index];
     const internal_item_start = this_module_offsets.counters[@enumToInt(module_stats_id)];
     const next_module_index = module_index + 1;
     const internal_item_end =
-        if (next_module_index < module_offsets.len)
-            module_offsets[next_module_index].counters[@enumToInt(module_stats_id)]
+        if (next_module_index < analyzer.module_offsets.len)
+            analyzer.module_offsets[next_module_index].counters[@enumToInt(module_stats_id)]
         else switch (comptime module_stats_id)
         {
             .internal_functions => analyzer.functions.items.len,
@@ -45,367 +45,17 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
     return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
-//pub fn typecheck(lvalue_type: *Type, right: *Node, types: *TypeBuffer) *Type
-//{
-    //log("Left type: {} --- Right type: {}\n", .{lvalue_type, right.type});
-
-    //switch (lvalue_type.value)
-    //{
-        //Type.ID.integer =>
-        //{
-            //switch (right.value)
-            //{
-                //Node.ID.int_lit =>
-                //{
-                    //assert(right.type.value == Type.ID.unresolved);
-                    //right.type = lvalue_type;
-                    //// @TODO: make sure we have enough bytes in the lvalue type
-
-                    //return lvalue_type;
-                //},
-                //Node.ID.identifier_expr,
-                //Node.ID.binary_expr,
-                //Node.ID.resolved_identifier,
-                //Node.ID.invoke_expr,
-                //Node.ID.unary_expr,
-                //Node.ID.array_subscript_expr,
-                //Node.ID.field_access_expr,
-                //=>
-                //{
-                    //const rvalue_type = right.type;
-                    //if (lvalue_type == rvalue_type)
-                    //{
-                        //return lvalue_type;
-                    //}
-                    //else
-                    //{
-                        //panic("reached here\n", .{});
-                    //}
-                //},
-                //else => panic("ni: {}\n", .{right.value}),
-            //}
-        //},
-        //Type.ID.pointer =>
-        //{
-            //switch (right.value)
-            //{
-                //Node.ID.unary_expr =>
-                //{
-                    //const unary_expr = right.value.unary_expr.id;
-                    //switch (unary_expr)
-                    //{
-                        //UnaryExpression.ID.AddressOf =>
-                        //{
-                            //// @TODO: change base type for pointer type and get_type of pointer rvalue
-                            //const rvalue_base_type = right.value.unary_expr.node_ref.type;
-                            //const lvalue_base_type = lvalue_type.value.pointer.type;
-                            //if (lvalue_base_type == rvalue_base_type)
-                            //{
-                                //return lvalue_type;
-                            //}
-                        //},
-                        //else => panic("ni: {}\n", .{unary_expr}),
-                    //}
-                //},
-                //Node.ID.invoke_expr =>
-                //{
-                    //const rvalue_type = right.type;
-                    //if (rvalue_type == lvalue_type)
-                    //{
-                        //return lvalue_type;
-                    //}
-                //},
-                //Node.ID.field_access_expr =>
-                //{
-                    //const rvalue_type = right.type;
-                    //if (rvalue_type == lvalue_type)
-                    //{
-                        //return lvalue_type;
-                    //}
-                //},
-                //else => panic("ni: {}\n", .{right.value}),
-            //}
-        //},
-        //Type.ID.array =>
-        //{
-            //switch (right.value)
-            //{
-                //Node.ID.array_lit =>
-                //{
-                    //const result = typecheck(lvalue_type.value.array.type, right.value.array_lit.elements.items[0], types); 
-                    //assert(result.value != Type.ID.unresolved);
-                    //// @TODO: typecheck here
-                    //log("Array literal resolved into {}\n", .{result});
-                    //right.type = lvalue_type;
-                    //return lvalue_type;
-                //},
-                //else => panic("ni: {}\n", .{right.value}),
-            //}
-        //},
-        //Type.ID.structure =>
-        //{
-            //switch (right.value)
-            //{
-                //Node.ID.struct_lit =>
-                //{
-                    //for (right.value.struct_lit.field_names.items) |field_id, field_index|
-                    //{
-                        //const field_expr = right.value.struct_lit.field_expressions.items[field_index];
-                        //_ = typecheck(field_id.type, field_expr, types);
-                    //}
-
-                    //right.type = lvalue_type;
-
-                    //return lvalue_type;
-                //},
-                //else => panic("ni: {}\n", .{right.value}),
-            //}
-        //},
-        //Type.ID.unresolved =>
-        //{
-            //switch (right.type.value)
-            //{
-                //Type.ID.unresolved =>
-                //{
-                    //return lvalue_type;
-                //},
-                //else => panic("ni: {}\n", .{right.type.value}),
-            //}
-        //},
-        //else => panic("ni: {}\n", .{lvalue_type.value}),
-    //}
-
-    //report_error("Typecheck failed!\nLeft: {}\nRight: {}\n", .{lvalue_type, right});
-//}
-
-//pub fn explore_field_identifier_expression(node: *Node, node_buffer: *NodeBuffer) *Node
-//{
-    //switch (node.value)
-    //{
-        //Node.ID.identifier_expr =>
-        //{
-            //const name = node.value.identifier_expr.name;
-            //if (node.parent) |parent|
-            //{
-                //switch (parent.value)
-                //{
-                    //Node.ID.field_access_expr =>
-                    //{
-                        //const struct_var_node = parent.value.field_access_expr.expression;
-                        //switch (struct_var_node.value)
-                        //{
-                            //Node.ID.resolved_identifier =>
-                            //{
-                                //const field = find_field_from_resolved_identifier(struct_var_node, name);
-                                //const field_node = new_field_node(node_buffer, field, parent);
-                                //return field_node;
-                            //},
-                            //else => panic("ni: {}\n", .{struct_var_node.value}),
-                        //}
-                    //},
-                    //Node.ID.struct_lit =>
-                    //{
-                        //assert(parent.value_type == Node.ValueType.RValue);
-                        //const parent_of_parent = parent.parent.?;
-                        //switch (parent_of_parent.value)
-                        //{
-                            //Node.ID.binary_expr =>
-                            //{
-                                //assert(parent_of_parent.value.binary_expr.id == BinaryExpression.ID.Assignment);
-                                //const left = parent_of_parent.value.binary_expr.left;
-                                //const right = parent_of_parent.value.binary_expr.right;
-                                //assert(parent == right);
-
-                                //switch (left.value)
-                                //{
-                                    //Node.ID.resolved_identifier =>
-                                    //{
-                                        //const field = find_field_from_resolved_identifier(left, name);
-                                        //const field_node = new_field_node(node_buffer, field, parent);
-                                        //return field_node;
-                                    //},
-                                    //else => panic("left value: {}\n", .{left.value}),
-                                //}
-                            //},
-                            //else => panic("ni: {}\n", .{parent_of_parent.value}),
-                        //}
-                    //},
-                    //else => panic("ni: {}\n", .{parent.value}),
-                //}
-            //}
-            //else
-            //{
-                //panic("Field identifier must have a parent\n", .{});
-            //}
-        //},
-        //else => panic("ni: {}\n", .{node.value}),
-    //}
-//}
-
-//pub fn explore_expression(allocator: *Allocator, current_function: *Node, current_block: *Node, node: *Node, functions: *NodeRefBuffer, node_buffer: *NodeBuffer, types: *TypeBuffer) *Node
-//{
-    //switch (node.value)
-    //{
-        //Node.ID.var_decl =>
-        //{
-            //node.type = analyze_type_declaration(allocator, node.value.var_decl.var_type, types, node_buffer);
-        //},
-        //Node.ID.binary_expr =>
-        //{
-            //node.value.binary_expr.left = explore_expression(allocator, current_function, current_block, node.value.binary_expr.left, functions, node_buffer, types);
-            //node.value.binary_expr.right = explore_expression(allocator, current_function, current_block, node.value.binary_expr.right, functions, node_buffer, types);
-            //node.type = typecheck(node.value.binary_expr.left.type, node.value.binary_expr.right, types);
-        //},
-        //Node.ID.identifier_expr =>
-        //{
-            //const name = node.value.identifier_expr.name;
-            //const decl_node = find_variable(current_function, name);
-            //const new_node_value = Node
-            //{
-                //.value = Node.Value {
-                    //.resolved_identifier = decl_node,
-                //},
-                //.value_type = node.value_type,
-                //.parent = node.parent,
-                //.type = decl_node.type,
-            //};
-
-            //var new_node = node_buffer.append(new_node_value) catch {
-                //panic("Error allocating memory for resolved identifier node\n", .{});
-            //};
-
-            //return new_node;
-        //},
-        //Node.ID.return_expr =>
-        //{
-            //if (node.value.return_expr.expression) |return_expr|
-            //{
-                //node.value.return_expr.expression = explore_expression(allocator, current_function, current_block, return_expr, functions, node_buffer, types);
-            //}
-            //node.type = Type.get_void_type(types);
-        //},
-        //Node.ID.block_expr =>
-        //{
-            //for (node.value.block_expr.statements.items) |*statement|
-            //{
-                //const new_current_block = node;
-                //statement.* = explore_expression(allocator, current_function, new_current_block, statement.*, functions, node_buffer, types);
-            //}
-            //node.type = Type.get_void_type(types);
-        //},
-        //Node.ID.loop_expr =>
-        //{
-            //node.value.loop_expr.prefix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.prefix, functions, node_buffer, types);
-            //node.value.loop_expr.body = explore_expression(allocator, current_function, current_block, node.value.loop_expr.body, functions, node_buffer, types);
-            //node.value.loop_expr.postfix = explore_expression(allocator, current_function, current_block, node.value.loop_expr.postfix, functions, node_buffer, types);
-            //node.type = Type.get_void_type(types);
-        //},
-        //Node.ID.branch_expr =>
-        //{
-            //node.value.branch_expr.condition = explore_expression(allocator, current_function, current_block, node.value.branch_expr.condition, functions, node_buffer, types);
-            //node.value.branch_expr.if_block = explore_expression(allocator, current_function, current_block, node.value.branch_expr.if_block, functions, node_buffer, types);
-            //if (node.value.branch_expr.else_block) |else_block|
-            //{
-                //node.value.branch_expr.else_block = explore_expression(allocator, current_function, current_block, else_block, functions, node_buffer, types);
-            //}
-            //node.type = Type.get_void_type(types);
-        //},
-        //Node.ID.invoke_expr =>
-        //{
-            //const function_call_id_node = node.value.invoke_expr.expression;
-            //assert(function_call_id_node.value == Node.ID.identifier_expr);
-            //const function_call_name = function_call_id_node.value.identifier_expr.name;
-            //log("function call name: {s}\n", .{function_call_name});
-            //const function_decl = find_function_decl(function_call_name, functions);
-            //node.type = function_decl.type.value.function.ret_type;
-            //node.value.invoke_expr.expression = function_decl;
-
-            //for (node.value.invoke_expr.arguments.items) |*arg|
-            //{
-                //arg.* = explore_expression(allocator, current_function, current_block, arg.*, functions, node_buffer, types);
-            //}
-        //},
-        //Node.ID.unary_expr =>
-        //{
-            //// @TODO: check anything more with unary expression id?
-            //node.value.unary_expr.node_ref = explore_expression(allocator, current_function, current_block, node.value.unary_expr.node_ref, functions, node_buffer, types);
-            //switch (node.value.unary_expr.id)
-            //{
-                //UnaryExpression.ID.AddressOf =>
-                //{
-                    //node.type = Type.get_pointer_type(node.value.unary_expr.node_ref.type, types);
-                //},
-                //UnaryExpression.ID.Dereference =>
-                //{
-                    //node.type = node.value.unary_expr.node_ref.type.value.pointer.type;
-                //},
-            //}
-        //},
-        //Node.ID.break_expr =>
-        //{
-            //// @TODO: check if we are in a loop
-        //},
-        //Node.ID.int_lit,  =>
-        //{
-            //// @Info: this is a literal type which is resolved later
-            //node.type = Type.get_literal_type(types);
-        //},
-        //Node.ID.array_lit =>
-        //{
-            //const first_elem = node.value.array_lit.elements.items[0];
-            //const first_elem_analyzed = explore_expression(allocator, current_function, current_block, first_elem, functions, node_buffer, types);
-            //const first_elem_type = first_elem_analyzed.type;
-
-            //for (node.value.array_lit.elements.items) |*array_elem|
-            //{
-                //array_elem.* = explore_expression(allocator, current_function, current_block, array_elem.*, functions, node_buffer, types);
-                //_ = typecheck(first_elem_type, array_elem.*, types);
-            //}
-
-            //// @TODO: improve
-            //node.type = Type.get_literal_type(types);
-        //},
-        //Node.ID.struct_lit =>
-        //{
-            //for (node.value.struct_lit.field_names.items) |*name_node_ptr|
-            //{
-                //name_node_ptr.* = explore_field_identifier_expression(name_node_ptr.*, node_buffer);
-            //}
-
-            //for (node.value.struct_lit.field_expressions.items) |*expression_node_ptr|
-            //{
-                //expression_node_ptr.* = explore_expression(allocator, current_function, current_block, expression_node_ptr.*, functions, node_buffer, types);
-            //}
-        //},
-        //Node.ID.array_subscript_expr =>
-        //{
-            //node.value.array_subscript_expr.expression = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.expression, functions, node_buffer, types);
-            //node.value.array_subscript_expr.index = explore_expression(allocator, current_function, current_block, node.value.array_subscript_expr.index, functions, node_buffer, types);
-            //node.type = node.value.array_subscript_expr.expression.type.value.array.type;
-        //},
-        //Node.ID.field_access_expr =>
-        //{
-            //node.value.field_access_expr.expression = explore_expression(allocator, current_function, current_block, node.value.field_access_expr.expression, functions, node_buffer, types);
-            //node.value.field_access_expr.field_expr = explore_field_identifier_expression(node.value.field_access_expr.field_expr, node_buffer);
-            //node.type = node.value.field_access_expr.field_expr.type;
-        //},
-        //else => panic("ni: {}\n", .{node.value}),
-    //}
-
-    //return node;
-//}
-
-fn analyze_type(analyzer: *Analyzer, module_offsets: []ModuleStats, unresolved_type: Type) Type
+fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
 {
     const type_id = unresolved_type.get_ID();
     switch (type_id)
     {
-        // @INFO: builtin types are already resolved
-        .builtin => return unresolved_type,
+        // @INFO: types that are already resolved
+        .builtin, .integer => return unresolved_type,
         .unresolved =>
         {
             const module_index = unresolved_type.get_module_index();
-            const unresolved_type_module_offset = module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.unresolved_types)];
+            const unresolved_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.unresolved_types)];
             const index = unresolved_type.get_index();
             const unresolved_type_identifier = analyzer.unresolved_types.items[unresolved_type_module_offset + index];
             if (unresolved_type_identifier[0] == 'u')
@@ -479,55 +129,106 @@ const ModuleStats = struct
     };
 };
 
-pub fn resolve_entity_index(analyzer: *Analyzer, comptime module_stats_id: ModuleStats.ID, entity: *Entity, module_offsets: []ModuleStats, module_index: u64) void
+pub fn resolve_entity_index(analyzer: *Analyzer, comptime module_stats_id: ModuleStats.ID, entity: *Entity, module_index: u64) void
 {
-    const item_range = get_module_item_slice_range(module_stats_id, analyzer, module_offsets, module_index);
+    const item_range = get_module_item_slice_range(module_stats_id, analyzer, module_index);
     const real_index = @intCast(u32, item_range.start) + entity.get_index();
     entity.set_index(real_index);
 }
 
 // @TODO: make this more robust
-pub fn find_variable_declaration(current_function: *Parser.Function.Internal, scope_index: u32, name: []const u8) Entity
+pub fn resolve_identifier_expression(current_function: *Parser.Function.Internal, expression: *Entity, scope_index: u32, name: []const u8) Type
 {
-    const scope = &current_function.scopes[scope_index];
+    var current_scope_index = scope_index;
 
-    for (scope.variable_declarations) |variable_declaration, variable_declaration_i|
+    while (true)
     {
-        if (std.mem.eql(u8, variable_declaration.name, name))
+        var scope = &current_function.scopes[current_scope_index];
+
+        for (scope.variable_declarations) |variable_declaration, variable_declaration_i|
         {
-            return Entity.new(variable_declaration_i, Entity.ScopeID.variable_declarations, scope_index);
-        }
-    }
+            if (std.mem.eql(u8, variable_declaration.name, name))
+            {
+                expression.* = Entity.new(variable_declaration_i, Entity.ScopeID.variable_declarations, current_scope_index);
 
-    if (scope_index != 0)
-    {
-        return find_variable_declaration(current_function, scope.parent.scope, name);
-    }
-    else
-    {
-        report_error("Variable declaration \"{s}\" not found\n", .{name});
+                return variable_declaration.type;
+            }
+        }
+
+        // @TODO: loop over other node types
+
+        if (scope_index != 0)
+        {
+            current_scope_index = scope.parent.scope;
+        }
+        else
+        {
+            report_error("Variable declaration \"{s}\" not found\n", .{name});
+        }
     }
 }
 
-pub fn analyze_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, expression: Entity) Type
+pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.Internal, expression: *Entity, expected_type: ?Type) Type
 {
-    _ = analyzer;
-    _ = scope;
-    _ = function;
-
     const expression_level = expression.get_level();
     const expression_index = expression.get_index();
+    const scope_index = expression.get_array_index();
+
     switch (expression_level)
     {
         .scope =>
         {
             const array_id = expression.get_array_id(.scope);
+
             switch (array_id)
             {
+                // @TODO: this is mostly a reference to a declaration, not a declaration in itself
                 .variable_declarations =>
                 {
-                    _ = expression_index;
+                    var variable_declaration = &function.scopes[scope_index].variable_declarations[expression_index];
+                    variable_declaration.type = analyze_type(analyzer, variable_declaration.type);
+                    if (expected_type) |type_to_typecheck_against|
+                    {
+                        if (variable_declaration.type.value != type_to_typecheck_against.value)
+                        {
+                            report_error("Types don't match\n", .{});
+                        }
+                    }
+
+                    return variable_declaration.type;
+                },
+                .integer_literals =>
+                {
+                    const module_index = scope_index;
+                    resolve_entity_index(analyzer, .integer_literals, expression, module_index);
+
+                    assert(expected_type != null);
+                    if (expected_type) |type_to_typecheck_against|
+                    {
+                        const type_id = type_to_typecheck_against.get_ID();
+                        if (type_id != .integer)
+                        {
+                            report_error("Expected: {}\n", .{type_id});
+                        }
+
+                        return type_to_typecheck_against;
+                    }
+
                     unreachable;
+                },
+                .identifier_expressions =>
+                {
+                    const identifier = function.scopes[scope_index].identifier_expressions[expression_index];
+                    const expression_type = resolve_identifier_expression(function, expression, scope_index, identifier);
+                    return expression_type;
+                },
+                .arithmetic_expressions =>
+                {
+                    var scope_arithmetic_expressions = &function.scopes[scope_index].arithmetic_expressions;
+                    log("Scope #{} arithmetic expression count: {}\n", .{scope_index, scope_arithmetic_expressions.len});
+
+                    var arithmetic_expression = &function.scopes[scope_index].arithmetic_expressions[expression_index];
+                    return analyze_arithmetic_expression(analyzer, function, arithmetic_expression);
                 },
                 else => panic("NI: {}\n", .{array_id}),
             }
@@ -536,18 +237,70 @@ pub fn analyze_expression(analyzer: *Analyzer, function: *Parser.Function.Intern
     }
 }
 
-pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, left: Entity, right: Entity) void
+pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, left: *Entity, right: *Entity) Type
 {
-    _ = analyze_expression(analyzer, function, scope, left);
-    _ = analyze_expression(analyzer, function, scope, right);
+    const left_type = analyze_expression_typed(analyzer, function, left, null);
+    const right_type = analyze_expression_typed(analyzer, function, right, left_type);
+
+    if (left_type.value != right_type.value)
+    {
+        if (left_type.get_ID() == .integer and right_type.get_ID() == .integer)
+        {
+            const left_bits = Type.Integer.get_bit_count(left_type);
+            const right_bits = Type.Integer.get_bit_count(right_type);
+
+            if (left_bits == right_bits)
+            {
+                const left_signedness = Type.Integer.get_signedness(left_type);
+                const right_signedness = Type.Integer.get_signedness(right_type);
+
+                if (left_signedness == right_signedness)
+                {
+                    // no other aspect here to differ!
+                    unreachable;
+                }
+                else
+                {
+                    // @TODO: correct this, we are bypassing signedness check
+                    if (false) 
+                        report_error("Integer of different signedness. Left: {}. Right: {}\n", .{left_signedness, right_signedness});
+                }
+            }
+            else
+            {
+                report_error("Integer of different bit count. Left: {}. Right: {}\n", .{left_bits, right_bits});
+            }
+        }
+        else
+        {
+            report_error("Type mismatch. Left: {}. Right: {}\n", .{left_type.get_ID(), right_type.get_ID()}); 
+        }
+    }
+
+    return left_type;
 }
 
-pub fn analyze_comparison(analyzer: *Analyzer, function: *Parser.Function.Internal, scope: *Parser.Scope, comparison: *Parser.Comparison) void
+pub fn analyze_comparison(analyzer: *Analyzer, function: *Parser.Function.Internal, comparison: *Parser.Comparison) Type
 {
-    analyze_binary_expression(analyzer, function, scope, comparison.left, comparison.right);
+    _ = analyze_binary_expression(analyzer, function, &comparison.left, &comparison.right);
+    return Type.Boolean;
 }
 
-pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
+pub fn analyze_arithmetic_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, arithmetic_expression: *Parser.ArithmeticExpression) Type
+{
+    return analyze_binary_expression(analyzer, function, &arithmetic_expression.left, &arithmetic_expression.right);
+}
+
+pub fn analyze_assignment_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, assignment: *Parser.Assignment) void
+{
+    _ = analyze_binary_expression(analyzer, function, &assignment.left, &assignment.right);
+}
+fn analyze_compound_assignment(analyzer: *Analyzer, function: *Parser.Function.Internal, compound_assignment: *Parser.CompoundAssignment) void
+{
+    _ = analyze_binary_expression(analyzer, function, &compound_assignment.left, &compound_assignment.right);
+}
+
+pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
 {
     const scope_index = @intCast(u32, (@ptrToInt(scope) - @ptrToInt(current_function.scopes.ptr)) / @sizeOf(Parser.Scope));
     log("Scope index: {}\n", .{scope_index});
@@ -609,7 +362,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         const field_index = field.get_index();
                         const field_name = scope.identifier_expressions[field_index];
 
-                        const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_offsets, module_index);
+                        const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_index);
                         const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
 
                         for (imported_modules) |imported_module|
@@ -622,7 +375,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
 
                             const imported_module_index = imported_module.module.get_index();
 
-                            const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, module_offsets, imported_module_index);
+                            const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, imported_module_index);
                             const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
 
                             for (internal_functions) |function, function_i|
@@ -635,7 +388,7 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                 break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions, 0);
                             }
 
-                            const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, module_offsets, imported_module_index);
+                            const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, imported_module_index);
                             const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
 
                             // @TODO: is this faster than double for loop [library_i, symbol_i]?
@@ -703,13 +456,18 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                                 report_error("Expected return type: {s}\n", .{@tagName(return_type.get_ID())});
                             }
 
-                            resolve_entity_index(analyzer, .integer_literals, &return_expression.expression.?, module_offsets, module_index);
+                            resolve_entity_index(analyzer, .integer_literals, &return_expression.expression.?, module_index);
                             // @TODO: do further checks?
                         },
                         .identifier_expressions =>
                         {
                             const identifier = scope.identifier_expressions[expression_to_return.get_index()];
-                            return_expression.expression.? = find_variable_declaration(current_function, scope_index, identifier);
+                            const expression_type = resolve_identifier_expression(current_function, &return_expression.expression.?, scope_index, identifier);
+
+                            if (expression_type.value != current_function.declaration.type.return_type.value)
+                            {
+                                report_error("Type mismatch\n", .{});
+                            }
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_id}),
                     }
@@ -725,51 +483,27 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
             .variable_declarations =>
             {
                 var variable_declaration = &scope.variable_declarations[statement_index];
-                variable_declaration.type = analyze_type(analyzer, module_offsets, variable_declaration.type);
+                variable_declaration.type = analyze_type(analyzer, variable_declaration.type);
             },
             .assignments =>
             {
                 var assignment = &scope.assignments[statement_index];
-                assert(assignment.left.get_level() == .scope);
-                const left_id = assignment.left.get_array_id(.scope);
-
-                const left_type = switch (left_id)
-                {
-                    .variable_declarations => var_blk:
-                    {
-                        const variable_declaration = scope.variable_declarations[assignment.left.get_index()];
-                        break :var_blk variable_declaration.type;
-                    },
-                    else => panic("NI: {}\n", .{left_id}),
-                };
-
-                assert(assignment.right.get_level() == .scope);
-                const right_id = assignment.right.get_array_id(.scope);
-
-                switch (right_id)
-                {
-                    .integer_literals =>
-                    {
-                        const left_type_id = left_type.get_ID();
-                        if (left_type_id != .integer)
-                        {
-                            report_error("Expected type: {}\n", .{left_type_id});
-                        }
-
-                        resolve_entity_index(analyzer, .integer_literals, &assignment.right, module_offsets, module_index);
-                    },
-                    else => panic("NI: {}", .{right_id}),
-                }
+                analyze_assignment_expression(analyzer, current_function, assignment);
+            },
+            .compound_assignments =>
+            {
+                var compound_assignment = &scope.compound_assignments[statement_index];
+                analyze_compound_assignment(analyzer, current_function, compound_assignment);
             },
             .loops =>
             {
                 var loop = &scope.loops[statement_index];
                 var prefix_scope = &current_function.scopes[loop.prefix_scope_index];
-                analyze_scope(analyzer, module_offsets, prefix_scope, current_function, module_index);
+                analyze_scope(analyzer, prefix_scope, current_function, module_index);
                 var body_scope = &current_function.scopes[loop.body_scope_index];
-                analyze_scope(analyzer, module_offsets, body_scope, current_function, module_index);
+                analyze_scope(analyzer, body_scope, current_function, module_index);
                 var postfix_scope = &current_function.scopes[loop.postfix_scope_index];
-                analyze_scope(analyzer, module_offsets, postfix_scope, current_function, module_index);
+                analyze_scope(analyzer, postfix_scope, current_function, module_index);
             },
             .branches =>
             {
@@ -784,23 +518,40 @@ pub fn analyze_scope(analyzer: *Analyzer, module_offsets: []ModuleStats, scope: 
                         report_error("Expected a comparison as the branch condition\n", .{});
                     }
                     const branch_comparison_index = branch.condition.get_index();
+                    const branch_comparison_array_index = branch.condition.get_array_index();
                     log("Branch comparison index: {}\n", .{branch_comparison_index});
-                    var branch_comparison = &scope.comparisons[branch_comparison_index];
-                    analyze_comparison(analyzer, current_function, scope, branch_comparison);
+                    log("Branch comparison array index: {}\n", .{branch_comparison_array_index});
+                    var branch_comparison_scope = &current_function.scopes[branch_comparison_array_index];
+                    const comparison_count = branch_comparison_scope.comparisons.len;
+                    log("Comparison count: {}\n", .{comparison_count});
+                    var branch_comparison = &branch_comparison_scope.comparisons[branch_comparison_index];
+                    _ = analyze_comparison(analyzer, current_function, branch_comparison);
                 }
 
                 var if_scope = &current_function.scopes[branch.if_scope];
-                analyze_scope(analyzer, module_offsets, if_scope, current_function, module_index);
+                analyze_scope(analyzer, if_scope, current_function, module_index);
                 if (branch.else_scope) |else_scope_index|
                 {
                     var else_scope = &current_function.scopes[else_scope_index];
-                    analyze_scope(analyzer, module_offsets, else_scope, current_function, module_index);
+                    analyze_scope(analyzer, else_scope, current_function, module_index);
                 }
             },
             .comparisons =>
             {
                 var comparison = &scope.comparisons[statement_index];
-                analyze_comparison(analyzer, current_function, scope, comparison);
+                const comparison_type = analyze_comparison(analyzer, current_function, comparison);
+                assert(comparison_type.value == Type.Boolean.value);
+            },
+            .break_expressions =>
+            {
+                var break_expression = &scope.break_expressions[statement_index];
+                const loop_scope_index = break_expression.loop_to_break.get_array_index();
+                const loop_scope = &current_function.scopes[loop_scope_index];
+                const loop_index = break_expression.loop_to_break.get_index();
+                const loop_to_break = loop_scope.loops[loop_index];
+
+                // @TODO: do something with this
+                _ = loop_to_break;
             },
             else => panic("NI: {}", .{statement_id}),
         }
@@ -823,6 +574,8 @@ pub const Analyzer = struct
     slice_types: ArrayList(Type.Slice),
     array_types: ArrayList(Type.Array),
     struct_types: ArrayList(Type.Struct),
+
+    module_offsets: []ModuleStats,
 };
 
 pub const Result = struct
@@ -906,6 +659,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .function_types = ArrayList(Type.Function).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.function_types)]) catch unreachable,
         .array_types = ArrayList(Type.Array).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_types)]) catch unreachable,
         .struct_types = ArrayList(Type.Struct).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.struct_types)]) catch unreachable,
+        .module_offsets = module_offsets.items,
     };
 
     for (module_array) |*module|
@@ -964,53 +718,6 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     {
         analyzer.external_libraries.appendAssumeCapacity(. { .symbols = library_symbol_list.items });
     }
-
-    //var library_names = ArrayList([]const u8).init(allocator);
-    //for (module_array) |*module|
-    //{
-        //next_lib_name: for (module.library_names) |new_library_name|
-        //{
-            //for (library_names.items) |library_name|
-            //{
-                //if (std.mem.eql(u8, library_name, new_library_name))
-                //{
-                    //continue :next_lib_name;
-                //}
-            //}
-
-            //library_names.append(new_library_name) catch unreachable;
-        //}
-    //}
-
-
-    //for (library_names.items) |library_name|
-    //{
-        //var library_symbol_names = ArrayList([]const u8).init(allocator);
-
-        //for (module_array) |*module|
-        //{
-            //for (module.library_names) |module_library_name, library_i|
-            //{
-                //if (std.mem.eql(u8, module_library_name, library_name))
-                //{
-                    //for (module.libraries[library_i].symbol_names.items) |new_symbol_name|
-                    //{
-                        //for (library_symbol_names.items) |symbol_name|
-                        //{
-                            //if (std.mem.eql(u8, symbol_name, new_symbol_name))
-                            //{
-                                //break;
-                            //}
-                        //}
-
-                        //library_symbol_names.append(new_symbol_name) catch unreachable;
-                    //}
-                //}
-            //}
-        //}
-    //}
-
-    //var ArrayList(ArrayList([]const u8)).initCapacity(allocator, library_names.items.len);
 
     for (module_array) |*module|
     {
@@ -1120,44 +827,45 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     // @TODO: shouldn't we discard repeated function types?
     for (analyzer.function_types.items) |*function_type|
     {
-        function_type.return_type = analyze_type(&analyzer, module_offsets.items, function_type.return_type);
+        function_type.return_type = analyze_type(&analyzer, function_type.return_type);
         for (function_type.argument_types) |*argument_type|
         {
-            argument_type.* = analyze_type(&analyzer, module_offsets.items, argument_type.*);
+            argument_type.* = analyze_type(&analyzer, argument_type.*);
         }
     }
 
     for (analyzer.external_functions.items) |*function|
     {
-        function.declaration.type.return_type = analyze_type(&analyzer, module_offsets.items, function.declaration.type.return_type);
+        function.declaration.type.return_type = analyze_type(&analyzer, function.declaration.type.return_type);
 
         for (function.declaration.type.argument_types) |*argument_type|
         {
-            argument_type.* = analyze_type(&analyzer, module_offsets.items, argument_type.*);
+            argument_type.* = analyze_type(&analyzer, argument_type.*);
         }
     }
 
     for (analyzer.functions.items) |*function|
     {
-        function.declaration.type.return_type = analyze_type(&analyzer, module_offsets.items, function.declaration.type.return_type);
+        function.declaration.type.return_type = analyze_type(&analyzer, function.declaration.type.return_type);
 
         for (function.declaration.type.argument_types) |*argument_type|
         {
-            argument_type.* = analyze_type(&analyzer, module_offsets.items, argument_type.*);
+            argument_type.* = analyze_type(&analyzer, argument_type.*);
         }
     }
 
-    for (module_offsets.items) |_, module_index|
+    var module_index: u64 = 0;
+    const module_count = analyzer.module_offsets.len;
+    while (module_index < module_count) : (module_index += 1)
     {
-        const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_offsets.items, module_index);
+        const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_index);
         for (analyzer.functions.items[function_range.start..function_range.end]) |*function|
         {
             std.debug.print("\n", .{});
             log("Analyzing {s}()...\n", .{function.declaration.name});
             const main_block = &function.scopes[0];
-            analyze_scope(&analyzer, module_offsets.items, main_block, function, module_index);
+            analyze_scope(&analyzer, main_block, function, module_index);
         }
-
     }
 
     return Result

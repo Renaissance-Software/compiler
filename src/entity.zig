@@ -62,9 +62,10 @@ pub const Entity = packed struct
         assignments,
         argument,
         comparisons,
-        composed_assignments,
+        compound_assignments,
         loops,
         branches,
+        break_expressions,
         arithmetic_expressions,
     };
 

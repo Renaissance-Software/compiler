@@ -1,8 +1,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const panic = std.debug.panic;
+const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
 usingnamespace @import("entity.zig");
+
+const IR = @import("ir.zig");
 
 const Type = @This();
 value: u64,
@@ -61,7 +64,15 @@ pub const Integer = struct
     {
         return @truncate(u16, T.value);
     }
+
+    pub fn get_signedness (T: Type) Signedness
+    {
+        return @intToEnum(Signedness, @intCast(u1, (T.value & (1 << Signedness.position)) >> Signedness.position));
+    }
 };
+
+// @TODO: make boolean more modular, to be able to fit in one bit
+pub const Boolean = Integer.new(8, .unsigned);
 
 pub const Function = struct
 {
@@ -177,5 +188,43 @@ pub fn get_size(self: Type) u64
     {
         .integer => return Integer.get_bit_count(self) >> 3,
         else => panic("ID: {}\n", .{id}),
+    }
+}
+
+pub fn to_string(self: Type, formatter: *const IR.Formatter) []const u8
+{
+    switch (self.get_ID())
+    {
+        .builtin =>
+        {
+            if (self.value == Type.Builtin.void_type.value)
+            {
+                return "void";
+            }
+            else if (self.value == Type.Builtin.noreturn_type.value)
+            {
+                return "noreturn";
+            }
+            else unreachable;
+        },
+        .integer =>
+        {
+            const bit_count = Integer.get_bit_count(self);
+
+            const integer_string = switch (Integer.get_signedness(self))
+            {
+                .signed => std.fmt.allocPrint(formatter.allocator, "s{}", .{bit_count}) catch unreachable,
+                .unsigned => std.fmt.allocPrint(formatter.allocator, "u{}", .{bit_count}) catch unreachable,
+            };
+
+            return integer_string;
+        },
+        .pointer =>
+        {
+            const pointer_type = &formatter.builder.pointer_types.items[self.get_index()];
+            const pointer_str = std.fmt.allocPrint(formatter.allocator, "{s}*", .{pointer_type.type.to_string(formatter)}) catch unreachable;
+            return pointer_str;
+        },
+        else => panic("{}\n", .{self.get_ID()}),
     }
 }
