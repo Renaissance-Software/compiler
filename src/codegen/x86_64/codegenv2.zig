@@ -824,26 +824,58 @@ pub const Program = struct
 
             var post_function_patches = post_function_patches_arraylist.items;
 
+            var post_function_patch_count: u32 = 0;
+            for (function.basic_block_instruction_offsets.items) |instruction_offset, i|
+            {
+                log("#{}: {}\n", .{i, instruction_offset});
+            }
+            log("Instruction count: {}\n", .{function.instructions.items.len});
+
             for (function.instructions.items) |instruction, instruction_i|
             {
                 log("Writing instruction #{}\n", .{instruction_i});
+                log("Current block offset: {}\n", .{current_block_offset});
 
-                if (current_block_offset < function.basic_block_instruction_offsets.items.len and function.basic_block_instruction_offsets.items[current_block_offset] == instruction_i)
+                if (current_block_offset < function.basic_block_instruction_offsets.items.len)
                 {
-                    function.basic_block_buffer_offsets.append(text.buffer.items.len) catch unreachable;
-                    current_block_offset += 1;
+                    const instruction_offsets = function.basic_block_instruction_offsets.items[current_block_offset..];
+                    const code_buffer_offset = text.buffer.items.len;
+
+                    for (instruction_offsets) |current_block_instruction_offset|
+                    {
+                        if (current_block_instruction_offset > instruction_i) break;
+
+                        assert(current_block_instruction_offset == instruction_i);
+                        log("Appending block code buffer offset {} to block {}\n", .{code_buffer_offset, current_block_offset});
+                        function.basic_block_buffer_offsets.append(code_buffer_offset) catch unreachable;
+
+                        current_block_offset += 1;
+                    }
+
+                    //var current_block_instruction_offset = function.basic_block_instruction_offsets.items[current_block_offset];
+                    //log("Current block instruction offset: {}\n", .{current_block_instruction_offset});
+
+                    //while (current_block_instruction_offset == instruction_i)
+                    //{
+                        //const code_buffer_offset = text.buffer.items.len;
+                        //current_block_offset += 1;
+                        //if (current_block_offset < function.basic_block_instruction_offsets.items.len)
+                        //{
+                            //current_block_instruction_offset = function.basic_block_instruction_offsets.items[current_block_offset];
+                        //}
+                    //}
                 }
 
                 if (instruction.status == .resolved)
                 {
-                    std.debug.print("Resolved instruction. Appending:\n", .{});
                     const instruction_bytes = instruction.resolution.resolved.bytes[0..instruction.resolution.resolved.size];
-                    std.debug.print("[{}] ", .{text.buffer.items.len});
-                    for (instruction_bytes) |byte|
-                    {
-                        std.debug.print("{x:0>2} ", .{byte});
-                    }
-                    std.debug.print("\n", .{});
+                    //log("Resolved instruction. Appending:\n", .{});
+                    //std.debug.print("[{}] ", .{text.buffer.items.len});
+                    //for (instruction_bytes) |byte|
+                    //{
+                        //std.debug.print("{x:0>2} ", .{byte});
+                    //}
+                    //std.debug.print("\n", .{});
                     text.buffer.appendSlice(instruction_bytes) catch unreachable;
                 }
                 else
@@ -851,20 +883,20 @@ pub const Program = struct
                     const unresolved = instruction.resolution.unresolved;
                     const operand = unresolved.unknown_operand;
                     const operand_offset = operand.get_offset();
-                    log("Operand offset: {}\n", .{operand_offset});
+                    //log("Operand offset: {}\n", .{operand_offset});
                     const operand_size = operand.get_size();
                     const instruction_length = operand_offset + operand_size;
                     const from = text.buffer.items.len + instruction_length;
                     const code_buffer_offset = @intCast(u32, text.buffer.items.len + operand_offset);
                     const known_bytes = unresolved.bytes[0..operand_offset];
-                    std.debug.print("Unresolved instruction. Appending known bytes:\n", .{});
-                    std.debug.print("[{}] ", .{text.buffer.items.len});
-                    for (known_bytes) |byte|
-                    {
-                        std.debug.print("{x:0>2} ", .{byte});
-                    }
+                    //std.debug.print("Unresolved instruction. Appending known bytes:\n", .{});
+                    //std.debug.print("[{}] ", .{text.buffer.items.len});
+                    //for (known_bytes) |byte|
+                    //{
+                        //std.debug.print("{x:0>2} ", .{byte});
+                    //}
 
-                    std.debug.print("\n", .{});
+                    //std.debug.print("\n", .{});
                     text.buffer.appendSlice(known_bytes) catch unreachable;
 
                     const operand_kind = operand.get_kind();
@@ -903,15 +935,15 @@ pub const Program = struct
 
                             if (basic_block_index < current_block_offset)
                             {
-                                log("Address of the jump is already known\n", .{});
+                                //log("Address of the jump is already known\n", .{});
                                 const target = function.basic_block_buffer_offsets.items[basic_block_index];
                                 const rel32 = @intCast(i32, @intCast(i64, target) - @intCast(i64, from));
                                 const rel32_bytes = std.mem.asBytes(&rel32);
-                                log("Resolved 4-byte relative:\n", .{});
-                                for (rel32_bytes) |byte| 
-                                {
-                                    log("{x}\n", .{byte});
-                                }
+                                //log("Resolved 4-byte relative:\n", .{});
+                                //for (rel32_bytes) |byte| 
+                                //{
+                                    //log("{x}\n", .{byte});
+                                //}
                                 text.buffer.appendSlice(rel32_bytes) catch unreachable;
                             }
                             else
@@ -919,6 +951,7 @@ pub const Program = struct
                                 log("Address of the jump is not yet known. Appending a patch to block #{}. Offset to be patched: 0x{x}\n", .{basic_block_index, code_buffer_offset});
                                 text.buffer.appendNTimes(0xcc, operand_size) catch unreachable;
                                 post_function_patches[basic_block_index].append(code_buffer_offset) catch unreachable;
+                                post_function_patch_count += 1;
                             }
                         },
                         else => unreachable,
@@ -926,6 +959,9 @@ pub const Program = struct
                 }
             }
 
+            log("{}\n", .{current_block_offset});
+
+            log("\n\n\nResolving function patches for {} blocks\n", .{basic_block_count});
             var resolution_count: u32 = 0;
             for (function.basic_block_buffer_offsets.items) |block_buffer_offset, block_index|
             {
@@ -946,6 +982,7 @@ pub const Program = struct
                 }
             }
 
+            assert(resolution_count == post_function_patch_count);
             log("Resolution count for this function: {}\n", .{resolution_count});
 
             if (add_rsp_at_epilogue)
@@ -1650,6 +1687,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
         for (ir_function.basic_blocks) |basic_block_index, basic_block_i|
         {
+            log("Processing basic block #{} (global index {})\n", .{basic_block_i, basic_block_index});
             const basic_block = program.basic_blocks[basic_block_index];
             assert(basic_block.instructions.items.len > 0);
             // @TODO:

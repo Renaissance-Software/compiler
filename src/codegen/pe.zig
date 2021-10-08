@@ -13,7 +13,6 @@ const CodeBuffer = Codegen.CodeBuffer;
 const DataBuffer = Codegen.DataBuffer;
 const Import = Codegen.Import;
 
-
 const x86_64 = @import("x86_64/codegenv2.zig");
 
 pub const file_alignment = 0x200;
@@ -518,17 +517,6 @@ pub const Patch = struct
 const LibraryOffsets = struct
 {
     symbol_offsets: []u32,
-};
-
-pub const Libraries = struct
-{
-    names: []const u8,
-    libraries: []Library,
-
-    pub const Library = struct
-    {
-        symbol_names: [][]const u8,
-    };
 };
 
 pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []const u8, external: Semantics.External, target: std.Target) void

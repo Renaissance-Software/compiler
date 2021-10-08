@@ -146,6 +146,8 @@ const BasicBlock = struct
     fn new(allocator: *Allocator, builder: *Program.Builder) u32
     {
         const block_index = @intCast(u32, builder.basic_blocks.items.len);
+        log("Creating new block #{}\n", .{block_index});
+
         builder.basic_blocks.append(
             .{
                 .instructions = ArrayList(Reference).init(allocator),
@@ -1062,9 +1064,6 @@ pub const Program = struct
                                 const postfix_block = BasicBlock.new(allocator, self);
                                 const end_block = BasicBlock.new(allocator, self);
 
-                                //const continue_block = postfix_block;
-                                //const exit_block = end_block;
-                                
                                 const ast_function = &result.functions[self.current_function];
                                 const ast_loop_prefix_scope = ast_function.scopes[ast_loop.prefix_scope_index];
                                 const ast_loop_prefix_scope_statement_count = ast_loop_prefix_scope.statements.len;
@@ -1131,6 +1130,7 @@ pub const Program = struct
                                     else
                                         exit_block;
 
+                                if (else_block == exit_block) log("Exit block same else\n", .{}) else log("Exit block is different than else\n", .{});
 
                                 var exit_block_in_use = true;
                                 // @TODO: care about this in the future when it gives errors
@@ -1140,9 +1140,13 @@ pub const Program = struct
                                 self.append_block_to_current_function(if_block, ast_branch.if_scope);
                                 function_builder.emitted_return = false;
                                 self.process_scope(allocator, function_builder, ast_branch.if_scope, result, if_block);
+                                log("Current block after if block processing: {}\n", .{function_builder.current_block});
+                                //assert(self.get_current_basic_block().instructions.items.len > 0);
                                 const if_block_returned = function_builder.emitted_return;
                                 
-                                if (!self.is_block_terminated(if_block))
+                                assert(self.is_block_terminated(if_block));
+
+                                if (!self.is_block_terminated(function_builder.current_block))
                                 {
                                     log("Branching from if to exit\n", .{});
                                     _ = Instruction.Br.new(allocator, self, exit_block);
@@ -1154,6 +1158,7 @@ pub const Program = struct
                                 {
                                     self.append_block_to_current_function(else_block, ast_branch.else_scope);
                                     self.process_scope(allocator, function_builder, ast_branch.else_scope.?, result, else_block);
+                                    log("Current block after else scope: {}\n", .{function_builder.current_block});
 
                                     log("Branching from if-else to exit\n", .{});
                                     _ = Instruction.Br.new(allocator, self, exit_block);
@@ -1195,6 +1200,7 @@ pub const Program = struct
             {
                 .less => .slt,
                 .equal => .eq,
+                .greater => .sgt,
                 else => panic("NI: {}\n", .{comparison.id}),
             };
 
@@ -1604,6 +1610,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         }
     }
 
+
     var functions = ArrayList(Function).initCapacity(allocator, result.functions.len) catch unreachable;
 
     for (builder.function_builders.items) |fb|
@@ -1616,6 +1623,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
     }
 
     Formatter.new(allocator, &builder);
+    //if (true) std.os.exit(0);
 
     const ir_result = Program
     {
