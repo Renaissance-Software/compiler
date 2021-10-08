@@ -13,10 +13,8 @@ const CodeBuffer = Codegen.CodeBuffer;
 const DataBuffer = Codegen.DataBuffer;
 const Import = Codegen.Import;
 
-const BucketArray = @import("../bucket_array.zig").BucketArray;
 
-const x86_64 = @import("x86_64/codegen.zig");
-const x86_64v2 = @import("x86_64/codegenv2.zig");
+const x86_64 = @import("x86_64/codegenv2.zig");
 
 pub const file_alignment = 0x200;
 pub const section_alignment = 0x1000;
@@ -475,7 +473,7 @@ pub const Section = struct
         {
             .x86_64 =>
             {
-                var x86_64_program = @ptrCast(*x86_64v2.Program, executable);
+                var x86_64_program = @ptrCast(*x86_64.Program, executable);
                 x86_64_program.encode_text_section_pe(allocator, &text, text_out, offset);
             },
             else => panic("CPU arch: {}\n", .{arch}),

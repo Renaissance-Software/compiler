@@ -6,8 +6,8 @@ const ArrayList = std.ArrayList;
 const Compiler = @import("compiler.zig");
 const IR = @import("ir.zig");
 const old_version = false;
-const x86_64 = if (old_version) @import("codegen/x86_64/codegen.zig") else @import("codegen/x86_64/codegenv2.zig");
-const arm64 = @import("codegen/arm64/codegen.zig");
+const x86_64 = @import("codegen/x86_64/codegenv2.zig");
+//const arm64 = @import("codegen/arm64/codegen.zig");
 
 const PE = @import("codegen/pe.zig");
 

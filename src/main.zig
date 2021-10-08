@@ -4,13 +4,6 @@ const panic = std.debug.panic;
 const Allocator = std.mem.Allocator;
 
 const Compiler = @import("compiler.zig");
-const Lexer = @import("lexer.zig");
-const Parser = @import("parser.zig");
-const Semantics = @import("semantics.zig");
-const Codegen = @import("codegen.zig");
-const Types = @import("ast_types.zig");
-const Type = Types.Type;
-const TypeBuffer = Types.TypeBuffer;
 const log_general = Compiler.log;
 
 fn log(comptime format: []const u8, arguments: anytype) void
