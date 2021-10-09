@@ -159,6 +159,10 @@ const BasicBlock = struct
         return block_index;
     }
 
+    fn get_ref(index: u32) Reference
+    {
+        return .{ .value = (@as(u64, @enumToInt(Reference.ID.basic_block)) << Reference.ID.position) | index };
+    }
 
     fn is_terminated(self: *const BasicBlock) bool
     {
@@ -178,6 +182,20 @@ const BasicBlock = struct
 
 pub const Instruction = struct
 {
+    const Types = [_]type
+    { 
+        Instruction.Add,
+        Instruction.Alloca,
+        Instruction.Br,
+        Instruction.Call,
+        Instruction.ICmp,
+        Instruction.Load,
+        Instruction.Mul,
+        Instruction.Store,
+        Instruction.Sub,
+        Instruction.Ret,
+    };
+
     const count = std.enums.values(ID).len;
 
     fn new(allocator: *Allocator, builder: *Program.Builder, id: ID, index: u64) Reference
@@ -531,6 +549,52 @@ pub const Instruction = struct
             return builder.append_instruction_to_function(instruction);
         }
     };
+
+    pub const Sub = struct
+    {
+        left: Reference,
+        right: Reference,
+
+        fn new(allocator: *Allocator, builder: *Program.Builder, left: Reference, right: Reference) Reference
+        {
+            var list = &builder.instructions.sub;
+            const array_index = list.items.len;
+            list.append(
+                .{
+                    .left = left,
+                    .right = right,
+                }) catch unreachable;
+
+            const instruction = Instruction.new(allocator, builder, .sub, array_index);
+            builder.append_use(left, instruction);
+            builder.append_use(right, instruction);
+
+            return builder.append_instruction_to_function(instruction);
+        }
+    };
+
+    pub const Mul = struct
+    {
+        left: Reference,
+        right: Reference,
+
+        fn new(allocator: *Allocator, builder: *Program.Builder, left: Reference, right: Reference) Reference
+        {
+            var list = &builder.instructions.mul;
+            const array_index = list.items.len;
+            list.append(
+                .{
+                    .left = left,
+                    .right = right,
+                }) catch unreachable;
+
+            const instruction = Instruction.new(allocator, builder, .mul, array_index);
+            builder.append_use(left, instruction);
+            builder.append_use(right, instruction);
+
+            return builder.append_instruction_to_function(instruction);
+        }
+    };
 };
 
 pub const Function = struct
@@ -551,6 +615,7 @@ pub const Function = struct
         scope_to_basic_block_map: ArrayList(u32),
         explicit_return: bool,
         emitted_return: bool,
+        conditional_alloca: bool,
 
         fn new(allocator: *Allocator, function: *Parser.Function.Internal) Function.Builder
         {
@@ -566,6 +631,7 @@ pub const Function = struct
                 .scope_to_basic_block_map = ArrayList(u32).initCapacity(allocator, function.scopes.len) catch unreachable,
                 .emitted_return = false,
                 .explicit_return = false,
+                .conditional_alloca = false,
             };
 
             builder.scope_to_basic_block_map.items.len = function.scopes.len;
@@ -610,6 +676,7 @@ pub const ExternalFunction = struct
 
 const Uses = ArrayList(Reference);
 
+
 pub const Program = struct
 {
     instructions: struct
@@ -620,10 +687,12 @@ pub const Program = struct
         call: []Instruction.Call,
         icmp: []Instruction.ICmp,
         load: []Instruction.Load,
+        mul: []Instruction.Mul,
         store: []Instruction.Store,
+        sub: []Instruction.Sub,
         ret: []Instruction.Ret,
     },
-    instruction_uses: [std.enums.values(Instruction.ID).len][]Uses,
+    instruction_uses: [Instruction.count][]Uses,
     basic_blocks: []BasicBlock,
     functions: []Function,
     external: Semantics.External,
@@ -652,7 +721,9 @@ pub const Program = struct
             call: ArrayList(Instruction.Call),
             icmp: ArrayList(Instruction.ICmp),
             load: ArrayList(Instruction.Load),
+            mul: ArrayList(Instruction.Mul),
             store: ArrayList(Instruction.Store),
+            sub: ArrayList(Instruction.Sub),
             ret: ArrayList(Instruction.Ret),
         },
         basic_blocks: ArrayList(BasicBlock),
@@ -683,8 +754,10 @@ pub const Program = struct
                     .call = ArrayList(Instruction.Call).init(allocator),
                     .icmp = ArrayList(Instruction.ICmp).init(allocator),
                     .load = ArrayList(Instruction.Load).init(allocator),
+                    .mul = ArrayList(Instruction.Mul).init(allocator),
                     .ret = ArrayList(Instruction.Ret).init(allocator),
                     .store = ArrayList(Instruction.Store).init(allocator),
+                    .sub = ArrayList(Instruction.Sub).init(allocator),
                 },
                 .instruction_uses = blk:
                 {
@@ -878,10 +951,12 @@ pub const Program = struct
             panic("Not Found\n", .{});
         }
 
-        fn append_instruction_to_function(builder: *Program.Builder, instruction: Reference) Reference
+        fn append_instruction_to_function(self: *Program.Builder, instruction: Reference) Reference
         {
-            //log("Appending {} to basic block #{}, which is used in function #{}\n", .{Instruction.get_ID(instruction), basic_block_index, function_index});
-            var current_block = builder.get_current_basic_block();
+            const function_index = self.current_function;
+            const current_block_index = self.function_builders.items[function_index].current_block;
+            const current_block = &self.basic_blocks.items[current_block_index];
+            log("Appending {} to basic block #{}, which is used in function #{}\n", .{Instruction.get_ID(instruction), current_block_index, function_index});
             current_block.instructions.append(instruction) catch unreachable;
 
             return instruction;
@@ -911,7 +986,7 @@ pub const Program = struct
                     .scope =>
                     {
                         const statement_type = ast_statement.get_array_id(.scope);
-                        log("Statement type: {}\n", .{statement_type});
+                        log("\t====>> Statement type: {}\n", .{statement_type});
                         switch (statement_type)
                         {
                             .invoke_expressions =>
@@ -1144,7 +1219,7 @@ pub const Program = struct
                                 //assert(self.get_current_basic_block().instructions.items.len > 0);
                                 const if_block_returned = function_builder.emitted_return;
                                 
-                                assert(self.is_block_terminated(if_block));
+                                //assert(self.is_block_terminated(if_block));
 
                                 if (!self.is_block_terminated(function_builder.current_block))
                                 {
@@ -1246,6 +1321,8 @@ pub const Program = struct
                     return switch (arithmetic_expression.id)
                     {
                         .add => Instruction.Add.new(allocator, self, left, right),
+                        .sub => Instruction.Sub.new(allocator, self, left, right),
+                        .mul => Instruction.Mul.new(allocator, self, left, right),
                         else => panic("ID: {}\n", .{arithmetic_expression.id}),
                     };
                 },
@@ -1309,126 +1386,332 @@ pub const Formatter = struct
     builder: *Program.Builder,
     allocator: *Allocator,
 
+    const SlotTracker = struct
+    {
+        slots: ArrayList(Reference),
+        next_id: u32,
+        starting_id: u32,
+
+        fn new_index(self: *SlotTracker, reference: Reference) u32
+        {
+            const index = self.next_id;
+            self.slots.append(reference) catch unreachable;
+            self.next_id += 1;
+            return index;
+        }
+    };
+
+    const InstructionPrinter = struct
+    {
+        ref: Reference,
+        id: ?u32,
+        block_ref: u32,
+    };
+
+    const BlockPrinter = struct
+    {
+        instructions: ArrayList(InstructionPrinter),
+        ref: u32,
+        id: u32,
+        parent: *ArrayList(BlockPrinter),
+    };
+
     fn new(allocator: *Allocator, builder: *Program.Builder) void
     {
         var formatter = Formatter { .builder = builder, .allocator = allocator };
         log("{}", .{formatter});
     }
 
+    fn setup_block(self: *const Formatter, writer: anytype, block_printers: *ArrayList(BlockPrinter), slot_tracker: *SlotTracker, basic_block_index: u32, block_id: u32) !void
+    {
+        const basic_block = &self.builder.basic_blocks.items[basic_block_index];
+        const instruction_count = basic_block.instructions.items.len;
+        try Format(writer, "Basic block: {}. Instruction count: {}\n", .{basic_block_index, instruction_count});
+
+        var block_printer = BlockPrinter
+        {
+            .instructions = ArrayList(InstructionPrinter).initCapacity(self.allocator, instruction_count) catch unreachable,
+            .ref = basic_block_index,
+            .id = block_id,
+            .parent = block_printers,
+        };
+
+        for (basic_block.instructions.items) |instruction|
+        {
+            var instruction_printer = InstructionPrinter
+            {
+                .ref = instruction,
+                .id = null,
+                .block_ref = basic_block_index,
+            };
+
+            const instruction_id = Instruction.get_ID(instruction);
+
+            switch (instruction_id)
+            {
+                .call =>
+                {
+                    const call = self.builder.instructions.call.items[instruction.get_index()];
+                    if (call.type.value != Type.Builtin.void_type.value)
+                    {
+                        instruction_printer.id = slot_tracker.new_index(instruction);
+                    }
+                },
+                .alloca,
+                .load,
+                .icmp,
+                .mul,
+                .add,
+                .sub,
+                => instruction_printer.id = slot_tracker.new_index(instruction),
+                .ret,
+                .store,
+                .br => {},
+                else => panic("Ni: {}\n", .{instruction_id}),
+            }
+
+            block_printer.instructions.append(instruction_printer) catch unreachable;
+        }
+
+        block_printers.append(block_printer) catch unreachable;
+    }
+
+    fn get_index(writer: anytype, reference: Reference, slot_tracker: *SlotTracker) u32
+    {
+        for (slot_tracker.slots.items) |ref, ref_i|
+        {
+            if (ref.value == reference.value)
+            {
+                return @intCast(u32, ref_i);
+            }
+        }
+
+        Format(writer, "Cant get: {}, {}\n", .{reference.get_ID(), reference.get_index()}) catch unreachable;
+        unreachable;
+    }
+
     pub fn format(self: *const Formatter, comptime fmt: []const u8, _: std.fmt.FormatOptions, writer: anytype) @TypeOf(writer).Error!void
     {
         _ = fmt;
 
-        for (self.builder.function_builders.items) |*function|
+        for (self.builder.function_builders.items) |*function, function_i|
         {
-            if (function.declaration.argument_names.len > 0) unreachable;
-            try Format(writer, "\ndefine {s} @{s}()\n", .{function.declaration.type.return_type.to_string(self), function.declaration.name});
-
-            for (function.basic_blocks.items) |basic_block_index|
+            var slot_tracker = SlotTracker
             {
-                const basic_block = &self.builder.basic_blocks.items[basic_block_index];
-                try Format(writer, "\n#{}:\n", .{basic_block_index});
+                .slots = ArrayList(Reference).init(self.allocator),
+                .next_id = 0,
+                .starting_id = 0,
+            };
 
-                for (basic_block.instructions.items) |instruction_ref|
+            for (function.declaration.argument_names) |_, arg_i|
+            {
+                _ = slot_tracker.new_index(Function.Argument.new(@intCast(u32, arg_i)));
+            }
+
+            _ = slot_tracker.new_index(undefined);
+
+            const basic_block_count: u64 = function.basic_blocks.items.len;
+            var block_printers = ArrayList(BlockPrinter).initCapacity(self.allocator, basic_block_count) catch unreachable;
+
+            const entry_block_index = function.basic_blocks.items[0];
+            try self.setup_block(writer, &block_printers, &slot_tracker, entry_block_index, 0xffffffff);
+
+            if (basic_block_count > 1)
+            {
+                for (function.basic_blocks.items[1..]) |basic_block_index|
                 {
-                    //const instruction_i = instruction_ref.get_index();
+                    const block_id = slot_tracker.new_index(BasicBlock.get_ref(basic_block_index));
+                    try self.setup_block(writer, &block_printers, &slot_tracker, basic_block_index, block_id);
+                }
+            }
+
+            if (function.declaration.argument_names.len > 0) unreachable;
+
+            try Format(writer, "\ndefine {s} @{s}() #{}\n", .{function.declaration.type.return_type.to_string(self), function.declaration.name, function_i});
+            try Format(writer, "{c}\n", .{'{'});
+
+            for (block_printers.items) |block_printer|
+            {
+                if (block_printer.id != 0xffffffff)
+                {
+                    try Format(writer, "{}:\n", .{block_printer.id});
+                }
+
+                for (block_printer.instructions.items) |instruction_printer|
+                {
+                    const instruction_ref = instruction_printer.ref;
                     const instruction_id = Instruction.get_ID(instruction_ref);
                     const instruction_str = @tagName(instruction_id);
+                    const instruction_index = instruction_ref.get_index();
+
+                    //if (true) try Format(writer, "Instruction index: {}. Block index: {}\n", .{instruction_index, block_printer.ref});
+                        
+                    if (instruction_printer.id) |ir_id|
+                    {
+                        try Format(writer, "\t%{} = ", .{ir_id});
+                    }
+                    else
+                    {
+                        try writer.writeAll("\t");
+                    }
+
+
+                    try Format(writer, "{s} ", .{instruction_str});
 
                     switch (instruction_id)
                     {
                         .call =>
                         {
-                            const call = &self.builder.instructions.call.items[instruction_ref.get_index()];
+                            const call = &self.builder.instructions.call.items[instruction_index];
                             const callee_return_type = call.type.to_string(self);
                             const callee = call.callee;
-                            const callee_name = switch (callee.get_ID())
+                            const callee_declaration = switch (callee.get_ID())
                             {
                                 .global_function => blk:
                                 {
                                     const callee_function = &self.builder.function_builders.items[callee.get_index()];
-                                    break :blk callee_function.declaration.name;
+                                    break :blk callee_function.declaration;
                                 },
                                 .external_function => blk:
                                 {
                                     const callee_function = &self.builder.external.functions[callee.get_index()];
-                                    break :blk callee_function.declaration.name;
+                                    break :blk callee_function.declaration;
                                 },
                                 else => panic("NI: {}\n", .{callee.get_ID()}),
                             };
 
-                            try Format(writer, "\t{s} {s} @{s}(", .{instruction_str, callee_return_type, callee_name});
+                            try Format(writer, "{s} @{s}(", .{callee_return_type, callee_declaration.name});
                             for (call.arguments) |argument, argument_i|
                             {
-                                try self.format_reference(writer, argument);
+                                try self.format_reference(writer, argument, &slot_tracker, callee_declaration.type.argument_types[argument_i]);
                                 if (argument_i < call.arguments.len - 1)
                                 {
                                     try writer.writeAll(", ");
                                 }
                             }
-                            try writer.writeAll(")\n");
-
+                            try writer.writeAll(")");
                         },
                         .alloca =>
                         {
-                            const alloca = &self.builder.instructions.alloca.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} {s}\n", .{instruction_str, alloca.alloca_type.to_string(self)});
+                            const alloca = &self.builder.instructions.alloca.items[instruction_index];
+                            try Format(writer, "{s}", .{alloca.alloca_type.to_string(self)});
                         },
                         .store =>
                         {
-                            const store = &self.builder.instructions.store.items[instruction_ref.get_index()];
+                            const store = &self.builder.instructions.store.items[instruction_index];
                             const alloca = self.get_alloca(store.pointer);
 
-                            try Format(writer, "\t{s} {s} %placeholder", .{instruction_str, alloca.alloca_type.to_string(self)});
-                            //try self.format_reference(writer, store.value);
-
-                            try Format(writer, ", {s} %placeholder\n", .{alloca.type.to_string(self)});
+                            try self.format_reference(writer, store.value, &slot_tracker, alloca.alloca_type);
+                            try writer.writeAll(", ");
+                            try self.format_reference(writer, store.pointer, &slot_tracker, null);
                         },
                         .br =>
                         {
-                            const br = &self.builder.instructions.br.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} ", .{instruction_str});
-
-                            if (br.dst_basic_block_false) |_|
+                            const br = &self.builder.instructions.br.items[instruction_index];
+                            if (br.condition) |br_condition|
                             {
-                                try writer.writeAll("i1 %placeholder, ");
-                                try writer.writeAll("label %placeholder, label %placeholder\n");
+                                try writer.writeAll("i1 ");
+                                try self.format_reference(writer, br_condition, &slot_tracker, null);
+                                try writer.writeAll(", ");
+                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
+                                try writer.writeAll(", ");
+                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block_false.?), &slot_tracker, null);
                             }
                             else
                             {
-                                try writer.writeAll("label %placeholder\n");
+                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
                             }
                         },
                         .load =>
                         {
                             const load = &self.builder.instructions.load.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} {s}, ", .{instruction_str, load.type.to_string(self)});
-                            const alloca = self.get_alloca(load.pointer);
-                            try Format(writer, "{s} %placeholder\n", .{alloca.type.to_string(self)});
+                            try self.format_reference(writer, load.pointer, &slot_tracker, load.type);
                         },
                         .icmp =>
                         {
                             const icmp = &self.builder.instructions.icmp.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} {s} %placeholder\n", .{instruction_str, @tagName(icmp.id)});
+                            try Format(writer, "{s} ", .{@tagName(icmp.id)});
+                            try self.format_reference(writer, icmp.left, &slot_tracker, null);
+                            try writer.writeAll(", ");
+                            try self.format_reference(writer, icmp.right, &slot_tracker, null);
+                        },
+                        .mul =>
+                        {
+                            const mul = &self.builder.instructions.mul.items[instruction_ref.get_index()];
+                            try self.format_reference(writer, mul.left, &slot_tracker, null);
+                            try writer.writeAll(", ");
+                            try self.format_reference(writer, mul.right, &slot_tracker, null);
                         },
                         .add =>
                         {
                             const add = &self.builder.instructions.add.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(add.left).to_string(self)});
+                            try self.format_reference(writer, add.left, &slot_tracker, null);
+                            try writer.writeAll(", ");
+                            try self.format_reference(writer, add.right, &slot_tracker, null);
+                        },
+                        .sub =>
+                        {
+                            const sub = &self.builder.instructions.sub.items[instruction_ref.get_index()];
+                            try self.format_reference(writer, sub.left, &slot_tracker, null);
+                            try writer.writeAll(", ");
+                            try self.format_reference(writer, sub.right, &slot_tracker, null);
                         },
                         .ret =>
                         {
                             const ret = &self.builder.instructions.ret.items[instruction_ref.get_index()];
-                            try Format(writer, "\t{s} {s} %placeholder\n", .{instruction_str, ret.type.to_string(self)});
+                            try self.format_reference(writer, ret.value, &slot_tracker, ret.type);
                         },
-                        else => panic("NI: {}\n", .{instruction_id}),
+                        else =>
+                        {
+                            try Format(writer, "not implemented: {}\n", .{instruction_id});
+                            unreachable;
+                        }
                     }
+
+                    try writer.writeAll("\n");
                 }
             }
+            //for (function.basic_blocks.items) |basic_block_index|
+            //{
+                //const basic_block = &self.builder.basic_blocks.items[basic_block_index];
+                //try Format(writer, "\n#{}:\n", .{basic_block_index});
+
+                //for (basic_block.instructions.items) |instruction_ref|
+                //{
+                    ////const instruction_i = instruction_ref.get_index();
+                    //const instruction_id = Instruction.get_ID(instruction_ref);
+                    //const instruction_str = @tagName(instruction_id);
+
+                    //switch (instruction_id)
+                    //{
+                        //.add =>
+                        //{
+                            //const add = &self.builder.instructions.add.items[instruction_ref.get_index()];
+                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(add.left).to_string(self)});
+                        //},
+                        //.sub =>
+                        //{
+                            //const sub = &self.builder.instructions.sub.items[instruction_ref.get_index()];
+                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(sub.left).to_string(self)});
+                        //},
+                        //.mul =>
+                        //{
+                            //const mul = &self.builder.instructions.mul.items[instruction_ref.get_index()];
+                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(mul.left).to_string(self)});
+                        //},
+                        //.ret =>
+                        //{
+                            //const ret = &self.builder.instructions.ret.items[instruction_ref.get_index()];
+                            //try Format(writer, "\t{s} {s} %placeholder\n", .{instruction_str, ret.type.to_string(self)});
+                        //},
+                        //else => panic("NI: {}\n", .{instruction_id}),
+                    //}
+                //}
+            //}
         }
     }
 
-    fn format_reference(self: *const Formatter, writer: anytype, reference: Reference) !void
+    fn format_reference(self: *const Formatter, writer: anytype, reference: Reference, slot_tracker: *SlotTracker, expected_type: ?Type) !void
     {
         switch (reference.get_ID())
         {
@@ -1438,23 +1721,61 @@ pub const Formatter = struct
                 {
                     .int =>
                     {
+                        // @TODO: fix this
+                        const type_str = 
+                            if (expected_type) |exp_type|
+                                exp_type.to_string(self)
+                            else
+                                "s32";
+
                         const int_literal = self.builder.integer_literals.items[reference.get_index()];
-                        try Format(writer, "{}", .{int_literal.value});
+                        try Format(writer, "{s} {}", .{type_str, int_literal.value});
                     },
                     else => panic("NI: {}\n", .{Constant.get_ID(reference)}),
                 }
             },
-            //.instruction =>
-            //{
-                //switch (Instruction.get_ID(reference))
-                //{
-                    //.alloca =>
-                    //{
-                        //const alloca = &self.builder.instructions.alloca.items[reference.get_index()];
-                    //},
-                    //else => panic("NI: {}\n", .{Instruction.get_ID(reference)}),
-                //}
-            //},
+            .instruction =>
+            {
+                const index = get_index(writer, reference, slot_tracker);
+                switch (Instruction.get_ID(reference))
+                {
+                    .alloca =>
+                    {
+                        const alloca = &self.builder.instructions.alloca.items[reference.get_index()];
+                        const alloca_type_str = alloca.type.to_string(self);
+
+                        try Format(writer, "{s} %{}", .{alloca_type_str, index});
+                    },
+                    .load =>
+                    {
+                        const load = &self.builder.instructions.load.items[reference.get_index()];
+                        const load_type_str = load.type.to_string(self);
+
+                        try Format(writer, "{s} %{}", .{load_type_str, index});
+                    },
+                    .icmp =>
+                    {
+                        try Format(writer, "i1 %{}", .{index});
+                    },
+                    .mul =>
+                    {
+                        try Format(writer, "s32 %{}", .{index});
+                    },
+                    .add =>
+                    {
+                        try Format(writer, "s32 %{}", .{index});
+                    },
+                    .sub =>
+                    {
+                        try Format(writer, "s32 %{}", .{index});
+                    },
+                    else => panic("NI: {}\n", .{Instruction.get_ID(reference)}),
+                }
+            },
+            .basic_block =>
+            {
+                try Format(writer, "label %{}", .{get_index(writer, reference, slot_tracker)});
+            },
             else => panic("NI: {}\n", .{reference.get_ID()}),
         }
     }
@@ -1550,7 +1871,6 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         {
             assert(statement.get_level() == .scope);
             const statement_id = statement.get_array_id(.scope);
-            log("Statement id: {}\n", .{statement_id});
 
             if (statement_id == .branches)
             {
@@ -1570,8 +1890,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             }
         }
 
-        var conditional_alloca = returns_something == .something and function_builder.explicit_return;
-        _ = conditional_alloca;
+        function_builder.conditional_alloca = returns_something == .something and function_builder.explicit_return;
 
         if (function_builder.explicit_return)
         {
@@ -1591,7 +1910,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         // Process function body
         builder.process_scope(allocator, function_builder, 0, result, function_builder.current_block);
 
-        if (conditional_alloca)
+        if (function_builder.conditional_alloca)
         {
             unreachable;
         }
@@ -1623,7 +1942,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
     }
 
     Formatter.new(allocator, &builder);
-    //if (true) std.os.exit(0);
+    if (true) std.os.exit(0);
 
     const ir_result = Program
     {
@@ -1635,8 +1954,10 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
             .call = builder.instructions.call.items,
             .icmp = builder.instructions.icmp.items,
             .load = builder.instructions.load.items,
-            .store = builder.instructions.store.items,
+            .mul = builder.instructions.mul.items,
             .ret = builder.instructions.ret.items,
+            .store = builder.instructions.store.items,
+            .sub = builder.instructions.sub.items,
         },
         .instruction_uses = blk: {
             var uses: [Instruction.count][]Uses = undefined;

@@ -47,7 +47,7 @@ const Module = struct
 
 pub const Integer = struct
 {
-    const Signedness = enum(u1)
+    pub const Signedness = enum(u1)
     {
         unsigned,
         signed,

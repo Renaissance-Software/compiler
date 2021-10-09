@@ -677,5 +677,10 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
         .line_count = line_count,
     };
 
+    for (result.tokens) |token, token_i|
+    {
+        log("Token #{}: {}\n", .{token_i, token});
+    }
+
     return result;
 }

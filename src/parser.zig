@@ -464,9 +464,18 @@ pub const ModuleParser = struct
         };
     }
 
+    fn is_correct_token(self: *Self, comptime token: Token) callconv(.Inline) bool
+    {
+        const token_to_be_consumed = self.lexer.tokens[self.lexer.next_index];
+        return (token == token_to_be_consumed);
+    }
+
     fn consume_token(self: *Self, comptime token: Token) callconv(.Inline) void
     {
+        assert(self.is_correct_token(token));
+
         const token_value = self.get_token(token).value;
+
         switch (comptime token)
         {
             .str_lit, .identifier =>
@@ -642,8 +651,8 @@ pub const ModuleParser = struct
                     .Plus, .Minus, .Multiplication => blk:
                     {
                         const arithmetic_expression = self.parse_arithmetic_expression(left_expr, operator, new_precedence);
-                        const scope_index = arithmetic_expression.get_array_index();
-                        assert(scope_index == 2);
+                        //const scope_index = arithmetic_expression.get_array_index();
+                        //assert(scope_index == 2);
                         assert(self.function_builder.scope_builders.items.len > 0);
                         break :blk arithmetic_expression;
                     },
@@ -795,8 +804,9 @@ pub const ModuleParser = struct
                 {
                     log("About to parse identifier expression\n", .{});
                     const identifier_expression = self.parse_expression_identifier();
-                    log("Just parsed identifier expression\n", .{});
-                    self.function_builder.scope_builders.items[self.function_builder.current_scope].statements.append(identifier_expression) catch unreachable;
+                    const identifier_expression_id = identifier_expression.get_array_id(.scope);
+                    log("Just parsed identifier expression: {}\n", .{identifier_expression_id});
+                    current_scope.statements.append(identifier_expression) catch unreachable;
                 }
             },
             .operator =>
@@ -1018,8 +1028,12 @@ pub const ModuleParser = struct
         log("Expected semicolon token: {}\n", .{expected_semicolon_token});
         if (expected_semicolon_token == .sign)
         {
+            const index = self.lexer.next_index;
+            log("Index: {}\n", .{index});
             const sign = self.get_token(.sign).value;
             log("End of statement sign: {c}\n", .{sign});
+            const previous_token = self.lexer.tokens[self.lexer.next_index - 1];
+            log("Previous token: {}\n", .{previous_token});
             if (sign == ';')
             {
                 self.consume_token(.sign);
@@ -1027,22 +1041,23 @@ pub const ModuleParser = struct
             }
         }
 
+        
+        log("For next_token: {}\n", .{next_token});
         parser_error("Expected semicolon to end statement\n", .{});
     }
 
-    fn parse_scope(self: *Self, parent_expression: Entity) u32
+    fn process_scope(self: *Self, new_current_scope: u32) void
     {
-        const previous_scope = self.function_builder.current_scope;
-
-        const new_current_scope = Scope.Builder.new(self.allocator, &self.function_builder, parent_expression, previous_scope);
-        assert(self.function_builder.current_scope == new_current_scope);
-        log("\n\n[SCOPE #{}] START\n\n", .{self.function_builder.current_scope});
-
         // @TODO: should we move this outside the function?
         const expected_left_brace = self.lexer.tokens[self.lexer.next_index];
-        if (expected_left_brace != .sign and self.get_token(.sign).value != '{')
+        if (expected_left_brace != .sign)
         {
-            parser_error("Expected left brace to open up the function body\n", .{});
+            parser_error("Expected left brace to open up the scope body\n", .{});
+        }
+
+        if (self.get_token(.sign).value != '{')
+        {
+            parser_error("Expected left brace to open up the scope body\n", .{});
         }
 
         self.consume_token(.sign);
@@ -1057,35 +1072,36 @@ pub const ModuleParser = struct
             block_ends = next_token == .sign and self.get_token(.sign).value == '}';
         }
 
-        if (new_current_scope == 2)
-        {
-            var current_scope = self.function_builder.scope_builders.items[new_current_scope];
-            const statement_count = current_scope.statements.items.len;
-            for (current_scope.statements.items) |statement, statement_i|
-            {
-                const statement_id = statement.get_array_id(.scope);
-                log("Statement #{}: {}\n", .{statement_i, statement_id});
-            }
-
-            const statement = current_scope.statements.items[1];
-            assert(statement.get_array_id(.scope) == .assignments);
-            const assignment_index = statement.get_index();
-            const assignment = &current_scope.assignments.items[assignment_index];
-            const right = assignment.right;
-            const right_array_id = right.get_array_id(.scope);
-            const right_scope_index = right.get_array_index();
-            assert(right_scope_index == 2);
-            log("Right: {}\n", .{right_array_id});
-            log("Scope 2 statement count: {}\n", .{statement_count});
-            assert(statement_count == 2);
-            const arithmetic_expression_count = current_scope.arithmetic_expressions.items.len;
-            log("AE count: {}\n", .{arithmetic_expression_count});
-            if (arithmetic_expression_count == 0) panic("there should be at least one\n", .{});
-        }
-
         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
         {
             parser_error("Expected closing brace for scope\n", .{});
+        }
+    }
+
+    fn parse_scope(self: *Self, parent_expression: Entity) u32
+    {
+        const previous_scope = self.function_builder.current_scope;
+
+        const new_current_scope = Scope.Builder.new(self.allocator, &self.function_builder, parent_expression, previous_scope);
+        assert(self.function_builder.current_scope == new_current_scope);
+        log("\n\n[SCOPE #{}] START\n\n", .{self.function_builder.current_scope});
+
+        const parent_expression_id = parent_expression.get_array_id(.scope);
+        const allow_no_scope = parent_expression_id == .loops or parent_expression_id == .branches;
+        if (allow_no_scope)
+        {
+            if (self.lexer.tokens[self.lexer.next_index] == .sign and self.get_token(.sign).value == '{')
+            {
+                self.process_scope(new_current_scope);
+            }
+            else
+            {
+                self.parse_statement(new_current_scope);
+            }
+        }
+        else
+        {
+            self.process_scope(new_current_scope);
         }
 
         self.end_scope(new_current_scope);
