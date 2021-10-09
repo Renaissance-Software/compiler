@@ -1004,292 +1004,296 @@ pub const Program = struct
 
             for (scope.statements) |ast_statement|
             {
-                const statement_index = ast_statement.get_index();
-                const statement_level = ast_statement.get_level();
-
-                switch (statement_level)
+                // @INFO: Discard statements if the function has return in every existing branch
+                if (!function_builder.emitted_return)
                 {
-                    .scope =>
+                    const statement_index = ast_statement.get_index();
+                    const statement_level = ast_statement.get_level();
+
+                    switch (statement_level)
                     {
-                        const statement_type = ast_statement.get_array_id(.scope);
-                        log("\t====>> Statement type: {}\n", .{statement_type});
-                        switch (statement_type)
+                        .scope =>
                         {
-                            .invoke_expressions =>
+                            const statement_type = ast_statement.get_array_id(.scope);
+                            log("\t====>> Statement type: {}\n", .{statement_type});
+                            switch (statement_type)
                             {
-                                const ast_invoke_expression = scope.invoke_expressions[statement_index];
-                                const expression = ast_invoke_expression.expression;
-                                assert(expression.get_level() == .global);
-
-                                var called_function_reference: Reference = undefined;
-                                var ast_called_function_declaration: Parser.Function = undefined;
-                                const called_function_index = expression.get_index();
-
-                                if (expression.get_array_id(.global) == .resolved_internal_functions)
+                                .invoke_expressions =>
                                 {
-                                    called_function_reference = Function.new(called_function_index);
-                                    ast_called_function_declaration = result.functions[called_function_index].declaration;
-                                }
-                                else if (expression.get_array_id(.global) == .resolved_external_functions)
-                                {
-                                    called_function_reference = ExternalFunction.new(called_function_index);
-                                    ast_called_function_declaration = result.external.functions[called_function_index].declaration;
-                                }
-                                else unreachable;
+                                    const ast_invoke_expression = scope.invoke_expressions[statement_index];
+                                    const expression = ast_invoke_expression.expression;
+                                    assert(expression.get_level() == .global);
 
-                                //const called_function_type = result.function_types[ast_called_function_declaration.type.get_index()];
-                                const called_function_type = ast_called_function_declaration.type;
+                                    var called_function_reference: Reference = undefined;
+                                    var ast_called_function_declaration: Parser.Function = undefined;
+                                    const called_function_index = expression.get_index();
 
-                                const called_function_argument_count = ast_called_function_declaration.argument_names.len;
-                                if (called_function_argument_count > 0)
-                                {
-                                    var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
-
-                                    for (ast_invoke_expression.arguments) |ast_argument|
+                                    if (expression.get_array_id(.global) == .resolved_internal_functions)
                                     {
-                                        const ast_arg_level = ast_argument.get_level();
-                                        const ast_index = ast_argument.get_index();
+                                        called_function_reference = Function.new(called_function_index);
+                                        ast_called_function_declaration = result.functions[called_function_index].declaration;
+                                    }
+                                    else if (expression.get_array_id(.global) == .resolved_external_functions)
+                                    {
+                                        called_function_reference = ExternalFunction.new(called_function_index);
+                                        ast_called_function_declaration = result.external.functions[called_function_index].declaration;
+                                    }
+                                    else unreachable;
 
-                                        switch (ast_arg_level)
+                                    //const called_function_type = result.function_types[ast_called_function_declaration.type.get_index()];
+                                    const called_function_type = ast_called_function_declaration.type;
+
+                                    const called_function_argument_count = ast_called_function_declaration.argument_names.len;
+                                    if (called_function_argument_count > 0)
+                                    {
+                                        var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
+
+                                        for (ast_invoke_expression.arguments) |ast_argument|
                                         {
-                                            .scope =>
+                                            const ast_arg_level = ast_argument.get_level();
+                                            const ast_index = ast_argument.get_index();
+
+                                            switch (ast_arg_level)
                                             {
-                                                const ast_arg_array_index = ast_argument.get_array_id(.scope);
-                                                switch (ast_arg_array_index)
+                                                .scope =>
                                                 {
-                                                    .integer_literals =>
+                                                    const ast_arg_array_index = ast_argument.get_array_id(.scope);
+                                                    switch (ast_arg_array_index)
                                                     {
-                                                        // @TODO: this can be buggy
-                                                        const int_literal = Constant.new(.int, ast_index);
-                                                        argument_list.append(int_literal) catch unreachable;
-                                                    },
-                                                    else => panic("{}\n", .{ast_arg_array_index}),
-                                                }
-                                            },
-                                            else => panic("Level: {}\n", .{ast_arg_level}),
+                                                        .integer_literals =>
+                                                        {
+                                                            // @TODO: this can be buggy
+                                                            const int_literal = Constant.new(.int, ast_index);
+                                                            argument_list.append(int_literal) catch unreachable;
+                                                        },
+                                                        else => panic("{}\n", .{ast_arg_array_index}),
+                                                    }
+                                                },
+                                                else => panic("Level: {}\n", .{ast_arg_level}),
+                                            }
                                         }
+
+                                        const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, argument_list.items);
+                                        // @TODO: we should be returning this? Yes, but...
+                                        _ = call;
                                     }
-
-                                    const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, argument_list.items);
-                                    // @TODO: we should be returning this? Yes, but...
-                                    _ = call;
-                                }
-                                else
-                                {
-                                    const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, std.mem.zeroes([]Reference));
-                                    // @TODO: we should be returning this? Yes, but...
-                                    _ = call;
-                                }
-                            },
-                            .return_expressions =>
-                            {
-                                assert(!function_builder.emitted_return);
-                                function_builder.emitted_return = true;
-
-                                const ast_return_expression = scope.return_expressions[statement_index];
-                                if (ast_return_expression.expression) |ast_expression_to_return|
-                                {
-                                    const ret_expression = self.process_expression(allocator, function_builder, result, ast_expression_to_return);
-
-                                    if (function_builder.conditional_alloca)
+                                    else
                                     {
-                                        assert(function_builder.return_alloca.value != Reference.Null.value);
-                                        assert(function_builder.exit_block != 0);
+                                        const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, std.mem.zeroes([]Reference));
+                                        // @TODO: we should be returning this? Yes, but...
+                                        _ = call;
+                                    }
+                                },
+                                .return_expressions =>
+                                {
+                                    assert(!function_builder.emitted_return);
+                                    function_builder.emitted_return = true;
 
-                                        const store_ref = Instruction.Store.new(allocator, self, ret_expression, function_builder.return_alloca);
+                                    const ast_return_expression = scope.return_expressions[statement_index];
+                                    if (ast_return_expression.expression) |ast_expression_to_return|
+                                    {
+                                        const ret_expression = self.process_expression(allocator, function_builder, result, ast_expression_to_return);
+
+                                        if (function_builder.conditional_alloca)
                                         {
-                                            _ = store_ref;
-                                            // @TODO: debug assert that uses >= 1
-                                            //const store = self.instructions.store[store_ref.get_index()];
+                                            assert(function_builder.return_alloca.value != Reference.Null.value);
+                                            assert(function_builder.exit_block != 0);
+
+                                            const store_ref = Instruction.Store.new(allocator, self, ret_expression, function_builder.return_alloca);
+                                            {
+                                                _ = store_ref;
+                                                // @TODO: debug assert that uses >= 1
+                                                //const store = self.instructions.store[store_ref.get_index()];
+                                            }
+
+                                            Instruction.Br.new(allocator, self, function_builder.exit_block);
                                         }
-
-                                        Instruction.Br.new(allocator, self, function_builder.exit_block);
+                                        else
+                                        {
+                                            _ = Instruction.Ret.new(allocator, self, return_type, ret_expression);
+                                        }
                                     }
                                     else
                                     {
-                                        _ = Instruction.Ret.new(allocator, self, return_type, ret_expression);
+                                        if (!function_builder.explicit_return)
+                                        {
+                                            _ = Instruction.Ret.new(allocator, self, return_type, null);
+                                            function_builder.emitted_return = true;
+                                        }
+                                        else
+                                        {
+                                            unreachable;
+                                        }
                                     }
-                                }
-                                else
+                                },
+                                .variable_declarations =>
                                 {
-                                    if (!function_builder.explicit_return)
+                                    const variable_declaration = scope.variable_declarations[statement_index];
+                                    const var_type = variable_declaration.type;
+                                    _ = Instruction.Alloca.new(allocator, self, Function.VariableDeclaration.new(statement_index), var_type, null);
+                                },
+                                .assignments =>
+                                {
+                                    const assignment = scope.assignments[statement_index];
+
+                                    assert(assignment.left.get_level() == .scope);
+                                    const left_id = assignment.left.get_array_id(.scope);
+                                    const left_reference = switch (left_id)
                                     {
-                                        _ = Instruction.Ret.new(allocator, self, return_type, null);
-                                        function_builder.emitted_return = true;
-                                    }
-                                    else
+                                        .variable_declarations => self.find_expression_alloca(function_builder, assignment.left),
+                                        else => panic("NI: {}\n", .{left_id}),
+                                    };
+
+                                    const right_reference = self.process_expression(allocator, function_builder, result, assignment.right);
+
+                                    _ = Instruction.Store.new(allocator, self, right_reference, left_reference);
+                                    //const instruction_count = current.instructions.items.len;
+                                    //if (true) panic("IC: {}\n", .{instruction_count});
+                                },
+                                .compound_assignments =>
+                                {
+                                    const compound_assignment = scope.compound_assignments[statement_index];
+                                    assert(compound_assignment.left.get_level() == .scope);
+                                    assert(compound_assignment.right.get_level() == .scope);
+
+                                    const right = self.process_expression(allocator, function_builder, result, compound_assignment.right);
+                                    const left = self.process_expression(allocator, function_builder, result, compound_assignment.left);
+                                    _ = left; _ = right;
+
+                                    const operation = switch (compound_assignment.id)
                                     {
-                                        unreachable;
+                                        .add => Instruction.Add.new(allocator, self, left, right),
+                                        else => panic("ID: {}\n", .{compound_assignment.id}),
+                                    };
+
+                                    assert(compound_assignment.left.get_level() == .scope);
+                                    const left_id = compound_assignment.left.get_array_id(.scope);
+                                    const left_alloca = switch (left_id)
+                                    {
+                                        .variable_declarations => self.find_expression_alloca(function_builder, compound_assignment.left),
+                                        else => panic("NI: {}\n", .{left_id}),
+                                    };
+
+                                    _ = Instruction.Store.new(allocator, self, operation, left_alloca);
+                                },
+                                .loops =>
+                                {
+                                    const ast_loop = scope.loops[statement_index];
+
+                                    const prefix_block = BasicBlock.new(allocator, self);
+                                    const body_block = BasicBlock.new(allocator, self);
+                                    const postfix_block = BasicBlock.new(allocator, self);
+                                    const end_block = BasicBlock.new(allocator, self);
+
+                                    const ast_function = &result.functions[self.current_function];
+                                    const ast_loop_prefix_scope = ast_function.scopes[ast_loop.prefix_scope_index];
+                                    const ast_loop_prefix_scope_statement_count = ast_loop_prefix_scope.statements.len;
+                                    if (ast_loop_prefix_scope_statement_count != 1)
+                                    {
+                                        report_error("More than one statement is not admitted\n", .{});
                                     }
-                                }
-                            },
-                            .variable_declarations =>
-                            {
-                                const variable_declaration = scope.variable_declarations[statement_index];
-                                const var_type = variable_declaration.type;
-                                _ = Instruction.Alloca.new(allocator, self, Function.VariableDeclaration.new(statement_index), var_type, null);
-                            },
-                            .assignments =>
-                            {
-                                const assignment = scope.assignments[statement_index];
 
-                                assert(assignment.left.get_level() == .scope);
-                                const left_id = assignment.left.get_array_id(.scope);
-                                const left_reference = switch (left_id)
-                                {
-                                    .variable_declarations => self.find_expression_alloca(function_builder, assignment.left),
-                                    else => panic("NI: {}\n", .{left_id}),
-                                };
-
-                                const right_reference = self.process_expression(allocator, function_builder, result, assignment.right);
-
-                                _ = Instruction.Store.new(allocator, self, right_reference, left_reference);
-                                //const instruction_count = current.instructions.items.len;
-                                //if (true) panic("IC: {}\n", .{instruction_count});
-                            },
-                            .compound_assignments =>
-                            {
-                                const compound_assignment = scope.compound_assignments[statement_index];
-                                assert(compound_assignment.left.get_level() == .scope);
-                                assert(compound_assignment.right.get_level() == .scope);
-
-                                const right = self.process_expression(allocator, function_builder, result, compound_assignment.right);
-                                const left = self.process_expression(allocator, function_builder, result, compound_assignment.left);
-                                _ = left; _ = right;
-
-                                const operation = switch (compound_assignment.id)
-                                {
-                                    .add => Instruction.Add.new(allocator, self, left, right),
-                                    else => panic("ID: {}\n", .{compound_assignment.id}),
-                                };
-
-                                assert(compound_assignment.left.get_level() == .scope);
-                                const left_id = compound_assignment.left.get_array_id(.scope);
-                                const left_alloca = switch (left_id)
-                                {
-                                    .variable_declarations => self.find_expression_alloca(function_builder, compound_assignment.left),
-                                    else => panic("NI: {}\n", .{left_id}),
-                                };
-
-                                _ = Instruction.Store.new(allocator, self, operation, left_alloca);
-                            },
-                            .loops =>
-                            {
-                                const ast_loop = scope.loops[statement_index];
-
-                                const prefix_block = BasicBlock.new(allocator, self);
-                                const body_block = BasicBlock.new(allocator, self);
-                                const postfix_block = BasicBlock.new(allocator, self);
-                                const end_block = BasicBlock.new(allocator, self);
-
-                                const ast_function = &result.functions[self.current_function];
-                                const ast_loop_prefix_scope = ast_function.scopes[ast_loop.prefix_scope_index];
-                                const ast_loop_prefix_scope_statement_count = ast_loop_prefix_scope.statements.len;
-                                if (ast_loop_prefix_scope_statement_count != 1)
-                                {
-                                    report_error("More than one statement is not admitted\n", .{});
-                                }
-
-                                self.append_block_to_current_function(prefix_block, ast_loop.prefix_scope_index);
-                                Instruction.Br.new(allocator, self, prefix_block);
-                                function_builder.current_block = prefix_block;
-
-
-                                const ast_loop_condition = ast_loop_prefix_scope.statements[0];
-                                const loop_condition = self.process_comparison(allocator, function_builder, result, ast_loop_condition);
-                                Instruction.Br.new_conditional(allocator, self, loop_condition, body_block, end_block);
-
-                                self.append_block_to_current_function(body_block, ast_loop.body_scope_index);
-
-                                self.process_scope(allocator, function_builder, ast_loop.body_scope_index, result, body_block);
-
-                                Instruction.Br.new(allocator, self, postfix_block);
-
-                                self.append_block_to_current_function(postfix_block, ast_loop.postfix_scope_index);
-
-                                self.process_scope(allocator, function_builder, ast_loop.postfix_scope_index, result, postfix_block);
-
-                                if (!function_builder.emitted_return)
-                                {
+                                    self.append_block_to_current_function(prefix_block, ast_loop.prefix_scope_index);
                                     Instruction.Br.new(allocator, self, prefix_block);
-                                    self.append_block_to_current_function(end_block, null);
-                                    function_builder.current_block = end_block;
-                                }
-                            },
-                            .break_expressions =>
-                            {
-                                const ast_break = scope.break_expressions[statement_index];
-                                const ast_loop_ref = ast_break.loop_to_break;
-                                const loop_index = ast_loop_ref.get_index();
-                                const loop_scope = ast_loop_ref.get_array_index();
-                                const ast_loop = &result.functions[self.current_function].scopes[loop_scope].loops[loop_index];
-                                const loop_prefix_basic_block_index = function_builder.scope_to_basic_block_map.items[ast_loop.prefix_scope_index];
-                                const loop_prefix_block = self.basic_blocks.items[loop_prefix_basic_block_index];
-                                const br_instruction = loop_prefix_block.instructions.items[loop_prefix_block.instructions.items.len - 1];
-                                assert(Instruction.get_ID(br_instruction) == .br);
-                                const br = self.instructions.br.items[br_instruction.get_index()];
-                                assert(br.dst_basic_block_false != null);
-                                const target_block = br.dst_basic_block_false.?;
+                                    function_builder.current_block = prefix_block;
 
-                                log("Branching from break\n", .{});
-                                Instruction.Br.new(allocator, self, target_block);
-                            },
-                            .branches =>
-                            {
-                                const ast_branch = scope.branches[statement_index];
 
-                                const branch_condition = self.process_comparison(allocator, function_builder, result, ast_branch.condition);
+                                    const ast_loop_condition = ast_loop_prefix_scope.statements[0];
+                                    const loop_condition = self.process_comparison(allocator, function_builder, result, ast_loop_condition);
+                                    Instruction.Br.new_conditional(allocator, self, loop_condition, body_block, end_block);
 
-                                const if_block = BasicBlock.new(allocator, self);
-                                const exit_block = BasicBlock.new(allocator, self);
-                                const else_block = 
-                                    if (ast_branch.else_scope) |_|
-                                        BasicBlock.new(allocator, self)
-                                    else
-                                        exit_block;
+                                    self.append_block_to_current_function(body_block, ast_loop.body_scope_index);
 
-                                if (else_block == exit_block) log("Exit block same else\n", .{}) else log("Exit block is different than else\n", .{});
+                                    self.process_scope(allocator, function_builder, ast_loop.body_scope_index, result, body_block);
 
-                                var exit_block_in_use = true;
-                                // @TODO: care about this in the future when it gives errors
-                                log("Branching from if conditional\n", .{});
-                                Instruction.Br.new_conditional(allocator, self, branch_condition, if_block, else_block);
+                                    Instruction.Br.new(allocator, self, postfix_block);
 
-                                self.append_block_to_current_function(if_block, ast_branch.if_scope);
-                                function_builder.emitted_return = false;
-                                self.process_scope(allocator, function_builder, ast_branch.if_scope, result, if_block);
-                                log("Current block after if block processing: {}\n", .{function_builder.current_block});
-                                const if_block_returned = function_builder.emitted_return;
-                                
-                                log("Branching from if to exit\n", .{});
-                                Instruction.Br.new(allocator, self, exit_block);
+                                    self.append_block_to_current_function(postfix_block, ast_loop.postfix_scope_index);
 
-                                function_builder.emitted_return = false;
+                                    self.process_scope(allocator, function_builder, ast_loop.postfix_scope_index, result, postfix_block);
 
-                                if (else_block != exit_block)
+                                    if (!function_builder.emitted_return)
+                                    {
+                                        Instruction.Br.new(allocator, self, prefix_block);
+                                        self.append_block_to_current_function(end_block, null);
+                                        function_builder.current_block = end_block;
+                                    }
+                                },
+                                .break_expressions =>
                                 {
-                                    self.append_block_to_current_function(else_block, ast_branch.else_scope);
-                                    self.process_scope(allocator, function_builder, ast_branch.else_scope.?, result, else_block);
-                                    log("Current block after else scope: {}\n", .{function_builder.current_block});
+                                    const ast_break = scope.break_expressions[statement_index];
+                                    const ast_loop_ref = ast_break.loop_to_break;
+                                    const loop_index = ast_loop_ref.get_index();
+                                    const loop_scope = ast_loop_ref.get_array_index();
+                                    const ast_loop = &result.functions[self.current_function].scopes[loop_scope].loops[loop_index];
+                                    const loop_prefix_basic_block_index = function_builder.scope_to_basic_block_map.items[ast_loop.prefix_scope_index];
+                                    const loop_prefix_block = self.basic_blocks.items[loop_prefix_basic_block_index];
+                                    const br_instruction = loop_prefix_block.instructions.items[loop_prefix_block.instructions.items.len - 1];
+                                    assert(Instruction.get_ID(br_instruction) == .br);
+                                    const br = self.instructions.br.items[br_instruction.get_index()];
+                                    assert(br.dst_basic_block_false != null);
+                                    const target_block = br.dst_basic_block_false.?;
 
-                                    log("Branching from if-else to exit\n", .{});
+                                    log("Branching from break\n", .{});
+                                    Instruction.Br.new(allocator, self, target_block);
+                                },
+                                .branches =>
+                                {
+                                    const ast_branch = scope.branches[statement_index];
+
+                                    const branch_condition = self.process_comparison(allocator, function_builder, result, ast_branch.condition);
+
+                                    const if_block = BasicBlock.new(allocator, self);
+                                    const exit_block = BasicBlock.new(allocator, self);
+                                    const else_block = 
+                                        if (ast_branch.else_scope) |_|
+                                            BasicBlock.new(allocator, self)
+                                        else
+                                            exit_block;
+
+                                    if (else_block == exit_block) log("Exit block same else\n", .{}) else log("Exit block is different than else\n", .{});
+
+                                    var exit_block_in_use = true;
+                                    // @TODO: care about this in the future when it gives errors
+                                    log("Branching from if conditional\n", .{});
+                                    Instruction.Br.new_conditional(allocator, self, branch_condition, if_block, else_block);
+
+                                    self.append_block_to_current_function(if_block, ast_branch.if_scope);
+                                    function_builder.emitted_return = false;
+                                    self.process_scope(allocator, function_builder, ast_branch.if_scope, result, if_block);
+                                    log("Current block after if block processing: {}\n", .{function_builder.current_block});
+                                    const if_block_returned = function_builder.emitted_return;
+
+                                    log("Branching from if to exit\n", .{});
                                     Instruction.Br.new(allocator, self, exit_block);
-                                }
 
-                                const else_block_returned = function_builder.emitted_return;
+                                    function_builder.emitted_return = false;
 
-                                function_builder.emitted_return = if_block_returned and else_block_returned;
+                                    if (else_block != exit_block)
+                                    {
+                                        self.append_block_to_current_function(else_block, ast_branch.else_scope);
+                                        self.process_scope(allocator, function_builder, ast_branch.else_scope.?, result, else_block);
+                                        log("Current block after else scope: {}\n", .{function_builder.current_block});
 
-                                if (exit_block_in_use and !function_builder.emitted_return)
-                                {
-                                    self.append_block_to_current_function(exit_block, null);
-                                    function_builder.current_block = exit_block;
-                                }
-                            },
-                            else => panic("ni: {}\n", .{statement_type}),
-                        }
-                    },
-                    else => panic("ni: {}\n", .{statement_level}),
+                                        log("Branching from if-else to exit\n", .{});
+                                        Instruction.Br.new(allocator, self, exit_block);
+                                    }
+
+                                    const else_block_returned = function_builder.emitted_return;
+
+                                    function_builder.emitted_return = if_block_returned and else_block_returned;
+
+                                    if (exit_block_in_use and !function_builder.emitted_return)
+                                    {
+                                        self.append_block_to_current_function(exit_block, null);
+                                        function_builder.current_block = exit_block;
+                                    }
+                                },
+                                else => panic("ni: {}\n", .{statement_type}),
+                            }
+                        },
+                        else => panic("ni: {}\n", .{statement_level}),
+                    }
                 }
             }
         }

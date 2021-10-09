@@ -1,6 +1,6 @@
  // @TODO: This test crashes the compiler because a return has been emitted after all paths emitted a return
  // Think of skipping the dead code. How?
- // @UPDATE: this is no longer crashing. We are skipping the rest of the block statements; the return is implicit Is this approach any good? - davidgm94 - April 3, 2021
+ // @UPDATE: this is no longer crashing. We are skipping the rest of the block statements when we know the function has return in every existing branch; the return is implicit Is this approach any good? - davidgm94 - April 3, 2021
 main :: () -> s32
 {
     a: s32 = 0;
