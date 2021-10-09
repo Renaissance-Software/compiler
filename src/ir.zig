@@ -60,6 +60,8 @@ pub const Reference = struct
 
     const T = u64;
 
+    pub const Null = std.mem.zeroes(Reference);
+
     pub fn get_ID (self: Reference) ID
     {
         return @intToEnum(ID, @intCast(u8, (self.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position));
@@ -408,7 +410,7 @@ pub const Instruction = struct
                         break :blk Ret
                         {
                             .type = return_type,
-                            .value = std.mem.zeroes(Reference),
+                            .value = Reference.Null,
                         };
                     }
                 };
@@ -625,9 +627,10 @@ pub const Function = struct
         argument_allocas: ArrayList(Reference),
         uses: Uses,
         basic_blocks: ArrayList(u32),
+        return_alloca: Reference,
         current_block: u32,
+        exit_block: u32,
         next_alloca_index: u32,
-        allocator: *Allocator,
         scope_to_basic_block_map: ArrayList(u32),
         explicit_return: bool,
         emitted_return: bool,
@@ -641,8 +644,9 @@ pub const Function = struct
                 .argument_allocas = ArrayList(Reference).initCapacity(allocator, function.declaration.argument_names.len) catch unreachable,
                 .uses = Uses.init(allocator),
                 .basic_blocks = ArrayList(u32).init(allocator),
-                .allocator = allocator,
+                .return_alloca = Reference.Null,
                 .current_block = 0,
+                .exit_block = 0,
                 .next_alloca_index = 0,
                 .scope_to_basic_block_map = ArrayList(u32).initCapacity(allocator, function.scopes.len) catch unreachable,
                 .emitted_return = false,
@@ -953,14 +957,20 @@ pub const Program = struct
         {
             const entry_block_index = function_builder.basic_blocks.items[0];
             const entry_block = self.basic_blocks.items[entry_block_index];
-            const alloca_instructions = entry_block.instructions.items[0..function_builder.next_alloca_index];
+            const alloca_instructions = entry_block.instructions.items[@boolToInt(function_builder.conditional_alloca)..function_builder.next_alloca_index];
+            const expression_index = expression.get_index(); // + @boolToInt(function_builder.conditional_alloca);
 
-            for (alloca_instructions) |alloca|
+            for (alloca_instructions) |function_alloca_ref|
             {
-                const alloca_i = alloca.get_index();
-                if (self.instructions.alloca.items[alloca_i].reference.get_index() == expression.get_index())
+                assert(Instruction.get_ID(function_alloca_ref) == .alloca);
+                const global_alloca_index = function_alloca_ref.get_index();
+
+                const alloca = self.instructions.alloca.items[global_alloca_index];
+                const alloca_reference_index = alloca.reference.get_index();
+
+                if (alloca_reference_index == expression_index)
                 {
-                    return alloca;
+                    return function_alloca_ref;
                 }
             }
 
@@ -1074,18 +1084,35 @@ pub const Program = struct
                             .return_expressions =>
                             {
                                 assert(!function_builder.emitted_return);
+                                function_builder.emitted_return = true;
 
                                 const ast_return_expression = scope.return_expressions[statement_index];
                                 if (ast_return_expression.expression) |ast_expression_to_return|
                                 {
                                     const ret_expression = self.process_expression(allocator, function_builder, result, ast_expression_to_return);
 
-                                    _ = Instruction.Ret.new(allocator, self, return_type, ret_expression);
-                                    function_builder.emitted_return = true;
+                                    if (function_builder.conditional_alloca)
+                                    {
+                                        assert(function_builder.return_alloca.value != Reference.Null.value);
+                                        assert(function_builder.exit_block != 0);
+
+                                        const store_ref = Instruction.Store.new(allocator, self, ret_expression, function_builder.return_alloca);
+                                        {
+                                            _ = store_ref;
+                                            // @TODO: debug assert that uses >= 1
+                                            //const store = self.instructions.store[store_ref.get_index()];
+                                        }
+
+                                        Instruction.Br.new(allocator, self, function_builder.exit_block);
+                                    }
+                                    else
+                                    {
+                                        _ = Instruction.Ret.new(allocator, self, return_type, ret_expression);
+                                    }
                                 }
                                 else
                                 {
-                                    if (!function_builder.emitted_return)
+                                    if (!function_builder.explicit_return)
                                     {
                                         _ = Instruction.Ret.new(allocator, self, return_type, null);
                                         function_builder.emitted_return = true;
@@ -1620,7 +1647,6 @@ pub const Formatter = struct
                             const br = &self.builder.instructions.br.items[instruction_index];
                             if (br.condition) |br_condition|
                             {
-                                try writer.writeAll("i1 ");
                                 try self.format_reference(writer, br_condition, &slot_tracker, null);
                                 try writer.writeAll(", ");
                                 try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
@@ -1681,43 +1707,6 @@ pub const Formatter = struct
                     try writer.writeAll("\n");
                 }
             }
-            //for (function.basic_blocks.items) |basic_block_index|
-            //{
-                //const basic_block = &self.builder.basic_blocks.items[basic_block_index];
-                //try Format(writer, "\n#{}:\n", .{basic_block_index});
-
-                //for (basic_block.instructions.items) |instruction_ref|
-                //{
-                    ////const instruction_i = instruction_ref.get_index();
-                    //const instruction_id = Instruction.get_ID(instruction_ref);
-                    //const instruction_str = @tagName(instruction_id);
-
-                    //switch (instruction_id)
-                    //{
-                        //.add =>
-                        //{
-                            //const add = &self.builder.instructions.add.items[instruction_ref.get_index()];
-                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(add.left).to_string(self)});
-                        //},
-                        //.sub =>
-                        //{
-                            //const sub = &self.builder.instructions.sub.items[instruction_ref.get_index()];
-                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(sub.left).to_string(self)});
-                        //},
-                        //.mul =>
-                        //{
-                            //const mul = &self.builder.instructions.mul.items[instruction_ref.get_index()];
-                            //try Format(writer, "\t{s} {s} %placeholder, %placeholder\n", .{instruction_str, self.get_type(mul.left).to_string(self)});
-                        //},
-                        //.ret =>
-                        //{
-                            //const ret = &self.builder.instructions.ret.items[instruction_ref.get_index()];
-                            //try Format(writer, "\t{s} {s} %placeholder\n", .{instruction_str, ret.type.to_string(self)});
-                        //},
-                        //else => panic("NI: {}\n", .{instruction_id}),
-                    //}
-                //}
-            //}
         }
     }
 
@@ -1904,7 +1893,12 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 
         if (function_builder.explicit_return)
         {
-            unreachable;
+            function_builder.exit_block = BasicBlock.new(allocator, &builder);
+
+            if (function_builder.conditional_alloca)
+            {
+                function_builder.return_alloca = Instruction.Alloca.new(allocator, &builder, Reference.Null, return_type, null);
+            }
         }
 
         //var argument_list = ArrayList(Function.
@@ -1922,7 +1916,17 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
 
         if (function_builder.conditional_alloca)
         {
-            unreachable;
+            assert(builder.basic_blocks.items[function_builder.current_block].instructions.items.len > 0);
+            assert(function_builder.exit_block != 0);
+            assert(function_builder.return_alloca.value != Reference.Null.value);
+
+            builder.append_block_to_current_function(function_builder.exit_block, null);
+            function_builder.current_block = function_builder.exit_block;
+
+            const return_alloca = builder.instructions.alloca.items[function_builder.return_alloca.get_index()];
+            const return_alloca_type = return_alloca.alloca_type;
+            const loaded_return = Instruction.Load.new(allocator, &builder, return_alloca_type, function_builder.return_alloca);
+            _ = Instruction.Ret.new(allocator, &builder, return_alloca_type, loaded_return);
         }
         else if (returns_something == .void)
         {

@@ -70,7 +70,7 @@ pub fn main() anyerror!void
     }
     else
     {
-        const index = 6;
+        const index = 7;
         //const index = test_files.len - 1;
         const test_file = test_files[index];
         Compiler.make_executable(page_allocator, test_file, make_exe_name(page_allocator, test_file, target), target);

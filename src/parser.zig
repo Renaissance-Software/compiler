@@ -950,8 +950,8 @@ pub const ModuleParser = struct
                             .prefix_scope_index = prefix_scope_index,
                             .body_scope_index = body_scope_index,
                             .postfix_scope_index = postfix_scope_index,
-                            .exit_block = std.mem.zeroes(IR.Reference),
-                            .continue_block = std.mem.zeroes(IR.Reference),
+                            .exit_block = IR.Reference.Null,
+                            .continue_block = IR.Reference.Null,
                         };
                         // we don't want to consume ';' token
                         return;
@@ -992,7 +992,7 @@ pub const ModuleParser = struct
                             .condition = branch_condition,
                             .if_scope = if_scope_index,
                             .else_scope = else_scope_index,
-                            .exit_block = std.mem.zeroes(IR.Reference),
+                            .exit_block = IR.Reference.Null,
                         };
 
                         // @INFO: skip consuming ';' token

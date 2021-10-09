@@ -133,6 +133,11 @@ pub const Entity = packed struct
 
     pub fn get_array_id(self: Self, comptime level: Level) LevelToArrayIDMap[@enumToInt(level)]
     {
+        // this means they are resolved
+        if (level != .scope and self.get_level() != .global)
+        {
+            assert(level == self.get_level());
+        }
         return @intToEnum(LevelToArrayIDMap[@enumToInt(level)], @intCast(std.meta.Int(.unsigned, @bitSizeOf(LevelToArrayIDMap[@enumToInt(level)])), (self.value & (std.math.maxInt(ArrayIDEnumType) << array_id_position)) >> array_id_position));
     }
 
