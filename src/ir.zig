@@ -452,39 +452,55 @@ pub const Instruction = struct
         dst_basic_block_false: ?u32,
         dst_basic_block: u32,
 
-        fn new(allocator: *Allocator, builder: *Program.Builder, dst_basic_block: u32) Reference
+        fn new(allocator: *Allocator, builder: *Program.Builder, dst_basic_block: u32) void
         {
-            var list = &builder.instructions.br;
-            const array_index = list.items.len;
-            list.append(
-                .{
-                    .condition = null,
-                    .dst_basic_block_false = null,
-                    .dst_basic_block = dst_basic_block,
-                }) catch unreachable;
+            const current_block = builder.function_builders.items[builder.current_function].current_block;
+            if (!builder.is_block_terminated(current_block))
+            {
+                var list = &builder.instructions.br;
+                const array_index = list.items.len;
+                list.append(
+                    .{
+                        .condition = null,
+                        .dst_basic_block_false = null,
+                        .dst_basic_block = dst_basic_block,
+                    }) catch unreachable;
 
-            const instruction = Instruction.new(allocator, builder, .br, array_index);
-            builder.basic_blocks.items[dst_basic_block].uses.append(instruction) catch unreachable;
-            return builder.append_instruction_to_function(instruction);
+                const instruction = Instruction.new(allocator, builder, .br, array_index);
+                builder.basic_blocks.items[dst_basic_block].uses.append(instruction) catch unreachable;
+                _ = builder.append_instruction_to_function(instruction);
+            }
+            else
+            {
+                log("Block #{} is already terminated, can't branch again to a new block\n", .{current_block});
+            }
         }
 
-        fn new_conditional(allocator: *Allocator, builder: *Program.Builder, condition: Reference, dst_basic_block: u32, dst_basic_block_false: u32) Reference
+        fn new_conditional(allocator: *Allocator, builder: *Program.Builder, condition: Reference, dst_basic_block: u32, dst_basic_block_false: u32) void
         {
-            var list = &builder.instructions.br;
-            const array_index = list.items.len;
-            list.append(
-                .{
-                    .condition = condition,
-                    .dst_basic_block_false = dst_basic_block_false,
-                    .dst_basic_block = dst_basic_block,
-                }) catch unreachable;
+            const current_block = builder.function_builders.items[builder.current_function].current_block;
+            if (!builder.is_block_terminated(current_block))
+            {
+                var list = &builder.instructions.br;
+                const array_index = list.items.len;
+                list.append(
+                    .{
+                        .condition = condition,
+                        .dst_basic_block_false = dst_basic_block_false,
+                        .dst_basic_block = dst_basic_block,
+                    }) catch unreachable;
 
-            const instruction = Instruction.new(allocator, builder, .br, array_index);
-            
-            builder.append_use(condition, instruction);
-            builder.basic_blocks.items[dst_basic_block].uses.append(instruction) catch unreachable;
-            builder.basic_blocks.items[dst_basic_block_false].uses.append(instruction) catch unreachable;
-            return builder.append_instruction_to_function(instruction);
+                const instruction = Instruction.new(allocator, builder, .br, array_index);
+
+                builder.append_use(condition, instruction);
+                builder.basic_blocks.items[dst_basic_block].uses.append(instruction) catch unreachable;
+                builder.basic_blocks.items[dst_basic_block_false].uses.append(instruction) catch unreachable;
+                _ = builder.append_instruction_to_function(instruction);
+            }
+            else
+            {
+                log("Block #{} is already terminated, can't branch again to a new block\n", .{current_block});
+            }
         }
     };
 
@@ -1148,19 +1164,19 @@ pub const Program = struct
                                 }
 
                                 self.append_block_to_current_function(prefix_block, ast_loop.prefix_scope_index);
-                                _ = Instruction.Br.new(allocator, self, prefix_block);
+                                Instruction.Br.new(allocator, self, prefix_block);
                                 function_builder.current_block = prefix_block;
 
 
                                 const ast_loop_condition = ast_loop_prefix_scope.statements[0];
                                 const loop_condition = self.process_comparison(allocator, function_builder, result, ast_loop_condition);
-                                _ = Instruction.Br.new_conditional(allocator, self, loop_condition, body_block, end_block);
+                                Instruction.Br.new_conditional(allocator, self, loop_condition, body_block, end_block);
 
                                 self.append_block_to_current_function(body_block, ast_loop.body_scope_index);
 
                                 self.process_scope(allocator, function_builder, ast_loop.body_scope_index, result, body_block);
 
-                                _ = Instruction.Br.new(allocator, self, postfix_block);
+                                Instruction.Br.new(allocator, self, postfix_block);
 
                                 self.append_block_to_current_function(postfix_block, ast_loop.postfix_scope_index);
 
@@ -1168,7 +1184,7 @@ pub const Program = struct
 
                                 if (!function_builder.emitted_return)
                                 {
-                                    _ = Instruction.Br.new(allocator, self, prefix_block);
+                                    Instruction.Br.new(allocator, self, prefix_block);
                                     self.append_block_to_current_function(end_block, null);
                                     function_builder.current_block = end_block;
                                 }
@@ -1189,7 +1205,7 @@ pub const Program = struct
                                 const target_block = br.dst_basic_block_false.?;
 
                                 log("Branching from break\n", .{});
-                                _ = Instruction.Br.new(allocator, self, target_block);
+                                Instruction.Br.new(allocator, self, target_block);
                             },
                             .branches =>
                             {
@@ -1210,22 +1226,16 @@ pub const Program = struct
                                 var exit_block_in_use = true;
                                 // @TODO: care about this in the future when it gives errors
                                 log("Branching from if conditional\n", .{});
-                                _ = Instruction.Br.new_conditional(allocator, self, branch_condition, if_block, else_block);
+                                Instruction.Br.new_conditional(allocator, self, branch_condition, if_block, else_block);
 
                                 self.append_block_to_current_function(if_block, ast_branch.if_scope);
                                 function_builder.emitted_return = false;
                                 self.process_scope(allocator, function_builder, ast_branch.if_scope, result, if_block);
                                 log("Current block after if block processing: {}\n", .{function_builder.current_block});
-                                //assert(self.get_current_basic_block().instructions.items.len > 0);
                                 const if_block_returned = function_builder.emitted_return;
                                 
-                                //assert(self.is_block_terminated(if_block));
-
-                                if (!self.is_block_terminated(function_builder.current_block))
-                                {
-                                    log("Branching from if to exit\n", .{});
-                                    _ = Instruction.Br.new(allocator, self, exit_block);
-                                }
+                                log("Branching from if to exit\n", .{});
+                                Instruction.Br.new(allocator, self, exit_block);
 
                                 function_builder.emitted_return = false;
 
@@ -1236,7 +1246,7 @@ pub const Program = struct
                                     log("Current block after else scope: {}\n", .{function_builder.current_block});
 
                                     log("Branching from if-else to exit\n", .{});
-                                    _ = Instruction.Br.new(allocator, self, exit_block);
+                                    Instruction.Br.new(allocator, self, exit_block);
                                 }
 
                                 const else_block_returned = function_builder.emitted_return;
@@ -1422,11 +1432,11 @@ pub const Formatter = struct
         log("{}", .{formatter});
     }
 
-    fn setup_block(self: *const Formatter, writer: anytype, block_printers: *ArrayList(BlockPrinter), slot_tracker: *SlotTracker, basic_block_index: u32, block_id: u32) !void
+    fn setup_block(self: *const Formatter, block_printers: *ArrayList(BlockPrinter), slot_tracker: *SlotTracker, basic_block_index: u32, block_id: u32) !void
     {
         const basic_block = &self.builder.basic_blocks.items[basic_block_index];
         const instruction_count = basic_block.instructions.items.len;
-        try Format(writer, "Basic block: {}. Instruction count: {}\n", .{basic_block_index, instruction_count});
+        //try Format(writer, "Basic block: {}. Instruction count: {}\n", .{basic_block_index, instruction_count});
 
         var block_printer = BlockPrinter
         {
@@ -1514,14 +1524,14 @@ pub const Formatter = struct
             var block_printers = ArrayList(BlockPrinter).initCapacity(self.allocator, basic_block_count) catch unreachable;
 
             const entry_block_index = function.basic_blocks.items[0];
-            try self.setup_block(writer, &block_printers, &slot_tracker, entry_block_index, 0xffffffff);
+            try self.setup_block(&block_printers, &slot_tracker, entry_block_index, 0xffffffff);
 
             if (basic_block_count > 1)
             {
                 for (function.basic_blocks.items[1..]) |basic_block_index|
                 {
                     const block_id = slot_tracker.new_index(BasicBlock.get_ref(basic_block_index));
-                    try self.setup_block(writer, &block_printers, &slot_tracker, basic_block_index, block_id);
+                    try self.setup_block(&block_printers, &slot_tracker, basic_block_index, block_id);
                 }
             }
 
@@ -1942,7 +1952,7 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
     }
 
     Formatter.new(allocator, &builder);
-    if (true) std.os.exit(0);
+    //if (true) std.os.exit(0);
 
     const ir_result = Program
     {
