@@ -7,6 +7,12 @@ pub fn build(b: *std.build.Builder) void
     // means any target is allowed, and the default is native. Other options
     // for restricting supported target set are available.
     std.debug.attachSegfaultHandler();
+
+    const x86_64_tests = b.addTest("src/codegen/x86_64/tests.zig");
+    x86_64_tests.setMainPkgPath("src");
+    const run_tests_x86_64 = b.step("test", "Run x86_64 tests");
+    run_tests_x86_64.dependOn(&x86_64_tests.step);
+
     const target = b.standardTargetOptions(.{});
 
     // Standard release options allow the person running `zig build` to select

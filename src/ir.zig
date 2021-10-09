@@ -1939,7 +1939,6 @@ pub fn generate(allocator: *Allocator, result: Semantics.Result) Program
         }
     }
 
-
     var functions = ArrayList(Function).initCapacity(allocator, result.functions.len) catch unreachable;
 
     for (builder.function_builders.items) |fb|

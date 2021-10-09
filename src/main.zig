@@ -60,24 +60,6 @@ pub fn main() anyerror!void
     var page_allocator = std.heap.page_allocator;
     const target = std.builtin.target;
 
-    // mac os workaround
-    //if (false)
-    //{
-        //const cwd = std.fs.cwd();
-        //const filename = "macho_exe";
-        //var arena = std.heap.ArenaAllocator.init(page_allocator);
-        //defer arena.deinit();
-        //const allocator = &arena.allocator;
-        //const file_content = cwd.readFileAlloc(allocator, filename, 0xffffffff) catch {
-            //panic("Error reading file: {s}\n", .{filename});
-        //};
-
-        //defer allocator.free(file_content);
-        //var fake_code = [_]u8{ 0x00, 0x00, 0x80, 0x52, 0xc0, 0x03, 0x5f, 0xd6 };
-        //macho.experiment(allocator, file_content, fake_code[0..]);
-        //return;
-    //}
-
     if (all_tests)
     {
         inline for (test_files) |test_file, i|

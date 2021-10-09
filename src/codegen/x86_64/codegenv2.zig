@@ -135,13 +135,8 @@ fn sub_rsp_s32(n: i32) [7]u8
     return bytes;
 }
 
-fn cmp_indirect_immediate(indirect_register: Encoding.Register, indirect_offset: i32, indirect_size: u8, integer_literal: Parser.IntegerLiteral) Instruction
+pub fn cmp_indirect_immediate(indirect_register: Encoding.Register, indirect_offset: i32, indirect_size: u8, integer_literal: Parser.IntegerLiteral) Instruction
 {
-    _ = indirect_size;
-    _ = indirect_offset;
-    _ = indirect_register;
-    _ = integer_literal;
-
     const integer_byte_count: u8 = blk:
     {
         if (integer_literal.value > max(u32))
@@ -157,9 +152,9 @@ fn cmp_indirect_immediate(indirect_register: Encoding.Register, indirect_offset:
         if (integer_literal.value > max(u8))
         {
             assert(integer_literal.value <= max(u16));
-            break :blk 2;
+            if (indirect_size == 2) break :blk 2
+            else break :blk 4;
         }
-
         break :blk 1;
     };
 
@@ -316,7 +311,7 @@ fn mov_indirect_register(indirect_register: Encoding.Register, indirect_offset: 
 
 }
 
-fn add_register_indirect(dst_register: Encoding.Register, allocation_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) Instruction
+pub fn add_register_indirect(dst_register: Encoding.Register, allocation_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) Instruction
 {
     var indirect_offset_byte_count: u8 = 0;
     if (indirect_offset != 0)
@@ -369,38 +364,37 @@ fn add_register_indirect(dst_register: Encoding.Register, allocation_size: u8, i
     return Instruction.Resolved.new(bytes[0..byte_count]);
 }
 
-fn add_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
+pub fn add_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
 {
     const value = immediate.value;
     var immediate_byte_count: u8 = 0;
     if (value > max(u32)) immediate_byte_count = 8
     else if (value > max(u16)) immediate_byte_count = 4
+    else if (value > max(u8) and register_size > 2) immediate_byte_count = 4
     else if (value > max(u8)) immediate_byte_count = 2
     else immediate_byte_count = 1;
 
     assert(immediate_byte_count <= register_size);
 
-    if (register == .A)
+    if (register == .A and !(immediate_byte_count == 1 and register_size != immediate_byte_count))
     {
         const opcode: u8 = 0x05 - @as(u8, @boolToInt(register_size == 1));
-        // @TODO: work around not to deal with another encoding
-        if (immediate_byte_count == register_size)
-        {
-            immediate_byte_count = register_size;
-        }
         const immediate_bytes = std.mem.asBytes(&immediate.value)[0..immediate_byte_count];
         const array_of_slices = [_][]const u8 { std.mem.asBytes(&opcode), immediate_bytes };
         return Instruction.Resolved.new_by_components(array_of_slices[0..]);
     }
     else
     {
-        const opcode: u8 = 0x81 - @as(u8, @boolToInt(register_size == 1));
-        _ = opcode;
         if (immediate_byte_count == 1)
         {
             if (register_size > immediate_byte_count)
             {
-                unreachable;
+                const opcode = 0x83;
+                const register_byte = 0xc0 | @enumToInt(register);
+                const byte_prologue = [_]u8 { opcode, register_byte };
+                const immediate_bytes = std.mem.asBytes(&immediate.value)[0..immediate_byte_count];
+                const array_of_slices = [_][]const u8 { byte_prologue[0..], immediate_bytes };
+                return Instruction.Resolved.new_by_components(array_of_slices[0..]);
             }
             else
             {
@@ -415,7 +409,7 @@ fn add_register_immediate(register: Encoding.Register, register_size: u8, immedi
     }
 }
 
-fn sub_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
+pub fn sub_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
 {
     const value = immediate.value;
     var immediate_byte_count: u8 = 0;
@@ -426,7 +420,7 @@ fn sub_register_immediate(register: Encoding.Register, register_size: u8, immedi
 
     assert(immediate_byte_count <= register_size);
 
-    if (register == .A)
+    if (register == .A and !(immediate_byte_count == 1 and register_size != immediate_byte_count))
     {
         const opcode: u8 = 0x2d - @as(u8, @boolToInt(register_size == 1));
         // @TODO: work around not to deal with another encoding
@@ -440,13 +434,17 @@ fn sub_register_immediate(register: Encoding.Register, register_size: u8, immedi
     }
     else
     {
-        const opcode: u8 = 0x81 - @as(u8, @boolToInt(register_size == 1));
-        _ = opcode;
         if (immediate_byte_count == 1)
         {
             if (register_size > immediate_byte_count)
             {
-                unreachable;
+                const opcode = 0x83;
+                const register_byte = 0xe8 | @enumToInt(register);
+                const byte_prologue = [_]u8 { opcode, register_byte };
+                const immediate_bytes = std.mem.asBytes(&immediate.value)[0..immediate_byte_count];
+                const array_of_slices = [_][]const u8 { byte_prologue[0..], immediate_bytes };
+
+                return Instruction.Resolved.new_by_components(array_of_slices[0..]);
             }
             else
             {
@@ -508,7 +506,7 @@ fn xor_register(register: Encoding.Register, size: u8) Instruction
     return Instruction.Resolved.new(byte_slice);
 }
 
-const Instruction = struct
+pub const Instruction = struct
 {
     const Self = @This();
     const max_bytes = 15;
@@ -545,7 +543,8 @@ const Instruction = struct
         {
             assert(bytes.len <= max_bytes);
 
-            return .{
+            const instruction = Instruction
+            {
                 .resolution = .{
                     .resolved = .{
                         .bytes = bytes,
@@ -554,13 +553,22 @@ const Instruction = struct
                 },
                 .status = .resolved,
             };
+
+            log ("Instruction bytes:\n", .{});
+            for (bytes[0..byte_count]) |byte|
+            {
+                log("0x{x:0>2}\n", .{byte});
+            }
+
+            return instruction;
         }
 
         pub fn new_by_components(byte_slices: []const []const u8) callconv(.Inline) Instruction
         {
             var offset: u8 = 0;
             
-            return .{
+            const instruction = Instruction
+            {
                 .resolution = .{
                     .resolved = .{
                         .bytes = blk: {
@@ -580,6 +588,14 @@ const Instruction = struct
                 },
                 .status = .resolved,
             };
+            log("Instruction bytes:\n", .{});
+            const instruction_bytes = instruction.resolution.resolved.bytes[0..instruction.resolution.resolved.size];
+            for (instruction_bytes) |byte|
+            {
+                log("0x{x:0>2}\n", .{byte});
+            }
+
+            return instruction;
         }
     };
 
@@ -1240,7 +1256,7 @@ const Register = struct
 
         fn register_allocation(self: *Register.Manager, dst_register: u64, value: IR.Reference, byte_count: u8) void
         {
-            log("\n\n\n\nAllocating {} bytes in {}\n\n\n\n\n", .{byte_count, @intToEnum(Encoding.Register, dst_register)});
+            log("Allocating {} bytes in {}\n", .{byte_count, @intToEnum(Encoding.Register, dst_register)});
             var reg = &self.registers[dst_register];
             reg.size = byte_count;
             reg.value = value;
@@ -1559,8 +1575,9 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
                     {
                         const register_size = @intCast(u8, first_operand_allocation.size);
                         const load_register = function.register_allocator.allocate(icmp.right, register_size);
-                        _ = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
                         function.register_allocator.alter_allocation(load_register, icmp_reference);
+                        function.append_instruction(mov_register_stack);
 
                         const load = program.instructions.load[icmp.right.get_index()];
                         const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
@@ -1636,17 +1653,19 @@ fn process_add(program: *const IR.Program, function: *Program.Function, add_refe
                     {
                         const register_size = @intCast(u8, first_operand_allocation.size);
                         const load_register = function.register_allocator.allocate(add.right, register_size);
-                        _ = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
                         function.register_allocator.alter_allocation(load_register, add_reference);
+                        function.append_instruction(mov_register_stack);
 
                         if (integer_literal.value == 1)
                         {
+                            log("Encoding inc instead of add\n", .{});
                             const inc_reg = inc_register(load_register, register_size);
                             function.append_instruction(inc_reg);
                         }
                         else
                         {
-                            log("Add register immediate\n", .{});
+                            log("Encoding adEncoding add register immediate {}\n", .{integer_literal.value});
                             const add_register_literal = add_register_immediate(load_register, register_size, integer_literal);
                             function.append_instruction(add_register_literal);
                         }
@@ -1749,8 +1768,9 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                     {
                         const register_size = @intCast(u8, first_operand_allocation.size);
                         const load_register = function.register_allocator.allocate(sub.right, register_size);
-                        _ = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
                         function.register_allocator.alter_allocation(load_register, sub_reference);
+                        function.append_instruction(mov_register_stack);
 
                         if (integer_literal.value == 1)
                         {
@@ -1866,8 +1886,9 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                     {
                         //const register_size = @intCast(u8, first_operand_allocation.size);
                         //const load_register = function.register_allocator.allocate(mul.right, register_size);
-                        //_ = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        //const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
                         //function.register_allocator.alter_allocation(load_register, mul_reference);
+                        //function.append_instruction(mov_register_stack);
 
                         //log("Mul register immediate\n", .{});
                         //const mul_register_literal = mul_register_immediate(load_register, register_size, integer_literal);
