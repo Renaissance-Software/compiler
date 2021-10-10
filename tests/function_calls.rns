@@ -1,3 +1,5 @@
+// @TODO: care with register spilling and stack allocations. Clang does more than us but that can be just plain wrong. Nevertheless it could be us that are wrong
+
 foo :: () -> s32
 {
     return 5;

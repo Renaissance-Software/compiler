@@ -41,6 +41,7 @@ pub const Entity = packed struct
         modules,
         resolved_internal_functions,
         resolved_external_functions,
+        resolved_invoke_expressions,
     };
 
     pub const ModuleID = enum

@@ -137,11 +137,31 @@ pub fn resolve_entity_index(analyzer: *Analyzer, comptime module_stats_id: Modul
 }
 
 // @TODO: make this more robust
-pub fn resolve_identifier_expression(current_function: *Parser.Function.Internal, expression: *Entity, scope_index: u32, name: []const u8) Type
+pub fn resolve_identifier_expression(analyzer: *Analyzer, current_function: *Parser.Function.Internal, expression: *Entity, scope_index: u32, name: []const u8) Type
 {
     var current_scope_index = scope_index;
 
-    while (true)
+    _ = analyzer;
+    //for (analyzer.functions.items) |function, function_i|
+    //{
+        //if (std.mem.eql(u8, function.declaration.name, name))
+        //{
+            //expression.* = Entity.new(function_i, Entity.GlobalID.resolved_internal_functions, 0);
+            //return function.declaration.type.return_type;
+        //}
+    //}
+
+    //for (analyzer.external_functions.items) |function, function_i|
+    //{
+        //if (std.mem.eql(u8, function.declaration.name, name))
+        //{
+            //expression.* = Entity.new(function_i, Entity.GlobalID.resolved_external_functions, 0);
+            //return function.declaration.type.return_type;
+        //}
+    //}
+
+    var scope_tree_explored = false;
+    while (!scope_tree_explored)
     {
         var scope = &current_function.scopes[current_scope_index];
 
@@ -156,19 +176,17 @@ pub fn resolve_identifier_expression(current_function: *Parser.Function.Internal
         }
 
         // @TODO: loop over other node types
-
-        if (scope_index != 0)
+        scope_tree_explored = scope_index == 0;
+        if (!scope_tree_explored)
         {
             current_scope_index = scope.parent.scope;
         }
-        else
-        {
-            report_error("Variable declaration \"{s}\" not found\n", .{name});
-        }
     }
+
+    report_error("Identifier expression \"{s}\" not found\n", .{name});
 }
 
-pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.Internal, expression: *Entity, expected_type: ?Type) Type
+pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.Internal, expression: *Entity, module_index: u64, expected_type: ?Type) Type
 {
     const expression_level = expression.get_level();
     const expression_index = expression.get_index();
@@ -199,8 +217,8 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
                 },
                 .integer_literals =>
                 {
-                    const module_index = scope_index;
-                    resolve_entity_index(analyzer, .integer_literals, expression, module_index);
+                    const int_module_index = scope_index;
+                    resolve_entity_index(analyzer, .integer_literals, expression, int_module_index);
 
                     assert(expected_type != null);
                     if (expected_type) |type_to_typecheck_against|
@@ -219,16 +237,23 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
                 .identifier_expressions =>
                 {
                     const identifier = function.scopes[scope_index].identifier_expressions[expression_index];
-                    const expression_type = resolve_identifier_expression(function, expression, scope_index, identifier);
+                    const expression_type = resolve_identifier_expression(analyzer, function, expression, scope_index, identifier);
                     return expression_type;
                 },
                 .arithmetic_expressions =>
                 {
-                    var scope_arithmetic_expressions = &function.scopes[scope_index].arithmetic_expressions;
+                    var scope_arithmetic_expressions = function.scopes[scope_index].arithmetic_expressions;
                     log("Scope #{} arithmetic expression count: {}\n", .{scope_index, scope_arithmetic_expressions.len});
 
-                    var arithmetic_expression = &function.scopes[scope_index].arithmetic_expressions[expression_index];
-                    return analyze_arithmetic_expression(analyzer, function, arithmetic_expression);
+                    var arithmetic_expression = &scope_arithmetic_expressions[expression_index];
+                    return analyze_arithmetic_expression(analyzer, function, arithmetic_expression, module_index);
+                },
+                .invoke_expressions =>
+                {
+                    var expression_scope = &function.scopes[scope_index];
+                    var invoke_expressions = expression_scope.invoke_expressions;
+                    var invoke_expression = &invoke_expressions[expression_index];
+                    return analyze_invoke_expression(analyzer, function, expression_scope, invoke_expression, module_index);
                 },
                 else => panic("NI: {}\n", .{array_id}),
             }
@@ -237,10 +262,11 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
     }
 }
 
-pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, left: *Entity, right: *Entity) Type
+pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, left: *Entity, right: *Entity, module_index: u64) Type
 {
-    const left_type = analyze_expression_typed(analyzer, function, left, null);
-    const right_type = analyze_expression_typed(analyzer, function, right, left_type);
+    log("Left: {}. Right: {}\n", .{left.get_array_id(.scope), right.get_array_id(.scope)});
+    const left_type = analyze_expression_typed(analyzer, function, left, module_index, null);
+    const right_type = analyze_expression_typed(analyzer, function, right, module_index, left_type);
 
     if (left_type.value != right_type.value)
     {
@@ -280,24 +306,146 @@ pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function
     return left_type;
 }
 
-pub fn analyze_comparison(analyzer: *Analyzer, function: *Parser.Function.Internal, comparison: *Parser.Comparison) Type
+pub fn analyze_comparison(analyzer: *Analyzer, function: *Parser.Function.Internal, comparison: *Parser.Comparison, module_index: u64) Type
 {
-    _ = analyze_binary_expression(analyzer, function, &comparison.left, &comparison.right);
+    _ = analyze_binary_expression(analyzer, function, &comparison.left, &comparison.right, module_index);
     return Type.Boolean;
 }
 
-pub fn analyze_arithmetic_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, arithmetic_expression: *Parser.ArithmeticExpression) Type
+pub fn analyze_arithmetic_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, arithmetic_expression: *Parser.ArithmeticExpression, module_index: u64) Type
 {
-    return analyze_binary_expression(analyzer, function, &arithmetic_expression.left, &arithmetic_expression.right);
+    return analyze_binary_expression(analyzer, function, &arithmetic_expression.left, &arithmetic_expression.right, module_index);
 }
 
-pub fn analyze_assignment_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, assignment: *Parser.Assignment) void
+pub fn analyze_assignment_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, assignment: *Parser.Assignment, module_index: u64) void
 {
-    _ = analyze_binary_expression(analyzer, function, &assignment.left, &assignment.right);
+    log("Analyzing assignment expression\n", .{});
+    _ = analyze_binary_expression(analyzer, function, &assignment.left, &assignment.right, module_index);
 }
-fn analyze_compound_assignment(analyzer: *Analyzer, function: *Parser.Function.Internal, compound_assignment: *Parser.CompoundAssignment) void
+fn analyze_compound_assignment(analyzer: *Analyzer, function: *Parser.Function.Internal, compound_assignment: *Parser.CompoundAssignment, module_index: u64) void
 {
-    _ = analyze_binary_expression(analyzer, function, &compound_assignment.left, &compound_assignment.right);
+    _ = analyze_binary_expression(analyzer, function, &compound_assignment.left, &compound_assignment.right, module_index);
+}
+
+fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Function.Internal, scope: *Parser.Scope, invoke_expression: *Parser.InvokeExpression, module_index: u64) Type
+{
+    _ = current_function;
+
+    const expression_to_invoke = invoke_expression.expression;
+    const expression_to_invoke_index = expression_to_invoke.get_index();
+    const expression_to_invoke_level = expression_to_invoke.get_level();
+    assert(expression_to_invoke_level == .scope);
+    const expression_to_invoke_id = expression_to_invoke.get_array_id(.scope);
+
+    var function_type: Type.Function = undefined;
+
+    const resolved_expression_to_invoke: Entity = blk:
+    {
+        if (expression_to_invoke_id == .identifier_expressions)
+        {
+            const invoke_expression_name = scope.identifier_expressions[expression_to_invoke_index];
+            for (analyzer.functions.items) |function, i|
+            {
+                if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
+                {
+                    continue;
+                }
+
+                function_type = function.declaration.type;
+                break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions, 0);
+            }
+
+            unreachable;
+        }
+        else if (expression_to_invoke_id == .field_access_expressions)
+        {
+            const field_expression = scope.field_access_expressions[expression_to_invoke_index];
+            const left = field_expression.left_expression;
+            const left_level = left.get_level();
+            assert(left_level == .scope);
+            const left_array_id = left.get_array_id(.scope);
+            assert(left_array_id == .identifier_expressions);
+            const left_index = left.get_index();
+            const left_name = scope.identifier_expressions[left_index];
+
+            const field = field_expression.field_expression;
+            const field_level = field.get_level();
+            assert(field_level == .scope);
+            const field_array_id = field.get_array_id(.scope);
+            assert(field_array_id == .identifier_expressions);
+            const field_index = field.get_index();
+            const field_name = scope.identifier_expressions[field_index];
+
+            const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_index);
+            const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
+
+            for (imported_modules) |imported_module|
+            {
+                assert(imported_module.alias != null);
+                if (!std.mem.eql(u8, imported_module.alias.?, left_name))
+                {
+                    continue;
+                }
+
+                const imported_module_index = imported_module.module.get_index();
+
+                const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, imported_module_index);
+                const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
+
+                for (internal_functions) |function, function_i|
+                {
+                    if (!std.mem.eql(u8, function.declaration.name, field_name))
+                    {
+                        continue;
+                    }
+
+                    function_type = function.declaration.type;
+                    break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions, 0);
+                }
+
+                const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, imported_module_index);
+                const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
+
+                // @TODO: is this faster than double for loop [library_i, symbol_i]?
+                for (external_functions) |function, function_i|
+                {
+                    if (!std.mem.eql(u8, function.declaration.name, field_name))
+                    {
+                        continue;
+                    }
+
+                    function_type = function.declaration.type;
+                    break :blk Entity.new(function_i + external_functions_range.start, Entity.GlobalID.resolved_external_functions, 0);
+                }
+            }
+
+            unreachable;
+            // not found
+        }
+        else unreachable;
+    };
+
+    invoke_expression.expression = resolved_expression_to_invoke;
+
+    if (invoke_expression.arguments.len > 0)
+    {
+        const argument_types = function_type.argument_types;
+
+        for (invoke_expression.arguments) |*arg, arg_i|
+        {
+            const arg_level = arg.get_level();
+            assert(arg_level == .scope);
+            const array_id = arg.get_array_id(.scope);
+            assert(array_id == Entity.ScopeID.integer_literals);
+            // @TODO: typecheck properly
+            if (argument_types[arg_i].get_ID() != .integer)
+            {
+                panic("Argument type must be integer\n", .{});
+            }
+        }
+    }
+
+    return function_type.return_type;
 }
 
 pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
@@ -308,133 +456,20 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
     log("Statement count: {}\n", .{statement_count});
     log("Comparison count: {}\n", .{scope.comparisons.len});
 
-    for (scope.statements) |*statement|
+    for (scope.statements) |*statement, statement_i|
     {
         const statement_index = statement.get_index();
         const statement_level = statement.get_level();
         assert(statement_level == .scope);
         const statement_id = statement.get_array_id(.scope);
+        log("Analyzing statement #{}: {}\n", .{statement_i, statement_id});
 
         switch (statement_id)
         {
             .invoke_expressions =>
             {
                 const invoke_expression = &scope.invoke_expressions[statement_index];
-                const expression_to_invoke = invoke_expression.expression;
-                const expression_to_invoke_index = expression_to_invoke.get_index();
-                const expression_to_invoke_level = expression_to_invoke.get_level();
-                assert(expression_to_invoke_level == .scope);
-                const expression_to_invoke_id = expression_to_invoke.get_array_id(.scope);
-
-                const resolved_expression_to_invoke: Entity = blk:
-                {
-                    if (expression_to_invoke_id == .identifier_expressions)
-                    {
-                        const invoke_expression_name = scope.identifier_expressions[expression_to_invoke_index];
-                        for (analyzer.functions.items) |function, i|
-                        {
-                            if (!std.mem.eql(u8, function.declaration.name, invoke_expression_name))
-                            {
-                                continue;
-                            }
-
-                            break :blk Entity.new(i, Entity.GlobalID.resolved_internal_functions, 0);
-                        }
-
-                        unreachable;
-                    }
-                    else if (expression_to_invoke_id == .field_access_expressions)
-                    {
-                        const field_expression = scope.field_access_expressions[expression_to_invoke_index];
-                        const left = field_expression.left_expression;
-                        const left_level = left.get_level();
-                        assert(left_level == .scope);
-                        const left_array_id = left.get_array_id(.scope);
-                        assert(left_array_id == .identifier_expressions);
-                        const left_index = left.get_index();
-                        const left_name = scope.identifier_expressions[left_index];
-
-                        const field = field_expression.field_expression;
-                        const field_level = field.get_level();
-                        assert(field_level == .scope);
-                        const field_array_id = field.get_array_id(.scope);
-                        assert(field_array_id == .identifier_expressions);
-                        const field_index = field.get_index();
-                        const field_name = scope.identifier_expressions[field_index];
-
-                        const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_index);
-                        const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
-
-                        for (imported_modules) |imported_module|
-                        {
-                            assert(imported_module.alias != null);
-                            if (!std.mem.eql(u8, imported_module.alias.?, left_name))
-                            {
-                                continue;
-                            }
-
-                            const imported_module_index = imported_module.module.get_index();
-
-                            const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, imported_module_index);
-                            const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
-
-                            for (internal_functions) |function, function_i|
-                            {
-                                if (!std.mem.eql(u8, function.declaration.name, field_name))
-                                {
-                                    continue;
-                                }
-
-                                break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions, 0);
-                            }
-
-                            const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, imported_module_index);
-                            const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
-
-                            // @TODO: is this faster than double for loop [library_i, symbol_i]?
-                            for (external_functions) |function, function_i|
-                            {
-                                if (!std.mem.eql(u8, function.declaration.name, field_name))
-                                {
-                                    continue;
-                                }
-
-                                break :blk Entity.new(function_i + external_functions_range.start, Entity.GlobalID.resolved_external_functions, 0);
-                            }
-                        }
-
-                        unreachable;
-                        // not found
-                    }
-                    else unreachable;
-                };
-
-                invoke_expression.expression = resolved_expression_to_invoke;
-
-                if (invoke_expression.arguments.len > 0)
-                {
-                    const resolved_expression_array_id = resolved_expression_to_invoke.get_array_id(.global);
-                    const function_type =
-                        if (resolved_expression_array_id == Entity.GlobalID.resolved_internal_functions)
-                            analyzer.functions.items[resolved_expression_to_invoke.get_index()].declaration.type
-                        else if (resolved_expression_array_id == Entity.GlobalID.resolved_external_functions)
-                            analyzer.external_functions.items[resolved_expression_to_invoke.get_index()].declaration.type
-                        else unreachable;
-                    const argument_types = function_type.argument_types;
-
-                    for (invoke_expression.arguments) |*arg, arg_i|
-                    {
-                        const arg_level = arg.get_level();
-                        assert(arg_level == .scope);
-                        const array_id = arg.get_array_id(.scope);
-                        assert(array_id == Entity.ScopeID.integer_literals);
-                        // @TODO: typecheck properly
-                        if (argument_types[arg_i].get_ID() != .integer)
-                        {
-                            panic("Argument type must be integer\n", .{});
-                        }
-                    }
-                }
+                _ = analyze_invoke_expression(analyzer, current_function, scope, invoke_expression, module_index);
             },
             .return_expressions =>
             {
@@ -462,12 +497,18 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                         .identifier_expressions =>
                         {
                             const identifier = scope.identifier_expressions[expression_to_return.get_index()];
-                            const expression_type = resolve_identifier_expression(current_function, &return_expression.expression.?, scope_index, identifier);
+                            const expression_type = resolve_identifier_expression(analyzer, current_function, &return_expression.expression.?, scope_index, identifier);
 
                             if (expression_type.value != current_function.declaration.type.return_type.value)
                             {
                                 report_error("Type mismatch\n", .{});
                             }
+                        },
+                        .arithmetic_expressions =>
+                        {
+                            const arithmetic_expression = &scope.arithmetic_expressions[expression_to_return.get_index()];
+                            const expression_type = analyze_arithmetic_expression(analyzer, current_function, arithmetic_expression, module_index);
+                            _ = expression_type;
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_id}),
                     }
@@ -488,12 +529,12 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
             .assignments =>
             {
                 var assignment = &scope.assignments[statement_index];
-                analyze_assignment_expression(analyzer, current_function, assignment);
+                analyze_assignment_expression(analyzer, current_function, assignment, module_index);
             },
             .compound_assignments =>
             {
                 var compound_assignment = &scope.compound_assignments[statement_index];
-                analyze_compound_assignment(analyzer, current_function, compound_assignment);
+                analyze_compound_assignment(analyzer, current_function, compound_assignment, module_index);
             },
             .loops =>
             {
@@ -525,7 +566,7 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                     const comparison_count = branch_comparison_scope.comparisons.len;
                     log("Comparison count: {}\n", .{comparison_count});
                     var branch_comparison = &branch_comparison_scope.comparisons[branch_comparison_index];
-                    _ = analyze_comparison(analyzer, current_function, branch_comparison);
+                    _ = analyze_comparison(analyzer, current_function, branch_comparison, module_index);
                 }
 
                 var if_scope = &current_function.scopes[branch.if_scope];
@@ -539,7 +580,7 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
             .comparisons =>
             {
                 var comparison = &scope.comparisons[statement_index];
-                const comparison_type = analyze_comparison(analyzer, current_function, comparison);
+                const comparison_type = analyze_comparison(analyzer, current_function, comparison, module_index);
                 assert(comparison_type.value == Type.Boolean.value);
             },
             .break_expressions =>

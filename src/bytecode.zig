@@ -2015,7 +2015,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
             if (node.value.return_expr.expression) |ast_return_expression|
             {
                 builder.emitted_return = true;
-                builder.explicit_return = true;
 
                 const function_type = @ptrCast(*FunctionType, builder.function.type);
                 const return_type = function_type.ret_type;
@@ -2060,7 +2059,6 @@ fn do_node(allocator: *Allocator, builder: *Builder, ast_types: *AST_Types.TypeB
                     assert(builder.exit_block != null);
                     _ = builder.create_br(allocator, builder.exit_block.?);
                     builder.emitted_return = true;
-                    builder.explicit_return = true;
                 }
             }
         },

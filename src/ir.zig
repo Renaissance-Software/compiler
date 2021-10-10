@@ -209,6 +209,7 @@ pub const Instruction = struct
     pub fn get_ID(reference: Reference) ID
     {
         assert(reference.get_ID() == .instruction);
+
         return @intToEnum(ID, @intCast(u8, (reference.value & (std.math.maxInt(std.meta.Int(.unsigned, @bitSizeOf(ID))) << ID.position)) >> ID.position));
     }
 
@@ -1020,69 +1021,7 @@ pub const Program = struct
                             {
                                 .invoke_expressions =>
                                 {
-                                    const ast_invoke_expression = scope.invoke_expressions[statement_index];
-                                    const expression = ast_invoke_expression.expression;
-                                    assert(expression.get_level() == .global);
-
-                                    var called_function_reference: Reference = undefined;
-                                    var ast_called_function_declaration: Parser.Function = undefined;
-                                    const called_function_index = expression.get_index();
-
-                                    if (expression.get_array_id(.global) == .resolved_internal_functions)
-                                    {
-                                        called_function_reference = Function.new(called_function_index);
-                                        ast_called_function_declaration = result.functions[called_function_index].declaration;
-                                    }
-                                    else if (expression.get_array_id(.global) == .resolved_external_functions)
-                                    {
-                                        called_function_reference = ExternalFunction.new(called_function_index);
-                                        ast_called_function_declaration = result.external.functions[called_function_index].declaration;
-                                    }
-                                    else unreachable;
-
-                                    //const called_function_type = result.function_types[ast_called_function_declaration.type.get_index()];
-                                    const called_function_type = ast_called_function_declaration.type;
-
-                                    const called_function_argument_count = ast_called_function_declaration.argument_names.len;
-                                    if (called_function_argument_count > 0)
-                                    {
-                                        var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
-
-                                        for (ast_invoke_expression.arguments) |ast_argument|
-                                        {
-                                            const ast_arg_level = ast_argument.get_level();
-                                            const ast_index = ast_argument.get_index();
-
-                                            switch (ast_arg_level)
-                                            {
-                                                .scope =>
-                                                {
-                                                    const ast_arg_array_index = ast_argument.get_array_id(.scope);
-                                                    switch (ast_arg_array_index)
-                                                    {
-                                                        .integer_literals =>
-                                                        {
-                                                            // @TODO: this can be buggy
-                                                            const int_literal = Constant.new(.int, ast_index);
-                                                            argument_list.append(int_literal) catch unreachable;
-                                                        },
-                                                        else => panic("{}\n", .{ast_arg_array_index}),
-                                                    }
-                                                },
-                                                else => panic("Level: {}\n", .{ast_arg_level}),
-                                            }
-                                        }
-
-                                        const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, argument_list.items);
-                                        // @TODO: we should be returning this? Yes, but...
-                                        _ = call;
-                                    }
-                                    else
-                                    {
-                                        const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, std.mem.zeroes([]Reference));
-                                        // @TODO: we should be returning this? Yes, but...
-                                        _ = call;
-                                    }
+                                    _ = self.process_invoke_expression(allocator, function_builder, result, ast_statement);
                                 },
                                 .return_expressions =>
                                 {
@@ -1323,51 +1262,140 @@ pub const Program = struct
             return Instruction.ICmp.new(allocator, self, comparison_id, comparison_left, comparison_right);
         }
 
-        fn process_expression(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, result: Semantics.Result, ast_expression: Entity) Reference
+        fn process_invoke_expression(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, result: Semantics.Result, ast_invoke_expression_ref: Entity) Reference
         {
             _ = function_builder;
-            _ = allocator;
-            _ = result;
-            _ = self;
 
-            assert(ast_expression.get_level() == .scope);
-            const scope_index = ast_expression.get_array_index();
-            const expression_index = ast_expression.get_index();
-            _ = expression_index;
-            _ = scope_index;
+            assert(ast_invoke_expression_ref.get_level() == .scope);
+            assert(ast_invoke_expression_ref.get_array_id(.scope) == Entity.ScopeID.invoke_expressions);
 
-            const expression_id = ast_expression.get_array_id(.scope);
+            const scope_index = ast_invoke_expression_ref.get_array_index();
+            const invoke_expression_index = ast_invoke_expression_ref.get_index();
 
-            switch (expression_id)
+            const ast_invoke_expression = &result.functions[self.current_function].scopes[scope_index].invoke_expressions[invoke_expression_index];
+            const expression = ast_invoke_expression.expression;
+            assert(expression.get_level() == .global);
+
+            var called_function_reference: Reference = undefined;
+            var ast_called_function_declaration: Parser.Function = undefined;
+            const called_function_index = expression.get_index();
+
+            if (expression.get_array_id(.global) == .resolved_internal_functions)
             {
-                .variable_declarations =>
-                {
-                    const alloca_ref = self.find_expression_alloca(function_builder, ast_expression);
-                    const alloca = self.instructions.alloca.items[alloca_ref.get_index()];
-                    const load = Instruction.Load.new(allocator, self, alloca.alloca_type, alloca_ref);
-                    return load;
-                },
-                .integer_literals =>
-                {
-                    // @TODO: this can be buggy
-                    const int_literal = Constant.new(.int, expression_index);
-                    return int_literal;
-                },
-                .arithmetic_expressions =>
-                {
-                    const arithmetic_expression = &result.functions[self.current_function].scopes[scope_index].arithmetic_expressions[expression_index];
-                    const left = self.process_expression(allocator, function_builder, result, arithmetic_expression.left);
-                    const right = self.process_expression(allocator, function_builder, result, arithmetic_expression.right);
+                called_function_reference = Function.new(called_function_index);
+                ast_called_function_declaration = result.functions[called_function_index].declaration;
+            }
+            else if (expression.get_array_id(.global) == .resolved_external_functions)
+            {
+                called_function_reference = ExternalFunction.new(called_function_index);
+                ast_called_function_declaration = result.external.functions[called_function_index].declaration;
+            }
+            else unreachable;
 
-                    return switch (arithmetic_expression.id)
+            //const called_function_type = result.function_types[ast_called_function_declaration.type.get_index()];
+            const called_function_type = ast_called_function_declaration.type;
+
+            const called_function_argument_count = ast_called_function_declaration.argument_names.len;
+            if (called_function_argument_count > 0)
+            {
+                var argument_list = ArrayList(Reference).initCapacity(allocator, called_function_argument_count) catch unreachable;
+
+                for (ast_invoke_expression.arguments) |ast_argument|
+                {
+                    const ast_arg_level = ast_argument.get_level();
+                    const ast_index = ast_argument.get_index();
+
+                    switch (ast_arg_level)
                     {
-                        .add => Instruction.Add.new(allocator, self, left, right),
-                        .sub => Instruction.Sub.new(allocator, self, left, right),
-                        .mul => Instruction.Mul.new(allocator, self, left, right),
-                        else => panic("ID: {}\n", .{arithmetic_expression.id}),
-                    };
+                        .scope =>
+                        {
+                            const ast_arg_array_index = ast_argument.get_array_id(.scope);
+                            switch (ast_arg_array_index)
+                            {
+                                .integer_literals =>
+                                {
+                                    // @TODO: this can be buggy
+                                    const int_literal = Constant.new(.int, ast_index);
+                                    argument_list.append(int_literal) catch unreachable;
+                                },
+                                else => panic("{}\n", .{ast_arg_array_index}),
+                            }
+                        },
+                        else => panic("Level: {}\n", .{ast_arg_level}),
+                    }
+                }
+
+                const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, argument_list.items);
+                // @TODO: we should be returning this? Yes, but...
+                return call;
+            }
+            else
+            {
+                const call = Instruction.Call.new(allocator, self, called_function_type.return_type, called_function_reference, std.mem.zeroes([]Reference));
+                // @TODO: we should be returning this? Yes, but...
+                return call;
+            }
+        }
+
+        fn process_expression(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, result: Semantics.Result, ast_expression: Entity) Reference
+        {
+            const ast_expr_level = ast_expression.get_level();
+            switch (ast_expr_level)
+            {
+                .scope =>
+                {
+                    const scope_index = ast_expression.get_array_index();
+                    const expression_index = ast_expression.get_index();
+
+                    const expression_id = ast_expression.get_array_id(.scope);
+
+                    switch (expression_id)
+                    {
+                        .variable_declarations =>
+                        {
+                            const alloca_ref = self.find_expression_alloca(function_builder, ast_expression);
+                            const alloca = self.instructions.alloca.items[alloca_ref.get_index()];
+                            const load = Instruction.Load.new(allocator, self, alloca.alloca_type, alloca_ref);
+                            return load;
+                        },
+                        .integer_literals =>
+                        {
+                            // @TODO: this can be buggy
+                            const int_literal = Constant.new(.int, expression_index);
+                            return int_literal;
+                        },
+                        .arithmetic_expressions =>
+                        {
+                            const arithmetic_expression = &result.functions[self.current_function].scopes[scope_index].arithmetic_expressions[expression_index];
+                            const left = self.process_expression(allocator, function_builder, result, arithmetic_expression.left);
+                            const right = self.process_expression(allocator, function_builder, result, arithmetic_expression.right);
+
+                            return switch (arithmetic_expression.id)
+                            {
+                                .add => Instruction.Add.new(allocator, self, left, right),
+                                .sub => Instruction.Sub.new(allocator, self, left, right),
+                                .mul => Instruction.Mul.new(allocator, self, left, right),
+                                else => panic("ID: {}\n", .{arithmetic_expression.id}),
+                            };
+                        },
+                        .invoke_expressions => return self.process_invoke_expression(allocator, function_builder, result, ast_expression),
+                        else => panic("NI: {}\n", .{expression_id}),
+                    }
                 },
-                else => panic("NI: {}\n", .{expression_id}),
+                .global =>
+                {
+                    const global_expr_id = ast_expression.get_array_id(.global);
+                    switch (global_expr_id)
+                    {
+                        .resolved_internal_functions =>
+                        {
+                            unreachable;
+                            //var function = &result.functions[expression_index];
+                        },
+                        else => panic("NI: {}\n", .{global_expr_id}),
+                    }
+                },
+                else => panic("Ni: {}\n", .{ast_expr_level}),
             }
         }
 
@@ -1711,6 +1739,8 @@ pub const Formatter = struct
                     try writer.writeAll("\n");
                 }
             }
+
+            try writer.writeAll("}\n");
         }
     }
 
@@ -1771,6 +1801,11 @@ pub const Formatter = struct
                     .sub =>
                     {
                         try Format(writer, "s32 %{}", .{index});
+                    },
+                    .call =>
+                    {
+                        const call = &self.builder.instructions.call.items[reference.get_index()];
+                        try Format(writer, "{s} %{}", .{call.type.to_string(self), index});
                     },
                     else => panic("NI: {}\n", .{Instruction.get_ID(reference)}),
                 }

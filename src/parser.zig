@@ -505,7 +505,7 @@ pub const ModuleParser = struct
 
     fn parse_expression_identifier(self: *Self) Entity
     {
-        return self.parse_precedence_identifier(Precedence.Assignment);
+        return self.parse_infix(Precedence.Assignment, self.parse_prefix_identifier());
     }
 
     fn parse_prefix_identifier(self: *Self) Entity
@@ -515,15 +515,12 @@ pub const ModuleParser = struct
         return left_expression;
     }
 
-    fn parse_precedence_identifier(self: *Self, comptime precedence: Precedence) Entity
-    {
-        return self.parse_infix(precedence, self.parse_prefix_identifier());
-    }
-
     fn parse_precedence(self: *Self, precedence: Precedence) Entity
     {
         // Parse prefix
         const prefix_token = self.lexer.tokens[self.lexer.next_index];
+        log("Precedence: {}\n", .{precedence});
+
         const left_expression = blk:
         {
             switch (prefix_token)
@@ -583,9 +580,9 @@ pub const ModuleParser = struct
         return self.parse_precedence(Precedence.Assignment);
     }
 
-    fn parse_infix(self: *Self, precedence: Precedence, left_expr: Entity) Entity
+    fn parse_infix(self: *Self, precedence: Precedence, old_left_expression: Entity) Entity
     {
-        var left_expression = left_expr;
+        var left_expression = old_left_expression;
         var has_less_precedence = true;
 
         while (has_less_precedence)
@@ -639,6 +636,7 @@ pub const ModuleParser = struct
             };
 
             has_less_precedence = @enumToInt(precedence) <= @enumToInt(new_precedence);
+            log("Old precedence: {}. New precedence: {}. Has less precedence: {}\n", .{precedence, new_precedence, has_less_precedence});
 
             if (has_less_precedence)
             {
@@ -646,11 +644,11 @@ pub const ModuleParser = struct
                 const operator = self.get_and_consume_token(.operator).value;
                 left_expression = switch (operator)
                 {
-                    .Equal, .GreaterThan => self.parse_comparison(left_expr, operator, new_precedence),
-                    .Assignment => self.parse_assignment(left_expr, new_precedence),
+                    .Equal, .GreaterThan => self.parse_comparison(left_expression, operator, new_precedence),
+                    .Assignment => self.parse_assignment(left_expression, new_precedence),
                     .Plus, .Minus, .Multiplication => blk:
                     {
-                        const arithmetic_expression = self.parse_arithmetic_expression(left_expr, operator, new_precedence);
+                        const arithmetic_expression = self.parse_arithmetic_expression(left_expression, operator, new_precedence);
                         //const scope_index = arithmetic_expression.get_array_index();
                         //assert(scope_index == 2);
                         assert(self.function_builder.scope_builders.items.len > 0);
@@ -694,6 +692,8 @@ pub const ModuleParser = struct
                     .Dot => FieldAccessExpression.new(&self.function_builder, left_expression, self.parse_precedence(comptime Precedence.Call.increment())),
                     else => panic("operator not implemented: {}\n", .{operator}),
                 };
+
+                log("Left expression: {}\n", .{left_expression.get_array_id(.scope)});
             }
         }
 
@@ -719,9 +719,10 @@ pub const ModuleParser = struct
             .right = right_expression,
         };
 
+        log("Arithmetic expression. Left: {}. Right: {}\n", .{left_expression.get_array_id(.scope), right_expression.get_array_id(.scope)});
+
         const current_scope_index = self.function_builder.current_scope;
         var current_scope = &self.function_builder.scope_builders.items[current_scope_index];
-        log("\n\n\nAppending arithmetic expression at scope {}\n\n\n", .{current_scope_index});
         const arithmetic_expression_index = current_scope.arithmetic_expressions.items.len;
         current_scope.arithmetic_expressions.append(arithmetic_expression) catch unreachable;
         const arithmetic_expression_id = Entity.new(arithmetic_expression_index, Entity.ScopeID.arithmetic_expressions, self.function_builder.current_scope);
@@ -752,7 +753,7 @@ pub const ModuleParser = struct
     fn parse_statement(self: *Self, parent_scope: u32) void
     {
         const next_token = self.lexer.tokens[self.lexer.next_index];
-        log("Statement token: {}\n", .{next_token});
+        log("\n\nNew statement first token: {}\n\n", .{next_token});
 
         var current_scope = &self.function_builder.scope_builders.items[parent_scope];
 
