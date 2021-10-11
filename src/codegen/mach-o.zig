@@ -1,7 +1,6 @@
     const std = @import("std");
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const print = std.debug.print;
 const panic = std.debug.panic;
 const assert = std.debug.assert;
 

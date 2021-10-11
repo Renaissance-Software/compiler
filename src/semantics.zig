@@ -25,6 +25,15 @@ pub fn report_error(comptime format: []const u8, args: anytype) noreturn
     panic(format, args);
 }
 
+pub fn resolve_type(T: Type, new_index: u64) Type
+{
+    var old_type = T;
+    old_type.set_new_index(new_index);
+    old_type.mark_as_resolved();
+
+    return old_type;
+}
+
 // @TODO: make this fast
 pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, analyzer: *Analyzer, module_index: u64) struct { start: u64, end: u64 }
 {
@@ -45,16 +54,18 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
     return .{ .start = internal_item_start, .end = internal_item_end };
 }
 
+// @INFO: we are logging types to see if there is any wrong-generated one
 fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
 {
     const type_id = unresolved_type.get_ID();
+    const module_index = unresolved_type.get_module_index();
+
     switch (type_id)
     {
         // @INFO: types that are already resolved
         .builtin, .integer => return unresolved_type,
         .unresolved =>
         {
-            const module_index = unresolved_type.get_module_index();
             const unresolved_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.unresolved_types)];
             const index = unresolved_type.get_index();
             const unresolved_type_identifier = analyzer.unresolved_types.items[unresolved_type_module_offset + index];
@@ -63,7 +74,9 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
                 
                 if (std.fmt.parseUnsigned(u16, unresolved_type_identifier[1..], 10)) |bit_count|
                 {
-                    return Type.Integer.new(bit_count, .unsigned);
+                    const unsigned_integer_type = Type.Integer.new(bit_count, .unsigned);
+                    log("{}\n", .{unsigned_integer_type.get_ID()});
+                    return unsigned_integer_type;
                 }
                 else |_| {}
             }
@@ -71,12 +84,25 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
             {
                 if (std.fmt.parseUnsigned(u16, unresolved_type_identifier[1..], 10)) |bit_count|
                 {
-                    return Type.Integer.new(bit_count, .signed);
+                    const signed_integer_type = Type.Integer.new(bit_count, .signed);
+                    log("{}\n", .{signed_integer_type.get_ID()});
+                    return signed_integer_type;
                 }
                 else |_| {}
             }
 
             unreachable;
+        },
+        .pointer =>
+        {
+            const pointer_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.pointer_types)];
+            const resolved_index = pointer_type_module_offset + unresolved_type.get_index();
+            var resolved_pointer_type = resolve_type(unresolved_type, resolved_index);
+            analyzer.pointer_types.items[resolved_index].type = analyze_type(analyzer, analyzer.pointer_types.items[resolved_index].type);
+
+            log("{}\n", .{resolved_pointer_type.get_ID()});
+
+            return resolved_pointer_type;
         },
         else => panic("Type ID: {}\n", .{type_id}),
     }
@@ -192,74 +218,118 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
     const expression_index = expression.get_index();
     const scope_index = expression.get_array_index();
 
-    switch (expression_level)
+    const expression_type = blk:
     {
-        .scope =>
+        switch (expression_level)
         {
-            const array_id = expression.get_array_id(.scope);
-
-            switch (array_id)
+            .scope =>
             {
-                // @TODO: this is mostly a reference to a declaration, not a declaration in itself
-                .variable_declarations =>
-                {
-                    var variable_declaration = &function.scopes[scope_index].variable_declarations[expression_index];
-                    variable_declaration.type = analyze_type(analyzer, variable_declaration.type);
-                    if (expected_type) |type_to_typecheck_against|
-                    {
-                        if (variable_declaration.type.value != type_to_typecheck_against.value)
-                        {
-                            report_error("Types don't match\n", .{});
-                        }
-                    }
+                const array_id = expression.get_array_id(.scope);
 
-                    return variable_declaration.type;
-                },
-                .integer_literals =>
+                switch (array_id)
                 {
-                    const int_module_index = scope_index;
-                    resolve_entity_index(analyzer, .integer_literals, expression, int_module_index);
-
-                    assert(expected_type != null);
-                    if (expected_type) |type_to_typecheck_against|
+                    // @TODO: this is mostly a reference to a declaration, not a declaration in itself
+                    .variable_declarations =>
                     {
-                        const type_id = type_to_typecheck_against.get_ID();
-                        if (type_id != .integer)
+                        var variable_declaration = &function.scopes[scope_index].variable_declarations[expression_index];
+                        variable_declaration.type = analyze_type(analyzer, variable_declaration.type);
+                        if (expected_type) |type_to_typecheck_against|
                         {
-                            report_error("Expected: {}\n", .{type_id});
+                            if (variable_declaration.type.value != type_to_typecheck_against.value)
+                            {
+                                report_error("Types don't match\n", .{});
+                            }
                         }
 
-                        return type_to_typecheck_against;
-                    }
+                        break :blk variable_declaration.type;
+                    },
+                    .integer_literals =>
+                    {
+                        const int_module_index = scope_index;
+                        resolve_entity_index(analyzer, .integer_literals, expression, int_module_index);
 
-                    unreachable;
-                },
-                .identifier_expressions =>
-                {
-                    const identifier = function.scopes[scope_index].identifier_expressions[expression_index];
-                    const expression_type = resolve_identifier_expression(analyzer, function, expression, scope_index, identifier);
-                    return expression_type;
-                },
-                .arithmetic_expressions =>
-                {
-                    var scope_arithmetic_expressions = function.scopes[scope_index].arithmetic_expressions;
-                    log("Scope #{} arithmetic expression count: {}\n", .{scope_index, scope_arithmetic_expressions.len});
+                        assert(expected_type != null);
+                        if (expected_type) |type_to_typecheck_against|
+                        {
+                            const type_id = type_to_typecheck_against.get_ID();
+                            if (type_id != .integer)
+                            {
+                                report_error("Expected: {}\n", .{type_id});
+                            }
 
-                    var arithmetic_expression = &scope_arithmetic_expressions[expression_index];
-                    return analyze_arithmetic_expression(analyzer, function, arithmetic_expression, module_index);
-                },
-                .invoke_expressions =>
-                {
-                    var expression_scope = &function.scopes[scope_index];
-                    var invoke_expressions = expression_scope.invoke_expressions;
-                    var invoke_expression = &invoke_expressions[expression_index];
-                    return analyze_invoke_expression(analyzer, function, expression_scope, invoke_expression, module_index);
-                },
-                else => panic("NI: {}\n", .{array_id}),
-            }
-        },
-        else => panic("NI: {}\n", .{expression_level}),
-    }
+                            break :blk type_to_typecheck_against;
+                        }
+
+                        unreachable;
+                    },
+                    .identifier_expressions =>
+                    {
+                        const identifier = function.scopes[scope_index].identifier_expressions[expression_index];
+                        const expression_type = resolve_identifier_expression(analyzer, function, expression, scope_index, identifier);
+                        break :blk expression_type;
+                    },
+                    .arithmetic_expressions =>
+                    {
+                        var scope_arithmetic_expressions = function.scopes[scope_index].arithmetic_expressions;
+                        log("Scope #{} arithmetic expression count: {}\n", .{scope_index, scope_arithmetic_expressions.len});
+
+                        var arithmetic_expression = &scope_arithmetic_expressions[expression_index];
+                        break :blk analyze_arithmetic_expression(analyzer, function, arithmetic_expression, module_index);
+                    },
+                    .invoke_expressions =>
+                    {
+                        var expression_scope = &function.scopes[scope_index];
+                        var invoke_expressions = expression_scope.invoke_expressions;
+                        var invoke_expression = &invoke_expressions[expression_index];
+                        break :blk analyze_invoke_expression(analyzer, function, expression_scope, invoke_expression, module_index);
+                    },
+                    .address_of_expressions =>
+                    {
+                        var expression_scope = &function.scopes[scope_index];
+                        var address_of_expressions = expression_scope.address_of_expressions;
+                        var address_of_expression = &address_of_expressions[expression_index];
+                        break :blk analyze_address_of_expression(analyzer, function, module_index, address_of_expression);
+                    },
+                    .dereference_expressions =>
+                    {
+                        var expression_scope = &function.scopes[scope_index];
+                        var dereference_expressions = expression_scope.dereference_expressions;
+                        var dereference_expression = &dereference_expressions[expression_index];
+                        break :blk analyze_dereference_expression(analyzer, function, module_index, dereference_expression);
+                    },
+                    else => panic("NI: {}\n", .{array_id}),
+                }
+            },
+            else => panic("NI: {}\n", .{expression_level}),
+        }
+    };
+
+    log("{}\n", .{expression_type.get_ID()});
+    return expression_type;
+}
+
+pub fn analyze_address_of_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, module_index: u64, address_of_expression: *Parser.UnaryExpression) Type
+{
+    const pointer_type_index = analyzer.pointer_types.items.len;
+    const pointer_base_type = analyze_expression_typed(analyzer, function, &address_of_expression.reference, module_index, null);
+
+    analyzer.pointer_types.append(.{ .type = pointer_base_type }) catch unreachable;
+
+    const pointer_type = Type.Pointer.new(pointer_type_index, 0);
+
+    return pointer_type;
+}
+
+pub fn analyze_dereference_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, module_index: u64, dereference_expression: *Parser.UnaryExpression) Type
+{
+    const pointer_type_ref = analyze_expression_typed(analyzer, function, &dereference_expression.reference, module_index, null);
+    assert(pointer_type_ref.get_ID() == .pointer);
+    assert(pointer_type_ref.is_resolved());
+    const pointer_type_index = pointer_type_ref.get_index();
+    const pointer_type = analyzer.pointer_types.items[pointer_type_index];
+    const base_type = pointer_type.type;
+
+    return base_type;
 }
 
 pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, left: *Entity, right: *Entity, module_index: u64) Type
@@ -296,6 +366,11 @@ pub fn analyze_binary_expression(analyzer: *Analyzer, function: *Parser.Function
             {
                 report_error("Integer of different bit count. Left: {}. Right: {}\n", .{left_bits, right_bits});
             }
+        }
+        // @TODO: exhaustive typechecking
+        else if (left_type.get_ID() == .pointer and right_type.get_ID() == .pointer)
+        {
+            return left_type;
         }
         else
         {
@@ -508,6 +583,12 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                         {
                             const arithmetic_expression = &scope.arithmetic_expressions[expression_to_return.get_index()];
                             const expression_type = analyze_arithmetic_expression(analyzer, current_function, arithmetic_expression, module_index);
+                            _ = expression_type;
+                        },
+                        .dereference_expressions =>
+                        {
+                            const dereference_expression = &scope.dereference_expressions[expression_to_return.get_index()];
+                            const expression_type = analyze_dereference_expression(analyzer, current_function, module_index, dereference_expression);
                             _ = expression_type;
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_id}),
@@ -902,8 +983,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         const function_range = get_module_item_slice_range(.internal_functions, &analyzer, module_index);
         for (analyzer.functions.items[function_range.start..function_range.end]) |*function|
         {
-            std.debug.print("\n", .{});
-            log("Analyzing {s}()...\n", .{function.declaration.name});
+            log("\nAnalyzing {s}()...\n", .{function.declaration.name});
             const main_block = &function.scopes[0];
             analyze_scope(&analyzer, main_block, function, module_index);
         }

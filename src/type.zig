@@ -122,10 +122,19 @@ pub const Pointer = struct
 {
     type: Type,
 
-    pub fn new(index: u64) Type
+    pub fn new(index: u64, module_index: u64) Type
     {
-        return .{ .value = (@as(u64, @enumToInt(Type.ID.pointer)) << Type.ID.position) | @intCast(u32, index) };
+        return .{ .value = (@as(u64, @enumToInt(Type.ID.pointer)) << Type.ID.position) | (module_index << Module.position) | index };
     }
+
+    pub fn get_base_type(self: Type, pointer_types: []Type.Pointer) Type
+    {
+        assert(self.get_ID() == .pointer);
+        const pointer_type = pointer_types[self.get_index()];
+        return pointer_type.type;
+    }
+
+    pub const size = 8;
 };
 
 pub const Slice = struct
@@ -187,6 +196,7 @@ pub fn get_size(self: Type) u64
     switch (id)
     {
         .integer => return Integer.get_bit_count(self) >> 3,
+        .pointer => return Pointer.size,
         else => panic("ID: {}\n", .{id}),
     }
 }

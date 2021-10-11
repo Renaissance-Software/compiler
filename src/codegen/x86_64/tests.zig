@@ -54,3 +54,22 @@ test "sub register immediate"
         try compare_resolved_instruction(sub_register_immediate[0..], my_sub_register_immediate);
     }
 }
+
+test "lea register indirect"
+{
+    {
+        const lea_register_indirect = [_]u8 { 0x48, 0x8d, 0x04, 0x24 };
+        const my_lea_register_indirect = x86.lea_indirect(.A, 8, .SP, 0);
+        try compare_resolved_instruction(lea_register_indirect[0..], my_lea_register_indirect);
+    }
+}
+
+test "mov register indirect"
+
+{
+    {
+        const mov_reg_indirect = &[_]u8 { 0x48, 0x8b, 0x44, 0x24, 0x08 };
+        const my_mov_reg_indirect = x86.mov_register_indirect(.A, 8, .SP, 8);
+        try compare_resolved_instruction(mov_reg_indirect, my_mov_reg_indirect);
+    }
+}

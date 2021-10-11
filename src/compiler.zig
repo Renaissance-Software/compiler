@@ -29,6 +29,7 @@ pub fn should_log(comptime scope: @TypeOf(.EnumLiteral)) bool
     {
         //.parser => true,
         //.x86_64 => true,
+        //else => true,
         else => true,
     };
 }

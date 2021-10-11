@@ -238,7 +238,7 @@ pub const InvokeExpression = struct
     }
 };
 
-const FieldAccessExpression = struct
+pub const FieldAccessExpression = struct
 {
     left_expression: Entity,
     field_expression: Entity,
@@ -259,6 +259,11 @@ const FieldAccessExpression = struct
 
         return field_access_expression_id;
     }
+};
+
+pub const UnaryExpression = struct
+{
+    reference: Entity,
 };
 
 pub const ImportedModule = struct
@@ -282,6 +287,8 @@ pub const Scope = struct
     branches: []Branch,
     arithmetic_expressions: []ArithmeticExpression,
     break_expressions: []BreakExpression,
+    address_of_expressions: []UnaryExpression,
+    dereference_expressions: []UnaryExpression,
     parent: Parent,
 
     pub const Builder = struct
@@ -299,6 +306,8 @@ pub const Scope = struct
         branches: ArrayList(Branch),
         arithmetic_expressions: ArrayList(ArithmeticExpression),
         break_expressions: ArrayList(BreakExpression),
+        address_of_expressions: ArrayList(UnaryExpression),
+        dereference_expressions: ArrayList(UnaryExpression),
         parent: Parent,
         last_loop: Entity,
 
@@ -324,6 +333,8 @@ pub const Scope = struct
                     .branches = ArrayList(Branch).init(allocator),
                     .arithmetic_expressions = ArrayList(ArithmeticExpression).init(allocator),
                     .break_expressions = ArrayList(BreakExpression).init(allocator),
+                    .address_of_expressions = ArrayList(UnaryExpression).init(allocator),
+                    .dereference_expressions = ArrayList(UnaryExpression).init(allocator),
                     .parent = .{ .expression = parent_expression, .scope = parent_scope },
                     .last_loop = last_loop,
                 }) catch unreachable;
@@ -535,24 +546,15 @@ pub const ModuleParser = struct
                 },
                 .operator =>
                 {
-                    //const operator = token.value.operator;
-                    //switch (operator)
-                    //{
-                    //// @Info: this is not array subscript, but array literal constant
-                    //Operator.LeftBracket =>
-                    //{
-                    //const array_lit_expr = self.parse_array_literal(allocator, parser, parent_node);
-                    //return array_lit_expr;
-                    //},
-                    //Operator.AddressOf,
-                    //Operator.Dereference =>
-                    //{
-                    //const unary_expr = self.parse_unary_expression(allocator, parser, parent_node, operator);
-                    //return unary_expr;
-                    //},
-                    //else => panic("ni: {}\n", .{operator}),
-                    //}
-                    unreachable;
+                    const operator = self.get_and_consume_token(.operator).value;
+
+                    break :blk switch (operator)
+                    {
+                        .LeftBracket => unreachable, // self.parse_array_literal(allocator),
+                        .AddressOf => self.parse_unary_expression(Operator.ID.AddressOf),
+                        .Dereference => self.parse_unary_expression(Operator.ID.Dereference),
+                        else => panic("NI: {}\n", .{operator}),
+                    };
                 },
                 .sign =>
                 {
@@ -588,6 +590,8 @@ pub const ModuleParser = struct
         while (has_less_precedence)
         {
             const token = self.lexer.tokens[self.lexer.next_index];
+            log("Token: {}\n", .{token});
+
             const new_precedence = switch (token)
             {
                 .sign => sign_block:
@@ -604,6 +608,8 @@ pub const ModuleParser = struct
                 .operator => operator_block:
                 {
                     const operator = self.get_token(.operator).value;
+                    log("Operator: {}\n", .{operator});
+
                     const operator_precedence = switch (operator)
                     {
                         .RightParenthesis,
@@ -623,12 +629,16 @@ pub const ModuleParser = struct
 
                         .Declaration => Precedence.Declaration,
 
+                        //.AddressOf,
+                        //.Dereference => Precedence.Unary,
+
                         .LeftParenthesis,
                         .LeftBracket,
                         .Dot, => Precedence.Call,
 
                         else => panic("Precedence not implemented for {}\n", .{operator}),
                     };
+                    log("Operator precedence: {}\n", .{operator_precedence});
 
                     break :operator_block operator_precedence;
                 },
@@ -966,7 +976,9 @@ pub const ModuleParser = struct
                         current_scope.statements.append(branch_id) catch unreachable;
                         log("######## branch scope: {}\n", .{parent_scope});
 
+                        log("Start parsing branch condition\n", .{});
                         const branch_condition = self.parse_expression();
+                        log("End parsing branch condition\n", .{});
 
                         const if_scope_index = self.parse_scope(branch_id);
                         assert(self.function_builder.current_scope == parent_scope);
@@ -1079,6 +1091,43 @@ pub const ModuleParser = struct
         }
     }
 
+    fn parse_unary_expression(self: *Self, comptime operator: Operator.ID) Entity
+    {
+        log("Start parsing unary expression\n", .{});
+        const unary_expression_id = comptime switch (operator)
+        {
+            .AddressOf => Entity.ScopeID.address_of_expressions,
+            .Dereference => Entity.ScopeID.dereference_expressions,
+            else => panic("ni: {}\n", .{operator}),
+        };
+
+        const scope = &self.function_builder.scope_builders.items[self.function_builder.current_scope];
+
+        var unary_expression_index: u64 = undefined;
+
+        const unary_expression_child = self.parse_precedence(Precedence.Unary);
+        switch (operator)
+        {
+            .AddressOf => 
+            {
+                unary_expression_index = scope.address_of_expressions.items.len;
+                scope.address_of_expressions.append(.{ .reference = unary_expression_child }) catch unreachable;
+            },
+            .Dereference =>
+            {
+                unary_expression_index = scope.dereference_expressions.items.len;
+                scope.dereference_expressions.append(.{ .reference = unary_expression_child }) catch unreachable;
+            },
+            else => panic("ni: {}\n", .{operator}),
+        }
+
+        const unary_expression = Entity.new(unary_expression_index, unary_expression_id, self.function_builder.current_scope);
+
+        log("End parsing unary expression\n", .{});
+
+        return unary_expression;
+    }
+
     fn parse_scope(self: *Self, parent_expression: Entity) u32
     {
         const previous_scope = self.function_builder.current_scope;
@@ -1130,6 +1179,8 @@ pub const ModuleParser = struct
             .loops = scope_builder.loops.items,
             .branches = scope_builder.branches.items,
             .break_expressions = scope_builder.break_expressions.items,
+            .address_of_expressions = scope_builder.address_of_expressions.items,
+            .dereference_expressions = scope_builder.dereference_expressions.items,
             .arithmetic_expressions = scope_builder.arithmetic_expressions.items,
             .parent = scope_builder.parent,
         };
@@ -1166,6 +1217,24 @@ pub const ModuleParser = struct
             {
                 const type_identifier = self.get_and_consume_token(.identifier).value;
                 return self.add_unresolved_type(type_identifier);
+            },
+            .operator =>
+            {
+                const operator = self.get_and_consume_token(.operator).value;
+                switch (operator)
+                {
+                    .AddressOf =>
+                    {
+                        const pointer_type_index = self.module_builder.pointer_types.items.len;
+                        self.module_builder.pointer_types.append(.
+                        {
+                            .type = self.parse_type(),
+                        }) catch unreachable;
+
+                        return Type.Pointer.new(pointer_type_index, self.module_builder.index);
+                    },
+                    else => panic("ni: {}\n", .{operator}),
+                }
             },
             else => panic("ni: {}\n", .{next_token}),
         }
@@ -1977,33 +2046,6 @@ const Precedence = enum
     //const Self = @This();
 
 
-    //fn parse_unary_expression(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, operator: Operator) *Node
-    //{
-        //const unary_expr_id = switch (operator)
-        //{
-            //Operator.AddressOf => UnaryExpression.ID.AddressOf,
-            //Operator.Dereference => UnaryExpression.ID.Dereference,
-            //else => panic("ni: {}\n", .{operator}),
-        //};
-
-        //const unary_expr_node = Node {
-            //.value = Node.Value {
-                //.unary_expr = UnaryExpression 
-                //{
-                    //.node_ref = undefined,
-                    //.id = unary_expr_id,
-                //},
-            //},
-            //.value_type = Node.ValueType.RValue,
-            //.parent = parent_node,
-            //.type = undefined,
-        //};
-
-        //const unary_expr = self.append_and_get(unary_expr_node);
-        //unary_expr.value.unary_expr.node_ref = self.parse_precedence(allocator, parser, unary_expr, Precedence.Unary);
-
-        //return unary_expr;
-    //}
 
     //fn parse_array_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
     //{
@@ -2324,9 +2366,6 @@ const Precedence = enum
             //panic("Intrinsic not found: {s}\n", .{intrinsic_name});
         //}
     //}
-
-
-
 //};
 
 //pub const UnaryExpression = struct
@@ -2338,22 +2377,6 @@ const Precedence = enum
     //{
         //AddressOf,
         //Dereference,
-    //};
-//};
-
-
-//const BlockExpression = struct
-//{
-    //statements: NodeRefBuffer,
-    //id: ID,
-
-    //const ID = enum {
-        //LoopPrefix,
-        //LoopBody,
-        //LoopPostfix,
-        //IfBlock,
-        //ElseBlock,
-        //Function,
     //};
 //};
 

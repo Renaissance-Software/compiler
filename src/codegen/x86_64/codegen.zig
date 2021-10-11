@@ -1595,7 +1595,7 @@ const RegisterAllocator = struct
                         .displacement = 0,
                         .register = ptr_loaded.value.register,
                     },
-                    },
+                },
                 .size = @intCast(u32, indirect_size),
             };
 

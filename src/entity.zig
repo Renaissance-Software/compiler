@@ -68,6 +68,8 @@ pub const Entity = packed struct
         branches,
         break_expressions,
         arithmetic_expressions,
+        address_of_expressions,
+        dereference_expressions,
     };
 
     const LevelToArrayIDMap = blk:

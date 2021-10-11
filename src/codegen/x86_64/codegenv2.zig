@@ -3,7 +3,6 @@ const ArrayList = std.ArrayList;
 const alignForward = std.mem.alignForward;
 const assert = std.debug.assert;
 const panic = std.debug.panic;
-const Allocator = std.mem.Allocator;
 const max = std.math.maxInt;
 
 const Type = @import("../../type.zig");
@@ -13,7 +12,6 @@ const Compiler = @import("../../compiler.zig");
 const Codegen = @import("../../codegen.zig");
 const PE = @import("../pe.zig");
 const Import = Codegen.Import;
-const Encoding = @import("encoding.zig");
 const Semantics = @import("../../semantics.zig");
 
 pub fn log(comptime format: []const u8, arguments: anytype) void
@@ -26,18 +24,7 @@ fn codegen_error(comptime format: []const u8, arguments: anytype) noreturn
     panic(format, arguments);
 }
 
-fn get_alloca_size(program: *const IR.Program, instruction_ref: IR.Reference) u64
-{
-    assert(instruction_ref.get_ID() == .instruction);
-    assert(IR.Instruction.get_ID(instruction_ref) == .alloca);
-    const instruction_index = instruction_ref.get_index();
-    const alloca = program.instructions.alloca[instruction_index];
-    const alloca_type = alloca.alloca_type;
-    const alloca_size = alloca_type.get_size();
-    return alloca_size;
-}
-
-const system_v_argument_registers = [_]Encoding.Register
+const system_v_argument_registers = [_]Register.ID
 {
     .DI,
     .SI,
@@ -46,7 +33,7 @@ const system_v_argument_registers = [_]Encoding.Register
     .r9,
 };
 
-const msvc_argument_registers = [_]Encoding.Register
+const msvc_argument_registers = [_]Register.ID
 {
     .C,
     .D,
@@ -116,6 +103,62 @@ fn jmp_rel32(operand_index: u32, operand_kind: Instruction.Unresolved.UnknownOpe
     return Instruction.Unresolved.new(bytes[0..], operand_index, operand_kind, 4, bytes.len);
 }
 
+pub fn lea_indirect(register: Register.ID, size: u8, indirect_register: Register.ID, indirect_offset: i32) Instruction
+{
+    assert(size == 8);
+    const rex_byte = 0x48;
+    const opcode = 0x8d;
+    const indirect_offset_not_zero = indirect_offset != 0;
+    const indirect_offset_32_bit = indirect_offset > std.math.maxInt(i8) and indirect_offset < std.math.minInt(i8);
+    const register_byte: u8 = (@as(u8, @boolToInt(indirect_offset_not_zero and indirect_offset_32_bit)) << 7) | (@as(u8, @boolToInt(indirect_offset_not_zero and !indirect_offset_32_bit)) << 6) | (@enumToInt(register) << 3) | @enumToInt(indirect_register);
+    const sib_byte = 0x24;
+
+    const bytes = blk:
+    {
+        if (indirect_offset_not_zero)
+        {
+            if (indirect_offset_32_bit)
+            {
+                const indirect_offset_bytes = std.mem.asBytes(&indirect_offset);
+                if (indirect_register == .SP)
+                {
+                    break :blk &[_]u8 { rex_byte, opcode, register_byte, sib_byte, indirect_offset_bytes[0], indirect_offset_bytes[1], indirect_offset_bytes[2], indirect_offset_bytes[3] };
+                }
+                else
+                {
+                    break :blk &[_]u8 { rex_byte, opcode, register_byte, indirect_offset_bytes[0], indirect_offset_bytes[1], indirect_offset_bytes[2], indirect_offset_bytes[3] };
+                }
+            }
+            else
+            {
+                const indirect_offset_byte : i8 = @intCast(i8, indirect_offset);
+                const indirect_offset_bytes = std.mem.asBytes(&indirect_offset_byte);
+                if (indirect_register == .SP)
+                {
+                    break :blk &[_]u8 { rex_byte, opcode, register_byte, sib_byte, indirect_offset_bytes[0] };
+                }
+                else
+                {
+                    break :blk &[_]u8 { rex_byte, opcode, register_byte, indirect_offset_bytes[0] };
+                }
+            }
+        }
+        else
+        {
+            if (indirect_register == .SP)
+            {
+                break :blk &[_]u8 { rex_byte, opcode, register_byte, sib_byte };
+            }
+            else
+            {
+                break :blk &[_]u8 { rex_byte, opcode, register_byte };
+            }
+        }
+    };
+
+    return Instruction.Resolved.new(bytes);
+}
+
 fn sub_rsp_s8(n: i8) [4]u8
 {
     assert(n > 0);
@@ -135,7 +178,7 @@ fn sub_rsp_s32(n: i32) [7]u8
     return bytes;
 }
 
-pub fn cmp_indirect_immediate(indirect_register: Encoding.Register, indirect_offset: i32, indirect_size: u8, integer_literal: Parser.IntegerLiteral) Instruction
+pub fn cmp_indirect_immediate(indirect_register: Register.ID, indirect_offset: i32, indirect_size: u8, integer_literal: Parser.IntegerLiteral) Instruction
 {
     const integer_byte_count: u8 = blk:
     {
@@ -164,14 +207,14 @@ pub fn cmp_indirect_immediate(indirect_register: Encoding.Register, indirect_off
     return encode_indirect_instruction_opcode_plus_register_indirect_offset(null, opcode, 0x38, indirect_register, indirect_offset, integer_bytes);
 }
 
-fn cmp_register_indirect(register: Encoding.Register, register_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) Instruction
+fn cmp_register_indirect(register: Register.ID, register_size: u8, indirect_register: Register.ID, indirect_offset: i32) Instruction
 {
     const opcode = [_]u8 { 0x3b - @as(u8, @boolToInt(register_size == 1)) };
 
     return encode_indirect_instruction_opcode_plus_register_indirect_offset(null, opcode[0..], @enumToInt(register) << 3, indirect_register, indirect_offset, std.mem.zeroes([]const u8));
 }
 
-fn mov_register_literal(register: Encoding.Register, number: u64, byte_count: u16) Instruction
+fn mov_register_literal(register: Register.ID, number: u64, byte_count: u16) Instruction
 {
     const number_bytes = std.mem.asBytes(&number);
 
@@ -206,7 +249,7 @@ fn mov_register_literal(register: Encoding.Register, number: u64, byte_count: u1
     return Instruction.Resolved.new(byte_slice);
 }
 
-fn mov_register_register(dst: Encoding.Register, src: Encoding.Register, register_size: u8) Instruction
+fn mov_register_register(dst: Register.ID, src: Register.ID, register_size: u8) Instruction
 {
     const opcode: u8 = 0x89 - @as(u8, @boolToInt(register_size == 1));
     const register_byte: u8 = 0xc0 | (@enumToInt(src) << 3) | @enumToInt(dst);
@@ -216,7 +259,7 @@ fn mov_register_register(dst: Encoding.Register, src: Encoding.Register, registe
     return Instruction.Resolved.new(bytes[0..]);
 }
 
-fn encode_indirect_instruction_opcode_plus_register_indirect_offset(rex: ?u8, opcode: []const u8, register_byte_start: u8, indirect_register: Encoding.Register, indirect_offset: i32, after_common_bytes: []const u8) Instruction
+fn encode_indirect_instruction_opcode_plus_register_indirect_offset(rex: ?u8, opcode: []const u8, register_byte_start: u8, indirect_register: Register.ID, indirect_offset: i32, after_common_bytes: []const u8) Instruction
 {
     log("Encoding mov indirect...\n", .{});
     var bytes: [Instruction.max_bytes]u8 = undefined;
@@ -295,33 +338,37 @@ fn encode_indirect_instruction_opcode_plus_register_indirect_offset(rex: ?u8, op
     return Instruction.Resolved.new_bytes(bytes, encoded_byte_count);
 }
 
-fn mov_indirect_immediate_unsigned(indirect_register: Encoding.Register, indirect_offset: i32, immediate: u64, allocation_size: u16) Instruction
+fn mov_indirect_immediate_unsigned(indirect_register: Register.ID, indirect_offset: i32, immediate: u64, allocation_size: u16) Instruction
 {
     // @TODO: assert that for 64-bit register you cant use 64-bit immediate
     const immediate_bytes = std.mem.asBytes(&immediate)[0..allocation_size];
     return encode_indirect_instruction_opcode_plus_register_indirect_offset(null, &[_]u8 { 0xc7 }, 0, indirect_register, indirect_offset, immediate_bytes);
 }
 
-fn mov_register_indirect(dst_register: Encoding.Register, allocation_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) callconv(.Inline) Instruction
+pub fn mov_register_indirect(dst_register: Register.ID, allocation_size: u8, indirect_register: Register.ID, indirect_offset: i32) callconv(.Inline) Instruction
 {
+    log("Mov register indirect. Dst register: {}, size: {}. Indirect: {}, size: {}\n", .{dst_register, allocation_size, indirect_register, indirect_offset});
     return switch (allocation_size)
     {
-        1,2,8 => unreachable,
+        1, 2 => unreachable,
         4 => encode_indirect_instruction_opcode_plus_register_indirect_offset(null, &[_]u8 { 0x8b }, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
+        8 => encode_indirect_instruction_opcode_plus_register_indirect_offset(0x48, &[_]u8 { 0x8b }, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
         else => unreachable,
     };
 }
 
-fn mov_indirect_register(indirect_register: Encoding.Register, indirect_offset: i32, indirect_size: u8, dst_register: Encoding.Register, dst_register_size: u8) Instruction
+fn mov_indirect_register(indirect_register: Register.ID, indirect_offset: i32, indirect_size: u8, dst_register: Register.ID, dst_register_size: u8) Instruction
 {
     assert(dst_register_size == indirect_size);
+    log("Mov indirect register\n", .{});
+    log("Size: {}\n", .{indirect_size});
     const opcode: []const u8 = if (indirect_size > 1) &[_]u8 { 0x89 } else &[_]u8 { 0x88 };
 
-    return encode_indirect_instruction_opcode_plus_register_indirect_offset(null, opcode, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]u8));
+    return encode_indirect_instruction_opcode_plus_register_indirect_offset(if (dst_register_size == 8) @enumToInt(Rex.W) else null, opcode, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]u8));
 
 }
 
-pub fn add_register_indirect(dst_register: Encoding.Register, allocation_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) Instruction
+pub fn add_register_indirect(dst_register: Register.ID, allocation_size: u8, indirect_register: Register.ID, indirect_offset: i32) Instruction
 {
     var indirect_offset_byte_count: u8 = 0;
     if (indirect_offset != 0)
@@ -374,7 +421,7 @@ pub fn add_register_indirect(dst_register: Encoding.Register, allocation_size: u
     return Instruction.Resolved.new(bytes[0..byte_count]);
 }
 
-pub fn add_register_register(dst: Encoding.Register, other: Encoding.Register, register_size: u8
+pub fn add_register_register(dst: Register.ID, other: Register.ID, register_size: u8
 ) Instruction
 {
     const opcode = 0x01 - @boolToInt(register_size == 1);
@@ -384,7 +431,7 @@ pub fn add_register_register(dst: Encoding.Register, other: Encoding.Register, r
     return Instruction.Resolved.new(bytes[0..]);
 }
 
-pub fn add_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
+pub fn add_register_immediate(register: Register.ID, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
 {
     const value = immediate.value;
     var immediate_byte_count: u8 = 0;
@@ -429,7 +476,7 @@ pub fn add_register_immediate(register: Encoding.Register, register_size: u8, im
     }
 }
 
-pub fn sub_register_immediate(register: Encoding.Register, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
+pub fn sub_register_immediate(register: Register.ID, register_size: u8, immediate: Parser.IntegerLiteral) Instruction
 {
     const value = immediate.value;
     var immediate_byte_count: u8 = 0;
@@ -479,7 +526,7 @@ pub fn sub_register_immediate(register: Encoding.Register, register_size: u8, im
     }
 }
 
-fn dec_register(register: Encoding.Register, register_size: u8) Instruction
+fn dec_register(register: Register.ID, register_size: u8) Instruction
 {
     const opcode = 0xff - @as(u8, @boolToInt(register_size == 1));
     const register_byte = 0xc8 | @enumToInt(register);
@@ -488,7 +535,7 @@ fn dec_register(register: Encoding.Register, register_size: u8) Instruction
     return Instruction.Resolved.new(bytes[0..]);
 }
 
-fn inc_register(register: Encoding.Register, register_size: u8) Instruction
+fn inc_register(register: Register.ID, register_size: u8) Instruction
 {
     const opcode = 0xff - @as(u8, @boolToInt(register_size == 1));
     const register_byte = 0xc0 | @enumToInt(register);
@@ -497,7 +544,7 @@ fn inc_register(register: Encoding.Register, register_size: u8) Instruction
     return Instruction.Resolved.new(bytes[0..]);
 }
 
-fn imul_register_indirect(register: Encoding.Register, operand_size: u8, indirect_register: Encoding.Register, indirect_offset: i32) Instruction
+fn imul_register_indirect(register: Register.ID, operand_size: u8, indirect_register: Register.ID, indirect_offset: i32) Instruction
 {
     const opcode = [_]u8 { 0x0f, 0xaf };
     _ = operand_size;
@@ -505,7 +552,7 @@ fn imul_register_indirect(register: Encoding.Register, operand_size: u8, indirec
     return encode_indirect_instruction_opcode_plus_register_indirect_offset(null, opcode[0..], @enumToInt(register) << 3, indirect_register, indirect_offset, std.mem.zeroes([]const u8));
 }
 
-fn xor_register(register: Encoding.Register, size: u8) Instruction
+fn xor_register(register: Register.ID, size: u8) Instruction
 {
     const mod = 0b11;
     const r_m = @enumToInt(register);
@@ -542,6 +589,11 @@ pub const Instruction = struct
 
         fn new(bytes: []const u8) callconv(.Inline) Instruction
         {
+            log("Instruction bytes:\n", .{});
+            for (bytes) |byte|
+            {
+                log("0x{x:0>2}\n", .{byte});
+            }
             assert(bytes.len <= max_bytes);
 
             return .{
@@ -710,104 +762,6 @@ pub const Instruction = struct
             unresolved,
         };
     };
-
-
-};
-
-//const Instruction = struct
-//{
-    //const Self = @This();
-
-    //bytes: []const u8,
-    //id: ID,
-    //resolved: bool,
-    //operand: Operand, 
-
-    //const ID = enum(u16)
-    //{
-        //call,
-        //mov,
-        //ret,
-        //xor,
-    //};
-
-    //const Operand = struct
-    //{
-        //index: u32,
-        //kind: Kind,
-        //offset: u8,
-
-        //const Kind = enum(u8)
-        //{
-            //none,
-            //immediate,
-            //relative_global,
-            //relative_external,
-        //};
-    //};
-
-    //fn create_resolved(id: ID, bytes: []const u8) Self
-    //{
-        //log("Appending instruction {}:\n", .{id});
-        //for (bytes) |byte| log("{x:0>2} ", .{byte});
-        //log("\n", .{});
-
-        //return .
-        //{
-            //.id = id,
-            //.resolved = true,
-            //.bytes = bytes,
-            //.operand = .
-            //{
-                //.offset = 0,
-                //.kind = .none,
-                //.index = 0,
-            //},
-        //};
-    //}
-
-    //fn create_unresolved_operand(id: ID, bytes: []const u8, operand_offset: u8, operand_kind: Operand.Kind, operand_index: u32) Self
-    //{
-        //return .
-        //{
-            //.id = id,
-            //.resolved = false,
-            //.bytes = bytes,
-            //.operand = .
-            //{
-                //.offset = operand_offset,
-                //.kind = operand_kind,
-                //.index = operand_index
-            //},
-        //};
-    //}
-//};
-
-const Label = union(enum)
-{
-    resolved: struct
-    {
-        target: u64,
-    },
-    unresolved: struct
-    {
-        locations: ArrayList(PatchLocation),
-        instruction_index: u32,
-    },
-
-    const PatchLocation = struct
-    {
-        const BufferType = enum(u8)
-        {
-            code,
-            data,
-            rdata,
-        };
-
-        buffer_index: u32,
-        next_instruction_offset: u16,
-        buffer_type: BufferType,
-    };
 };
 
 const BackwardPatch = struct
@@ -829,8 +783,8 @@ pub const Program = struct
         code_buffer_offset: u32,
         max_call_parameter_size: i32,
         terminator: Terminator,
-        register_allocator: Register.Manager,
-        stack_allocator: Stack.Manager,
+        register_allocator: Register.Allocator,
+        stack_allocator: Stack.Allocator,
 
         const Terminator = enum
         {
@@ -858,7 +812,7 @@ pub const Program = struct
         return total_instruction_count * Instruction.max_bytes;
     }
 
-    pub fn encode_text_section_pe(self: *Program, allocator: *Allocator, text: *PE.Section, text_out: *PE.Section.Text.EncodingOutput, offset: *PE.Offset) void
+    pub fn encode_text_section_pe(self: *Program, allocator: *std.mem.Allocator, text: *PE.Section, text_out: *PE.Section.Text.EncodingOutput, offset: *PE.Offset) void
     {
         text_out.patches = ArrayList(PE.Patch).init(allocator);
 
@@ -888,12 +842,12 @@ pub const Program = struct
                         if (stack_offset > max(i8))
                         {
                             const sub_rsp = sub_rsp_s32(stack_offset)[0..];
-                            std.debug.print("[{}] ", .{text.buffer.items.len});
+                            log("[{}] ", .{text.buffer.items.len});
                             for (sub_rsp) |byte|
                             {
-                                std.debug.print("{x:0>2} ", .{byte});
+                                log("{x:0>2} ", .{byte});
                             }
-                            std.debug.print("\n", .{});
+                            log("\n", .{});
 
                             text.buffer.appendSlice(sub_rsp) catch unreachable;
                             add_rsp_at_epilogue = true;
@@ -901,12 +855,12 @@ pub const Program = struct
                         else if (stack_offset > 0)
                         {
                             const sub_rsp = sub_rsp_s8(@intCast(i8, stack_offset))[0..];
-                            std.debug.print("[{}] ", .{text.buffer.items.len});
+                            log("[{}] ", .{text.buffer.items.len});
                             for (sub_rsp) |byte|
                             {
-                                std.debug.print("{x:0>2} ", .{byte});
+                                log("{x:0>2} ", .{byte});
                             }
-                            std.debug.print("\n", .{});
+                            log("\n", .{});
 
                             text.buffer.appendSlice(sub_rsp) catch unreachable;
                             add_rsp_at_epilogue = true;
@@ -1123,14 +1077,14 @@ pub const Program = struct
 
             if (function.terminator == .ret)
             {
-                std.debug.print("[{}] {x:0>2}\n", .{text.buffer.items.len, ret_bytes[0]});
+                log("[{}] {x:0>2}\n", .{text.buffer.items.len, ret_bytes[0]});
                 text.buffer.append(ret_bytes[0]) catch unreachable;
             }
             else if (function.terminator == .noreturn)
             {
                 // Append Int3
                 const int3 = 0xcc;
-                std.debug.print("[{}] {x:0>2}\n", .{text.buffer.items.len, int3});
+                log("[{}] {x:0>2}\n", .{text.buffer.items.len, int3});
                 text.buffer.append(int3) catch unreachable;
             }
             else unreachable;
@@ -1149,39 +1103,6 @@ pub const Program = struct
 var abi: std.Target.Abi = undefined;
 const encode_frame_pointer = true;
 
-const Labels = struct
-{
-    function_index: u32,
-    instruction_index: u16,
-    byte_offset: u8,
-    operand_size: u8,
-
-    fn from_instruction(function_index: u32, block_index: u16, byte_offset: u8, operand_size: u8) Label
-    {
-        return Label
-        {
-            .function_index = function_index,
-            .block_index = block_index,
-            .byte_offset = byte_offset,
-            .operand_size = operand_size,
-        };
-    }
-
-    fn from_function(function_index: u32) Label
-    {
-        return Label.from_instruction(function_index, 0, 0, 0);
-    }
-};
-
-fn get_type_size(T: Type) u64
-{
-    return switch (T.get_ID())
-    {
-        .integer => Type.Integer.get_bit_count(T) >> 3,
-        else => panic("{}\n", .{T.get_ID()}),
-    };
-}
-
 const Stack = struct
 {
     const Store = struct
@@ -1190,308 +1111,92 @@ const Stack = struct
     };
 
     // @TODO: figure out proper signed/unsigned types
-    const Manager = struct
+    const Allocator = struct
     {
-        allocations: ArrayList(Allocation),
+        allocations: ArrayList(Indirect),
         offset: i32,
 
-        fn new(allocator: *Allocator) Stack.Manager
+        const Self = @This();
+
+        fn new(allocator: *std.mem.Allocator) Stack.Allocator
         {
             return .
             {
-                .allocations = ArrayList(Allocation).init(allocator),
+                .allocations = ArrayList(Indirect).init(allocator),
                 .offset = 0,
             };
         }
 
         // @TODO: work on alignment
-        fn allocate(self: *Stack.Manager, size: u32, alloca_i: ?u32) i32
+        fn allocate(self: *Self, size: u32, alloca: IR.Reference) void
         {
             const allocation_offset = @intCast(i32, alignForward(@intCast(u32, self.offset), size));
-            self.offset += @intCast(i32, size);
-            self.allocations.append(.
-                {
-                    .size = size,
-                    .alignment = size,
-                    .offset = allocation_offset,
-                    .alloca = alloca_i,
-                }) catch unreachable;
+            log("Allocating in stack {} bytes for alloca #{} at [R{s} + 0x{x}]\n", .{size, alloca.get_index(), @tagName(stack_register), self.offset});
 
-            return -self.offset;
+            self.offset += @intCast(i32, size);
+            const indirect = Indirect
+            {
+                .size = size,
+                .alignment = size,
+                .offset = allocation_offset,
+                .reference = alloca,
+                .register = stack_register,
+            };
+
+            self.allocations.append(indirect) catch unreachable;
         }
         
-        fn get_allocation(self: *Stack.Manager, alloca_i: u32) Allocation
+        fn get_allocation(self: *Self, alloca: IR.Reference) Indirect
         {
-            log("Searching for alloca #{}\n", .{alloca_i});
+            log("Searching for alloca #{}\n", .{alloca.get_index()});
 
             for (self.allocations.items) |allocation|
             {
-                if (allocation.alloca) |stack_allocator_alloca|
-                {
-                    if (stack_allocator_alloca == alloca_i)
-                    {
-                        return allocation;
-                    }
-                }
+                if (allocation.reference.value == alloca.value) return allocation;
             }
 
             panic("Not found\n", .{});
         }
-
-        const Allocation = struct
-        {
-            size: u32,
-            alignment: u32,
-            offset: i32,
-            alloca: ?u32,
-        };
     };
 };
 
-const Register = struct
+const Indirect = struct
 {
-    value: IR.Reference,
+    reference: IR.Reference,
+    offset: i32,
+    alignment: u32,
+    size: u32,
+    register: Register.ID,
+};
+
+const Direct = struct
+{
+    reference: IR.Reference,
     size: u8,
+    modifier: u8,
+    register: Register.ID,
+};
+
+
+const Register = extern union
+{
+    direct: Direct,
+    indirect: Indirect,
 
     const count = 16;
     const ArrayType = [Register.count]Register; 
 
-    const Manager = struct
-    {
-        registers: Register.ArrayType, 
-        argument_registers: []const Encoding.Register,
-
-        const Self = @This();
-
-        fn new(argument_registers: []const Encoding.Register) Self
-        {
-            const result = Self
-            {
-                .registers = std.mem.zeroes(Register.ArrayType),
-                .argument_registers = argument_registers,
-            };
-
-            return result;
-        }
-
-        fn register_allocation(self: *Register.Manager, dst_register: u64, value: IR.Reference, byte_count: u8) void
-        {
-            log("Allocating {} bytes in {}\n", .{byte_count, @intToEnum(Encoding.Register, dst_register)});
-            var reg = &self.registers[dst_register];
-            reg.size = byte_count;
-            reg.value = value;
-        }
-
-        // @TODO: is this correct? can cause bugs to manage code encoding from here
-        fn receive_return_in_backup_register(self: *Self, function: *Program.Function, reference: IR.Reference) Encoding.Register
-        {
-            for (self.registers) |reg, reg_i|
-            {
-                if (reg.value.value == reference.value and reg.size > 0)
-                {
-                    const callee_allocated_register = @intToEnum(Encoding.Register, reg_i);
-                    const saved_callee_allocated_register = reg;
-                    const backup_register = self.allocate(saved_callee_allocated_register.value, saved_callee_allocated_register.size);
-
-                    self.free_from_register(callee_allocated_register);
-                    self.free_from_register(backup_register);
-
-                    const mov_reg_reg = mov_register_register(backup_register, callee_allocated_register, saved_callee_allocated_register.size);
-                    function.append_instruction(mov_reg_reg);
-
-                    return backup_register;
-                }
-            }
-
-            panic("No value wanted in registers\n", .{});
-            //const backup_register = self.allocate_not_in_this_one(reg.value, reg.size);
-            //self.free_from_register(register);
-
-            //const mov_reg_reg = mov_register_register(backup_register, register, allocation_size);
-            //function.append_instruction(mov_reg_reg);
-
-            //return backup_register;
-        }
-
-        fn allocate(self: *Register.Manager, value: IR.Reference, byte_count: u8) Encoding.Register
-        {
-            for (self.registers) |*reg, reg_i|
-            {
-                if (reg.size == 0)
-                {
-                    self.register_allocation(reg_i, value, byte_count);
-                    return @intToEnum(Encoding.Register, @intCast(u8, reg_i));
-                }
-            }
-
-            panic("Registers are full\n", .{});
-        }
-
-        fn allocate_argument(self: *Register.Manager, argument_reference: IR.Reference, byte_count: u8) Encoding.Register
-        {
-            for (self.argument_registers) |r|
-            {
-                const register_index = @enumToInt(r);
-
-                var register = &self.registers[register_index];
-                if (register.size == 0)
-                {
-                    self.register_allocation(register_index, argument_reference, byte_count);
-                    return r;
-                }
-            }
-
-            panic("No argument register ready\n", .{});
-        }
-
-        fn allocate_return(self: *Register.Manager, reference: IR.Reference, byte_count: u8) Encoding.Register
-        {
-            assert(byte_count <= 8);
-            const register_a = @enumToInt(Encoding.Register.A);
-            var register = &self.registers[register_a];
-            if (register.size == 0)
-            {
-                self.register_allocation(register_a, reference, byte_count);
-
-                return Encoding.Register.A;
-            }
-
-            panic("Return register A is busy\n", .{});
-        }
-
-        const Result = struct
-        {
-            value: Encoding.Register,
-            size: u8,
-        };
-
-        fn get_register(self: *Register.Manager, program: *const IR.Program, reference: IR.Reference, use: IR.Reference) ?Result
-        {
-            const first_register_slice = self.registers[0..ID.SP];
-            for (first_register_slice) |*reg, reg_i|
-            {
-                if (reg.value.value == reference.value and reg.size > 0)
-                {
-                    const result = Result { .value = @intToEnum(Encoding.Register, @intCast(u8, reg_i)), .size = reg.size };
-
-                    const uses = program.get_uses(IR.Instruction.get_ID(reference), reference.get_index());
-                    assert(uses.len > 0);
-
-                    if (uses[uses.len - 1].value == use.value)
-                    {
-                        assert(uses.len == 1);
-                        self.free_from_register(@intToEnum(Encoding.Register, @intCast(u8, reg_i)));
-                    }
-
-                    return result;
-                }
-            }
-
-            const second_register_slice = self.registers[@enumToInt(ID.r8)..];
-            for (second_register_slice) |*reg, reg_i|
-            {
-                _ = reg; _ = reg_i;
-                unreachable;
-            }
-
-            return null;
-        }
-
-        fn spill_registers_before_call(self: *Register.Manager) State
-        {
-            log("Saving registers before call...\n", .{});
-
-            var saved_register_count: u32 = 0;
-
-            var registers = std.mem.zeroes(Register.ArrayType);
-
-            for (self.registers) |register, register_i|
-            {
-                if (register.size > 0 and must_save(@intToEnum(Encoding.Register, @intCast(u8, register_i))))
-                {
-                    registers[register_i] = register;
-                    saved_register_count += 1;
-                }
-            }
-
-            log("Registers to be saved: {}\n", .{saved_register_count});
-
-            if (saved_register_count > 0)
-            {
-                for (registers) |register|
-                {
-                    if (register.size > 0)
-                    {
-                        panic("IR value: {}\n", .{register.value});
-                    }
-                }
-            }
-
-            if (saved_register_count > 0) unreachable;
-            return std.mem.zeroes(State);
-        }
-
-        fn alter_allocation(self: *Self, register: Encoding.Register, new_reference: IR.Reference) void
-        {
-            var dst_register = &self.registers[@enumToInt(register)];
-            assert(dst_register.size > 0);
-            dst_register.value = new_reference;
-        }
-
-        fn reset(self: *Self) void
-        {
-            self.registers = std.mem.zeroes(Register.ArrayType);
-        }
-
-        fn free_from_register(self: *Self, register: Encoding.Register) void
-        {
-            var register_to_free = &self.registers[@enumToInt(register)];
-            assert(register_to_free.size > 0);
-            register_to_free.* = std.mem.zeroes(@TypeOf(register_to_free.*));
-        }
-
-        fn free_from_value(self: *Self, value: IR.Reference) void
-        {
-            for (self.registers) |*reg|
-            {
-                if (reg.value.value == value.value and reg.size > 0)
-                {
-                    reg.* = std.mem.zeroes(@TypeOf(reg.*));
-                }
-            }
-
-            panic("Value not found in the register allocator\n", .{});
-        }
-
-        const State = struct
-        {
-            registers: Register.ArrayType,
-            stack_stores: Stack.Store.ArrayType,
-            saved_register_count: u32,
-        };
-
-
-        fn must_save(register: Encoding.Register) bool
-        {
-            return switch (register)
-            {
-                .A => true,
-                .SP => false,
-                else => panic("ni: {}\n", .{register}),
-            };
-        }
-    };
-
-    const ID = enum(u8)
+    pub const ID = enum(u8)
     {
         A = 0,
         C = 1,
         D = 2,
         B = 3,
-        // SP = 4,
-        // BP = 5,
-        // SI = 6,
-        // DI = 7,
+
+        SP = 4,
+        BP = 5,
+        SI = 6,
+        DI = 7,
 
         r8 = 8,
         r9 = 9,
@@ -1502,108 +1207,551 @@ const Register = struct
         r14 = 14,
         r15 = 15,
 
-        pub const SP: u8 = 4;
-        pub const BP: u8 = 5;
-        pub const SI: u8 = 6;
-        pub const DI: u8 = 7;
-
         pub const AH: u8 = 4;
         pub const CH: u8 = 5;
         pub const DH: u8 = 6;
         pub const BH: u8 = 7;
+
+        pub const NFlag: u8 = 0b1000;
     };
+
+    // @TODO: register number is already store in index. With modifier, we can access every register
+
+    const OccupationKind = enum(u8)
+    {
+        none,
+        direct,
+        indirect,
+    };
+
+    const Saver = struct
+    {
+        state: State,
+        saved_register_count: u8,
+    };
+
+    const LegacyGPR = enum(u8)
+    {
+        a = 0,
+        c = 1,
+        d = 2,
+        b = 3,
+        const count = std.enums.values(LegacyGPR).len;
+    };
+
+    const NewRegister = enum(u8)
+    {
+        r8 = 8,
+        r9 = 9,
+        r10 = 10,
+        r11 = 11,
+        r12 = 12,
+        r13 = 13,
+        r14 = 14,
+        r15 = 15,
+
+        const count = std.enums.values(NewRegister).len;
+    };
+
+    const SpecializedRegister = enum(u8)
+    {
+        sp = 4,
+        bp = 5,
+        si = 6,
+        di = 7,
+
+        const count = std.enums.values(SpecializedRegister).len;
+    };
+
+    const AccessType = enum
+    {
+        general,
+        legacy_gp,
+        specialized,
+        arguments
+    };
+
+    const Registers = extern union
+    {
+        by_type: struct
+        {
+            legacy: [LegacyGPR.count]Register,
+            specialized: [SpecializedRegister.count]Register,
+            new: [NewRegister.count]Register,
+        },
+        array: [Register.count]Register,
+    };
+
+    comptime
+    {
+        assert(@sizeOf(Registers) == @sizeOf([Register.count]Register));
+    }
+
+    const Occupation = extern union
+    {
+        by_type: struct
+        {
+            legacy: [LegacyGPR.count]OccupationKind,
+            specialized: [SpecializedRegister.count]OccupationKind,
+            new: [NewRegister.count]OccupationKind,
+        },
+        array: [Register.count]OccupationKind,
+    };
+
+    const State = struct
+    {
+        occupation: Occupation,
+        registers: Registers,
+    };
+
+    const Allocator = struct
+    {
+        state: State,
+        argument_registers: []const Register.ID,
+
+        const Self = @This();
+
+        fn new(argument_registers: []const Register.ID) Self
+        {
+            var result: Self = undefined;
+            result.argument_registers = argument_registers;
+
+            return result;
+        }
+
+        fn free(self: *Self, register: ID) void
+        {
+            self.state.occupation.array[@enumToInt(register)] = .none;
+        }
+
+        fn internal_get_register(self: *Self, register: ID, comptime register_type: AccessType) callconv(.Inline) *Register
+        {
+            const register_int = @enumToInt(register);
+            if (register_int < @enumToInt(ID.SP))
+            {
+                return self.legacy_gp_registers[register_int];
+            }
+            else if (register_int < @enumToInt(ID.r8))
+            {
+                comptime assert(register_type == .arguments);
+                assert(register == .DI or register == .SI);
+                return self.specialized_registers[register_int - @enumToInt(std.enums.values(SpecializedRegister)[0])];
+            }
+            // @TODO: implement extended registers
+            else
+            {
+                comptime assert(register_type == .arguments);
+                assert(register == .r8 or register == .r9);
+                return self.new_registers[register_int - @enumToInt(std.enums.values(NewRegister)[0])];
+            }
+        }
+
+        fn allocate_direct(self: *Self, value: IR.Reference, register_size: u8) Direct
+        {
+            for (self.state.occupation.by_type.legacy) |*reg_occupation, reg_i|
+            {
+                if (reg_occupation.* == .none)
+                {
+                    var register = &self.state.registers.by_type.legacy[reg_i];
+                    reg_occupation.* = .direct;
+
+                    register.* = Register
+                    {
+                        .direct = .
+                        {
+                            .reference = value,
+                            .size = register_size,
+                            .modifier = 0,
+                            .register = @intToEnum(ID, reg_i),
+                        }
+                    };
+
+                    return register.direct;
+                }
+            }
+
+            panic("Couldn't allocate register\n", .{});
+        }
+
+        fn allocate_indirect(self: *Self, reference: IR.Reference, indirect_offset: i32, indirect_size: u32) Indirect
+        {
+            for (self.state.occupation.by_type.legacy) |*reg_occupation, reg_i|
+            {
+                if (reg_occupation.* == .none)
+                {
+                    const indirect = Indirect
+                    {
+                        .reference = reference,
+                        .offset = indirect_offset,
+                        .alignment = indirect_size,
+                        .size = indirect_size,
+                        .register = @intToEnum(Register.ID, reg_i),
+                    };
+
+                    reg_occupation.* = .indirect;
+
+                    var register = &self.state.registers.by_type.legacy[reg_i];
+
+                    register.* = .
+                    {
+                        .indirect = indirect,
+                    };
+
+                    return indirect;
+                }
+            }
+
+            panic("No free registers\n", .{});
+        }
+
+        // @TODO: is this correct? can cause bugs to manage code encoding from here
+        // @TODO: delete this and properly organize it in the code
+        //fn receive_return_in_backup_register(self: *Self, function: *Program.Function, reference: IR.Reference) struct { OccupationKindRegister
+        //{
+            //for (self.registers) |reg, reg_i|
+            //{
+                //if (reg.value.value == reference.value and reg.size > 0)
+                //{
+                    //const callee_allocated_register = @intToEnum(Register.ID, reg_i);
+                    //const saved_callee_allocated_register = reg;
+                    //const backup_register = self.allocate(saved_callee_allocated_register.value, saved_callee_allocated_register.size);
+
+                    //self.internal_free_from_register(callee_allocated_register);
+                    //self.internal_free_from_register(backup_register);
+
+                    //const mov_reg_reg = mov_register_register(backup_register, callee_allocated_register, saved_callee_allocated_register.size);
+                    //function.append_instruction(mov_reg_reg);
+
+                    //return backup_register;
+                //}
+            //}
+
+            //panic("No value wanted in registers\n", .{});
+        //}
+
+        // @TODO: improve
+        fn allocate_argument(self: *Self, argument_reference: IR.Reference, size: u8) Direct
+        {
+            for (self.argument_registers) |r|
+            {
+                var reg_occupation = &self.state.occupation.array[@enumToInt(r)];
+
+                if (reg_occupation.* == .none)
+                {
+                    var register = &self.state.registers.array[@enumToInt(r)];
+                    reg_occupation.* = .direct;
+
+                    register.* = .
+                    {
+                        .direct = .
+                        {
+                            .reference = argument_reference,
+                            .size = size,
+                            .modifier = 0,
+                            .register = r,
+                        },
+                    };
+
+                    return register.direct;
+                }
+            }
+
+            panic("No argument register ready\n", .{});
+        }
+
+        // @TODO: improve
+        fn allocate_return(self: *Self, reference: IR.Reference, size: u8) Direct
+        {
+            assert(size <= 8);
+            const register_a = @enumToInt(Register.ID.A);
+            var reg_occupation = &self.state.occupation.by_type.legacy[register_a];
+
+            if (reg_occupation.* == .none)
+            {
+                var register = &self.state.registers.by_type.legacy[register_a];
+                reg_occupation.* = .direct;
+                register.direct = .
+                {
+                    .reference = reference,
+                    .size = size,
+                    .modifier = 0,
+                    .register = .A,
+                };
+
+                return register.direct;
+            }
+
+            panic("Return register A is busy\n", .{});
+        }
+
+        fn allocate_return_indirect(self: *Self, reference: IR.Reference, size: u8) Indirect
+        {
+            _ = self; _ = reference; _ = size;
+            unreachable;
+        }
+
+        fn fetch_direct(self: *Self, program: *const IR.Program, reference: IR.Reference, use: IR.Reference) ?Direct
+        {
+            for (self.state.occupation.by_type.legacy) |*reg_occupation, reg_i|
+            {
+                if (reg_occupation.* == .direct)
+                {
+                    var register = &self.state.registers.by_type.legacy[reg_i];
+
+                    if (register.direct.reference.value == reference.value)
+                    {
+                        assert(register.direct.size > 0);
+                        const uses = program.get_uses(IR.Instruction.get_ID(reference), reference.get_index());
+                        assert(uses.len > 0);
+
+                        if (uses[uses.len - 1].value == use.value)
+                        {
+                            assert(uses.len == 1);
+                            reg_occupation.* = .none;
+                        }
+
+                        return register.direct;
+                    }
+                }
+            }
+
+            log("Couldn't find value in a register\n", .{});
+            return null;
+        }
+
+        fn fetch_indirect(self: *Self, reference: IR.Reference) Indirect
+        {
+            for (self.legacy_gp_registers) |*reg|
+            {
+                if (reg == .indirect and reg.indirect.reference.value == reference.value and reg.indirect.size > 0)
+                {
+                    return reg.indirect;
+                }
+            }
+        }
+
+        fn spill_registers_before_call(self: *Self) Saver
+        {
+            // @TODO: implement
+            _ = self;
+            var saver: Saver = undefined;
+            saver.state.occupation.array = std.mem.zeroes([Register.count]OccupationKind);
+            saver.saved_register_count = 0;
+            return saver;
+        }
+
+        fn alter_allocation_direct(self: *Self, register: Register.ID, new_reference: IR.Reference) void
+        {
+            var dst_register_occupation = &self.state.occupation.array[@enumToInt(register)];
+            if (dst_register_occupation.* == .none) codegen_error("Register is expected to be busy\n", .{});
+            assert(dst_register_occupation.* == .direct);
+            var dst_register = &self.state.registers.array[@enumToInt(register)];
+            dst_register.direct.reference = new_reference;
+        }
+
+        fn reset(self: *Self) void
+        {
+            std.mem.set(OccupationKind, self.state.occupation.array[0..], .none);
+        }
+
+        fn must_save(register: Register.ID) bool
+        {
+            const register_int = @enumToInt(register);
+            return register_int <= @enumToInt(Register.ID.D) or (register_int >= @enumToInt(Register.ID.r8) and register_int <= @enumToInt(Register.ID.r11));
+        }
+    };
+
 };
 
-fn process_load(program: *const IR.Program, function: *Program.Function, load_reference: IR.Reference) void
+fn process_load_for_ret(program: *const IR.Program, function: *Program.Function, load_reference: IR.Reference) Direct
 {
     const load_index = load_reference.get_index(); 
     const load = program.instructions.load[load_index];
-    assert(IR.Instruction.get_ID(load.pointer) == .alloca);
 
-    const uses = program.get_uses(.load, load_index);
-    log("Load use count: {}\n", .{uses.len});
-    assert(uses.len == 1);
+    const load_pointer_id = IR.Instruction.get_ID(load.pointer);
+    switch (load_pointer_id)
+    {
+        .alloca =>
+        {
+            const allocation = function.stack_allocator.get_allocation(load.pointer);
+            assert(allocation.size <= 8);
+            const register_size = @intCast(u8, allocation.size);
 
-    var return_register = false;
+            const load_register = function.register_allocator.allocate_return(load_reference, register_size);
 
-    const use = uses[0];
-    switch (use.get_ID())
+            const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, allocation.size), allocation.register, allocation.offset);
+            function.append_instruction(mov_register_stack);
+            unreachable;
+        },
+        .load =>
+        {
+            const resulting_size = @intCast(u8, load.type.get_size());
+            assert(resulting_size == 4);
+            const load_s_load = program.instructions.load[load.pointer.get_index()];
+            const alloca_ref = load_s_load.pointer;
+            assert(IR.Instruction.get_ID(alloca_ref) == .alloca);
+            const allocation = function.stack_allocator.get_allocation(alloca_ref);
+            const direct = function.register_allocator.allocate_direct(load.pointer, @intCast(u8, allocation.size));
+            function.register_allocator.free(direct.register);
+            const mov_reg_stack = mov_register_indirect(direct.register, direct.size, allocation.register, allocation.offset);
+            function.append_instruction(mov_reg_stack);
+            const indirect = function.register_allocator.allocate_indirect(load_reference, 0,  resulting_size);
+            function.register_allocator.free(indirect.register);
+            const allocated_return = function.register_allocator.allocate_return(load_reference, resulting_size);
+            const mov_to_return_register = mov_register_indirect(allocated_return.register, allocated_return.size, indirect.register, indirect.offset);
+            function.append_instruction(mov_to_return_register);
+
+            return allocated_return;
+        },
+        else => panic("NI: {}\n", .{load_pointer_id}),
+    }
+}
+
+fn process_add(program: *const IR.Program, function: *Program.Function, add_reference: IR.Reference) void
+{
+    const add = program.instructions.add[add_reference.get_index()];
+
+    switch (add.left.get_ID())
     {
         .instruction =>
         {
-            const id = IR.Instruction.get_ID(use);
-            switch (id)
+            const instr_id = IR.Instruction.get_ID(add.left);
+            switch (instr_id)
             {
-                // Do nothing
-                .icmp =>
+                .load =>
                 {
-                    log("Load use: {}. Skipping...\n", .{id});
-                    return;
+                    const first_operand_load = program.instructions.load[add.left.get_index()];
+                    const first_operand_allocation = function.stack_allocator.get_allocation(first_operand_load.pointer);
+
+                    switch (add.right.get_ID())
+                    {
+                        .constant =>
+                        {
+                            switch (IR.Constant.get_ID(add.right))
+                            {
+                                .int =>
+                                {
+                                    const second_operand_integer_literal = program.integer_literals[add.right.get_index()];
+                                    assert(first_operand_allocation.size == @sizeOf(i32));
+                                    if (second_operand_integer_literal.value == 0) return;
+
+                                    // @TODO: be more subtle about register allocating the first operand
+                                    const register_size = @intCast(u8, first_operand_allocation.size);
+                                    const load_register = function.register_allocator.allocate_direct(add.right, register_size);
+                                    const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                                    function.register_allocator.alter_allocation_direct(load_register.register, add_reference);
+                                    function.append_instruction(mov_register_stack);
+
+                                    if (second_operand_integer_literal.value == 1)
+                                    {
+                                        log("Encoding inc instead of add\n", .{});
+                                        const inc_reg = inc_register(load_register.register, register_size);
+                                        function.append_instruction(inc_reg);
+                                    }
+                                    else
+                                    {
+                                        log("Encoding add register immediate {}\n", .{second_operand_integer_literal.value});
+                                        const add_register_literal = add_register_immediate(load_register.register, register_size, second_operand_integer_literal);
+                                        function.append_instruction(add_register_literal);
+                                    }
+                                },
+                                else => panic("ni: {}\n", .{IR.Constant.get_ID(add.right)}),
+                            }
+                        },
+                        .instruction =>
+                        {
+                            switch (IR.Instruction.get_ID(add.right))
+                            {
+                                .load =>
+                                {
+                                    const second_operand_load = program.instructions.load[add.right.get_index()];
+                                    const second_operand_allocation = function.stack_allocator.get_allocation(second_operand_load.pointer);
+
+                                    // move to a register first operand if it is also a stack operand
+                                    log("First operand is also stack, we have to allocate it into a register\n", .{});
+                                    const load_register = function.register_allocator.allocate_direct(add.right, @intCast(u8, first_operand_allocation.size));
+                                    const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                                    function.append_instruction(mov_register_stack);
+                                    const add_register_stack = add_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), second_operand_allocation.register, second_operand_allocation.offset);
+                                    function.register_allocator.alter_allocation_direct(load_register.register, add_reference);
+                                    function.append_instruction(add_register_stack);
+                                },
+                                .call =>
+                                {
+                                    // @TODO: return direct
+                                    // @TODO: this code is managed and can cause problems
+                                    //const backup_call_register = function.register_allocator.receive_return_in_backup_register(function, add.right);
+                                    //assert(backup_call_register.occupation_kind == .direct);
+                                    //const load_register = function.register_allocator.allocate_direct(add.left, @intCast(u8, first_operand_allocation.size));
+                                    //const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                                    //function.append_instruction(mov_register_stack);
+
+                                    //const add_reg_reg = add_register_register(load_register.register, backup_call_register.occupated.direct.register, @intCast(u8, first_operand_allocation.size));
+                                    //function.register_allocator.alter_allocation(load_register.register, add_reference);
+                                    //function.append_instruction(add_reg_reg);
+                                    unreachable;
+                                },
+                                else => panic("{}\n", .{IR.Instruction.get_ID(add.right)}),
+                            }
+                        },
+                        else => panic("ni: {}\n", .{add.right.get_ID()}),
+                    }
                 },
-                .add =>
+                .call =>
                 {
-                    const add = &program.instructions.add[use.get_index()];
-                    if (add.left.value == use.value)
+                    // @TODO: here we are assuming than the integer can't be over 8 bytes
+                    const first_operand_call = program.instructions.call[add.left.get_index()];
+                    const returned_call_register = function.register_allocator.fetch_direct(program, add.left, add_reference) orelse unreachable;
+
+                    _ = first_operand_call;
+
+                    switch (add.right.get_ID())
                     {
-                        panic("not implemented\n", .{});
-                    }
-                    else
-                    {
-                        return;
+                        .constant =>
+                        {
+                            switch (IR.Constant.get_ID(add.right))
+                            {
+                                .int =>
+                                {
+                                    const second_operand_integer_literal = program.integer_literals[add.right.get_index()];
+                                    log("Call register size: {}\n", .{returned_call_register.size});
+                                    assert(returned_call_register.size == @sizeOf(i32));
+
+                                    if (second_operand_integer_literal.value == 0) return;
+
+                                    // @TODO: here we need to assert that the register size is the same than before
+                                    const allocation_direct = function.register_allocator.allocate_return(add_reference, returned_call_register.size);
+                                    assert(allocation_direct.register == returned_call_register.register);
+                                    assert(allocation_direct.size == returned_call_register.size);
+                                    if (second_operand_integer_literal.value == 1)
+                                    {
+                                        log("Encoding inc instead of add\n", .{});
+                                        const inc_reg = inc_register(returned_call_register.register, returned_call_register.size);
+                                        function.append_instruction(inc_reg);
+                                    }
+                                    else
+                                    {
+                                        log("Encoding add register immediate {}\n", .{second_operand_integer_literal.value});
+                                        const add_register_literal = add_register_immediate(returned_call_register.register, returned_call_register.size, second_operand_integer_literal);
+                                        function.append_instruction(add_register_literal);
+                                    }
+                                },
+                                else => panic("ni: {}\n", .{IR.Constant.get_ID(add.right)}),
+                            }
+                        },
+                        else => panic("ni: {}\n", .{add.right.get_ID()}),
                     }
                 },
-                .sub =>
-                {
-                    const sub = &program.instructions.sub[use.get_index()];
-                    if (sub.left.value == use.value)
-                    {
-                        panic("not implemented\n", .{});
-                    }
-                    else
-                    {
-                        return;
-                    }
-                },
-                .mul =>
-                {
-                    const mul = &program.instructions.mul[use.get_index()];
-                    if (mul.left.value == use.value)
-                    {
-                        panic("ni\n", .{});
-                    }
-                    else
-                    {
-                        return;
-                    }
-                },
-                .ret =>
-                {
-                    return_register = true;
-                },
-                else => panic("{}\n", .{IR.Instruction.get_ID(use)}),
+                else => panic("ni: {}\n", .{instr_id}),
             }
         },
-        else => panic("{}\n", .{use.get_ID()}),
+        else => panic("ni: {}\n", .{add.left.get_ID()}),
     }
-
-    const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
-    assert(allocation.size <= 8);
-    const register_size = @intCast(u8, allocation.size);
-
-    const load_register = 
-        if (return_register)
-            function.register_allocator.allocate_return(load_reference, register_size)
-        else
-            function.register_allocator.allocate(load_reference, register_size);
-
-    const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, allocation.size), stack_register, allocation.offset);
-    function.append_instruction(mov_register_stack);
 }
 
 fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_reference: IR.Reference) void
 {
     const icmp = program.instructions.icmp[icmp_reference.get_index()];
-    var should_load_first_argument = false;
 
     var first_operand_kind: OperandKind = undefined;
     var second_operand_kind: OperandKind = undefined;
@@ -1620,9 +1768,8 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
                     .load =>
                     {
                         first_operand_kind = .stack;
-                        const load = program.instructions.load[icmp.left.get_index()];
-                        const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
-                        break :blk allocation;
+                        // @TODO: figure out this false
+                        break :blk fetch_load(program, function, icmp.left, icmp_reference, true);
                     },
                     else => panic("ni: {}\n", .{instr_id}),
                 }
@@ -1648,7 +1795,7 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
                     {
                         if (first_operand_kind == .stack)
                         {
-                            break :blk cmp_indirect_immediate(stack_register, first_operand_allocation.offset, @intCast(u8, first_operand_allocation.size), integer_literal);
+                            break :blk cmp_indirect_immediate(first_operand_allocation.register, first_operand_allocation.offset, @intCast(u8, first_operand_allocation.size), integer_literal);
                         }
                         else unreachable;
                     };
@@ -1668,14 +1815,14 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
                     if (first_operand_kind == .stack)
                     {
                         const register_size = @intCast(u8, first_operand_allocation.size);
-                        const load_register = function.register_allocator.allocate(icmp.right, register_size);
-                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                        function.register_allocator.alter_allocation(load_register, icmp_reference);
+                        const load_register = function.register_allocator.allocate_direct(icmp.right, register_size);
+                        const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                        function.register_allocator.alter_allocation_direct(load_register.register, icmp_reference);
                         function.append_instruction(mov_register_stack);
 
                         const load = program.instructions.load[icmp.right.get_index()];
-                        const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
-                        const cmp_register_stack = cmp_register_indirect(load_register, register_size, stack_register, allocation.offset);
+                        const allocation = function.stack_allocator.get_allocation(load.pointer);
+                        const cmp_register_stack = cmp_register_indirect(load_register.register, register_size, allocation.register, allocation.offset);
                         function.append_instruction(cmp_register_stack);
                     }
                     else
@@ -1688,149 +1835,101 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
         },
         else => panic("ni: {}\n", .{icmp.right.get_ID()}),
     }
-
-    if (should_load_first_argument)
-    {
-        unreachable;
-    }
 }
 
-fn process_add(program: *const IR.Program, function: *Program.Function, add_reference: IR.Reference) void
+fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref: IR.Reference, load_use: IR.Reference, comptime needs_to_be_register_loaded: bool) Indirect
 {
-    const add = program.instructions.add[add_reference.get_index()];
+    // @TODO: implement
+    _ = load_use;
 
-    switch (add.left.get_ID())
+    assert(load_ref.get_ID() == .instruction);
+    assert(IR.Instruction.get_ID(load_ref) == .load);
+
+    const load = program.instructions.load[load_ref.get_index()];
+    const load_pointer_id = IR.Instruction.get_ID(load.pointer);
+
+    log("Load pointer ID: {}\n", .{load_pointer_id});
+    log("Looking for alloca in registers\n", .{});
+
+    switch (load_pointer_id)
     {
-        .instruction =>
+        .alloca =>
         {
-            const instr_id = IR.Instruction.get_ID(add.left);
-            switch (instr_id)
+            const load_use_id = IR.Instruction.get_ID(load_use);
+            switch (load_use_id)
             {
-                .load =>
+                .store =>
                 {
-                    const first_operand_load = program.instructions.load[add.left.get_index()];
-                    const first_operand_allocation = function.stack_allocator.get_allocation(first_operand_load.pointer.get_index());
+                    const store = program.instructions.store[load_use.get_index()];
+                    const resulting_size = @intCast(u8, store.type.get_size());
+                    log("Resulting size: {}\n", .{resulting_size});
+                    assert(resulting_size == 4);
 
-                    switch (add.right.get_ID())
-                    {
-                        .constant =>
-                        {
-                            switch (IR.Constant.get_ID(add.right))
-                            {
-                                .int =>
-                                {
-                                    const second_operand_integer_literal = program.integer_literals[add.right.get_index()];
-                                    assert(first_operand_allocation.size == @sizeOf(i32));
-                                    if (second_operand_integer_literal.value == 0) return;
+                    const allocation = function.stack_allocator.get_allocation(load.pointer);
+                    assert(allocation.size <= 8);
+                    const register_size = @intCast(u8, allocation.size);
 
-                                    // @TODO: be more subtle about register allocating the first operand
-                                    const register_size = @intCast(u8, first_operand_allocation.size);
-                                    const load_register = function.register_allocator.allocate(add.right, register_size);
-                                    const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                                    function.register_allocator.alter_allocation(load_register, add_reference);
-                                    function.append_instruction(mov_register_stack);
-
-                                    if (second_operand_integer_literal.value == 1)
-                                    {
-                                        log("Encoding inc instead of add\n", .{});
-                                        const inc_reg = inc_register(load_register, register_size);
-                                        function.append_instruction(inc_reg);
-                                    }
-                                    else
-                                    {
-                                        log("Encoding add register immediate {}\n", .{second_operand_integer_literal.value});
-                                        const add_register_literal = add_register_immediate(load_register, register_size, second_operand_integer_literal);
-                                        function.append_instruction(add_register_literal);
-                                    }
-                                },
-                                else => panic("ni: {}\n", .{IR.Constant.get_ID(add.right)}),
-                            }
-                        },
-                        .instruction =>
-                        {
-                            switch (IR.Instruction.get_ID(add.right))
-                            {
-                                .load =>
-                                {
-                                    const second_operand_load = program.instructions.load[add.right.get_index()];
-                                    const second_operand_allocation = function.stack_allocator.get_allocation(second_operand_load.pointer.get_index());
-
-                                    // move to a register first operand if it is also a stack operand
-                                    log("First operand is also stack, we have to allocate it into a register\n", .{});
-                                    const load_register = function.register_allocator.allocate(add.right, @intCast(u8, first_operand_allocation.size));
-                                    const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                                    function.append_instruction(mov_register_stack);
-                                    const add_register_stack = add_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, second_operand_allocation.offset);
-                                    function.register_allocator.alter_allocation(load_register, add_reference);
-                                    function.append_instruction(add_register_stack);
-                                },
-                                .call =>
-                                {
-                                    // @TODO: this code is managed and can cause problems
-                                    const backup_call_register = function.register_allocator.receive_return_in_backup_register(function, add.right);
-                                    const load_register = function.register_allocator.allocate(add.left, @intCast(u8, first_operand_allocation.size));
-                                    const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                                    function.append_instruction(mov_register_stack);
-
-                                    const add_reg_reg = add_register_register(load_register, backup_call_register, @intCast(u8, first_operand_allocation.size));
-                                    function.register_allocator.alter_allocation(load_register, add_reference);
-                                    function.append_instruction(add_reg_reg);
-                                },
-                                else => panic("{}\n", .{IR.Instruction.get_ID(add.right)}),
-                            }
-                        },
-                        else => panic("ni: {}\n", .{add.right.get_ID()}),
-                    }
+                    const load_register = function.register_allocator.allocate_direct(load.pointer, register_size);
+                    function.register_allocator.free(load_register.register);
+                    const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, allocation.size), allocation.register, allocation.offset);
+                    function.append_instruction(mov_register_stack);
+                    const indirect = function.register_allocator.allocate_indirect(load_ref, 0, resulting_size);
+                    return indirect;
                 },
-                .call =>
-                {
-                    // @TODO: here we are assuming than the integer can't be over 8 bytes
-                    const first_operand_call = program.instructions.call[add.left.get_index()];
-                    const call_register = function.register_allocator.get_register(program, add.left, add_reference) orelse unreachable;
-
-                    _ = first_operand_call;
-
-                    switch (add.right.get_ID())
-                    {
-                        .constant =>
-                        {
-                            switch (IR.Constant.get_ID(add.right))
-                            {
-                                .int =>
-                                {
-                                    const second_operand_integer_literal = program.integer_literals[add.right.get_index()];
-                                    log("Call register size: {}\n", .{call_register.size});
-                                    assert(call_register.size == @sizeOf(i32));
-
-                                    if (second_operand_integer_literal.value == 0) return;
-
-                                    // @TODO: here we need to assert that the register size is the same than before
-                                    function.register_allocator.register_allocation(@enumToInt(call_register.value), add_reference, call_register.size);
-                                    if (second_operand_integer_literal.value == 1)
-                                    {
-                                        log("Encoding inc instead of add\n", .{});
-                                        const inc_reg = inc_register(call_register.value, call_register.size);
-                                        function.append_instruction(inc_reg);
-                                    }
-                                    else
-                                    {
-                                        log("Encoding add register immediate {}\n", .{second_operand_integer_literal.value});
-                                        const add_register_literal = add_register_immediate(call_register.value, call_register.size, second_operand_integer_literal);
-                                        function.append_instruction(add_register_literal);
-                                    }
-                                },
-                                else => panic("ni: {}\n", .{IR.Constant.get_ID(add.right)}),
-                            }
-                        },
-                        else => panic("ni: {}\n", .{add.right.get_ID()}),
-                    }
-                },
-                else => panic("ni: {}\n", .{instr_id}),
+                .load => return function.stack_allocator.get_allocation(load.pointer),
+                else => panic("NI: {}\n", .{load_use_id}),
             }
         },
-        else => panic("ni: {}\n", .{add.left.get_ID()}),
+        .load =>
+        {
+            if (false)
+            {
+                // @TODO: needs to be register loaded?
+                const stack_indirect = fetch_load(program, function, load.pointer, load_ref, needs_to_be_register_loaded);
+                log("Stack indirect: {}\n", .{stack_indirect});
+                // @TODO: avoid hardcoded values
+                const register_indirect = function.register_allocator.allocate_indirect(load_ref, 0, @intCast(u8, stack_indirect.size));
+                const load_size = load.type.get_size();
+                log("Load size: {}\n", .{load_size});
+                assert(load_size == 4);
+                const mov_register_stack = mov_register_indirect(register_indirect.register, @intCast(u8, register_indirect.size), stack_indirect.register, stack_indirect.offset);
+                function.append_instruction(mov_register_stack);
+                return register_indirect;
+            }
+            else
+            {
+                const load_size = @intCast(u8, load.type.get_size());
+                log("Load size: {}\n", .{load_size});
+
+                const stack_indirect = fetch_load(program, function, load.pointer, load_ref, needs_to_be_register_loaded);
+                const register = function.register_allocator.allocate_direct(load.pointer, @intCast(u8, stack_indirect.size));
+                assert(register.register == .A);
+                const mov_register_stack = mov_register_indirect(register.register, @intCast(u8, register.size), stack_indirect.register, stack_indirect.offset);
+                function.append_instruction(mov_register_stack);
+
+                function.register_allocator.free(register.register);
+                const register_indirect = function.register_allocator.allocate_indirect(load_ref, 0, load_size);
+
+                return register_indirect;
+            }
+        },
+        //.get_element_ptr => get_mc_value_from_ir_value(function, executable, constant_data_list, data_buffer, mc_function, first_operand, ir_value),
+        else => panic("load ptr id: {}\n", .{load_pointer_id}),
     }
+
+    //if (function.register_allocator.get_allocation(program, load_ref, load_use)) |load_pointer|
+    //{
+        //_ = load_pointer;
+        //unreachable;
+    //}
+    //else
+    //{
+        //assert(load.pointer.get_ID() == .instruction);
+        //log("Load pointer id: {}\n", .{load_pointer_id});
+
+    //}
 }
+
 
 fn process_sub(program: *const IR.Program, function: *Program.Function, sub_reference: IR.Reference) void
 {
@@ -1853,7 +1952,7 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                     {
                         first_operand_kind = .stack;
                         const load = program.instructions.load[sub.left.get_index()];
-                        const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
+                        const allocation = function.stack_allocator.get_allocation(load.pointer);
                         break :blk allocation;
                     },
                     else => panic("ni: {}\n", .{instr_id}),
@@ -1883,20 +1982,20 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                     if (first_operand_kind == .stack)
                     {
                         const register_size = @intCast(u8, first_operand_allocation.size);
-                        const load_register = function.register_allocator.allocate(sub.right, register_size);
-                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                        function.register_allocator.alter_allocation(load_register, sub_reference);
+                        const load_register = function.register_allocator.allocate_direct(sub.right, register_size);
+                        const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                        function.register_allocator.alter_allocation_direct(load_register.register, sub_reference);
                         function.append_instruction(mov_register_stack);
 
                         if (integer_literal.value == 1)
                         {
-                            const dec_reg = dec_register(load_register, register_size);
+                            const dec_reg = dec_register(load_register.register, register_size);
                             function.append_instruction(dec_reg);
                         }
                         else
                         {
                             log("Sub register immediate\n", .{});
-                            const sub_register_literal = sub_register_immediate(load_register, register_size, integer_literal);
+                            const sub_register_literal = sub_register_immediate(load_register.register, register_size, integer_literal);
                             function.append_instruction(sub_register_literal);
                         }
                     }
@@ -1921,10 +2020,10 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                         // move to a register first operand if it is also a stack operand
                         //log("First operand is also stack, we have to allocate\n", .{});
                         //const load_register = function.register_allocator.allocate(sub.right, @intCast(u8, first_operand_allocation.size));
-                        //const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        //const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
                         //function.append_instruction(mov_register_stack);
-                        //const sub_register_stack = sub_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, second_operand_allocation.offset);
-                        //function.register_allocator.alter_allocation(load_register, sub_reference);
+                        //const sub_register_stack = sub_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, second_operand_allocation.offset);
+                        //function.register_allocator.alter_allocation_direct(load_register, sub_reference);
                         //function.append_instruction(sub_register_stack);
                         unreachable;
                     }
@@ -1971,7 +2070,7 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                         first_operand_kind = .stack;
                         const load = program.instructions.load[mul.left.get_index()];
                         signedness = Type.Integer.get_signedness(load.type);
-                        const allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
+                        const allocation = function.stack_allocator.get_allocation(load.pointer);
                         break :blk allocation;
                     },
                     else => panic("ni: {}\n", .{instr_id}),
@@ -2002,8 +2101,8 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                     {
                         //const register_size = @intCast(u8, first_operand_allocation.size);
                         //const load_register = function.register_allocator.allocate(mul.right, register_size);
-                        //const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
-                        //function.register_allocator.alter_allocation(load_register, mul_reference);
+                        //const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                        //function.register_allocator.alter_allocation_direct(load_register, mul_reference);
                         //function.append_instruction(mov_register_stack);
 
                         //log("Mul register immediate\n", .{});
@@ -2033,19 +2132,19 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                     second_operand_kind = .stack;
 
                     const load = program.instructions.load[mul.right.get_index()];
-                    const second_operand_allocation = function.stack_allocator.get_allocation(load.pointer.get_index());
+                    const second_operand_allocation = function.stack_allocator.get_allocation(load.pointer);
 
                     if (first_operand_kind == .stack)
                     {
                         // move to a register first operand if it is also a stack operand
                         log("First operand is also stack, we have to allocate\n", .{});
-                        const load_register = function.register_allocator.allocate(mul.right, @intCast(u8, first_operand_allocation.size));
-                        const mov_register_stack = mov_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, first_operand_allocation.offset);
+                        const load_register = function.register_allocator.allocate_direct(mul.right, @intCast(u8, first_operand_allocation.size));
+                        const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
                         function.append_instruction(mov_register_stack);
-                        function.register_allocator.alter_allocation(load_register, mul_reference);
+                        function.register_allocator.alter_allocation_direct(load_register.register, mul_reference);
                         if (signedness == .signed)
                         {
-                            const imul_register_stack = imul_register_indirect(load_register, @intCast(u8, first_operand_allocation.size), stack_register, second_operand_allocation.offset);
+                            const imul_register_stack = imul_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, second_operand_allocation.offset);
                             function.append_instruction(imul_register_stack);
                         }
                         else
@@ -2094,9 +2193,9 @@ const JmpOpcode = enum(u8)
     }
 };
 
-var stack_register: Encoding.Register = undefined;
+var stack_register: Register.ID = undefined;
 
-pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_filename: []const u8, target: std.Target) void
+pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executable_filename: []const u8, target: std.Target) void
 {
     abi = target.abi;
     const os = target.os.tag;
@@ -2110,8 +2209,8 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
             panic("Not implemented: {}\n", .{abi});
 
     stack_register =
-        if (abi == .msvc) Encoding.Register.SP
-        else if (abi == .gnu) Encoding.Register.BP
+        if (abi == .msvc) Register.ID.SP
+        else if (abi == .gnu) Register.ID.BP
         else panic("NI: {}\n", .{abi});
 
     const function_count = program.functions.len;
@@ -2124,10 +2223,8 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
     for (program.functions) |*function|
     {
-        var stack_allocator = Stack.Manager.new(allocator);
+        var stack_allocator = Stack.Allocator.new(allocator);
         const basic_block_count = function.basic_blocks.len;
-        var labels = ArrayList(Label).initCapacity(allocator, basic_block_count) catch unreachable;
-        labels.resize(basic_block_count) catch unreachable;
 
         const entry_block_index = function.basic_blocks[0];
         const entry_block = program.basic_blocks[entry_block_index];
@@ -2136,21 +2233,9 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
         {
             if (IR.Instruction.get_ID(instruction) == .alloca)
             {
-                const alloca_size = @intCast(u32, get_alloca_size(program, instruction));
-                _ = stack_allocator.allocate(alloca_size, instruction.get_index());
+                const alloca_size = @intCast(u32, instruction.get_size(program));
+                _ = stack_allocator.allocate(alloca_size, instruction);
             }
-        }
-
-        for (labels.items) |*label|
-        {
-            label.* = Label
-            {
-                .unresolved = .
-                {
-                    .locations = ArrayList(Label.PatchLocation).init(allocator),
-                    .instruction_index = 0,
-                },
-            };
         }
 
         functions.append(.
@@ -2162,7 +2247,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                 .previous_patches = ArrayList(BackwardPatch).init(allocator),
                 .code_buffer_offset = 0,
                 .terminator = .noreturn,
-                .register_allocator = Register.Manager.new(argument_registers),
+                .register_allocator = Register.Allocator.new(argument_registers),
                 .stack_allocator = stack_allocator,
             }) catch unreachable;
 
@@ -2181,8 +2266,9 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
         {
             log("[{}]: #{}\n", .{basic_block_i, basic_block});
         }
-        std.debug.print("\n", .{});
+        log("\n", .{});
 
+        log("Alloca count: {}\n", .{function.stack_allocator.allocations.items.len});
 
         for (ir_function.basic_blocks) |basic_block_index, basic_block_i|
         {
@@ -2240,7 +2326,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                         };
 
                         assert(argument_count <= function.register_allocator.argument_registers.len);
-                        var register_allocator_state = function.register_allocator.spill_registers_before_call();
+                        var register_allocator_saver = function.register_allocator.spill_registers_before_call();
 
                         for (call.arguments) |argument, argument_i|
                         {
@@ -2276,7 +2362,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
                                             if (literal == 0)
                                             {
-                                                const xor_reg = xor_register(argument_register, integer_byte_count);
+                                                const xor_reg = xor_register(argument_register.register, integer_byte_count);
                                                 function.append_instruction(xor_reg);
                                             }
                                             else
@@ -2303,10 +2389,10 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                         // @TODO: use count
                         if (call.type.value != Type.Builtin.void_type.value and call.type.value != Type.Builtin.noreturn_type.value)
                         {
-                            const return_size = @intCast(u8, get_type_size(call.type));
+                            const return_size = @intCast(u8, call.type.get_size());
                             assert(return_size > 0 and return_size <= 8);
 
-                            assert(register_allocator_state.registers[@enumToInt(Encoding.Register.A)].size == 0);
+                            assert(register_allocator_saver.state.occupation.by_type.legacy[@enumToInt(Register.ID.A)] == .none);
                             if (program.get_uses(.call, instruction.get_index()).len > 0)
                             {
                                 _ = function.register_allocator.allocate_return(instruction, return_size);
@@ -2328,7 +2414,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                             function.max_call_parameter_size = std.math.max(function.max_call_parameter_size, parameter_stack_size);
                         }
 
-                        if (register_allocator_state.saved_register_count > 0)
+                        if (register_allocator_saver.saved_register_count > 0)
                         {
                             // @TODO: restore registers
                             unreachable;
@@ -2370,7 +2456,7 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                                 if (!integer_literal.signed)
                                                 {
                                                     const register = function.register_allocator.allocate_return(return_expr, @intCast(u8, byte_count));
-                                                    const ret_mov = mov_register_literal(register, integer_literal.value, byte_count);
+                                                    const ret_mov = mov_register_literal(register.register, integer_literal.value, byte_count);
                                                     function.append_instruction(ret_mov);
                                                 }
                                                 else
@@ -2392,11 +2478,15 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                     assert(ret_expr_instruction_id != .alloca);
                                     switch (ret_expr_instruction_id)
                                     {
-                                        .load, .add =>
+                                        .load =>
                                         {
-                                            const allocated_register = function.register_allocator.get_register(program, return_expr, instruction) orelse unreachable;
-                                            
-                                            if (allocated_register.value != .A)
+                                            const load_processed = process_load_for_ret(program, function, return_expr);
+                                            _ = load_processed;
+                                        },
+                                        .add =>
+                                        {
+                                            const allocated_register = function.register_allocator.fetch_direct(program, return_expr, instruction) orelse unreachable;
+                                            if (allocated_register.register != .A)
                                             {
                                                 panic("Badly allocated register\n", .{});
                                             }
@@ -2423,10 +2513,9 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
 
                         // assert this is an alloca
                         assert(store.pointer.get_ID() == .instruction);
-                        assert(IR.Instruction.get_ID(store.pointer) == .alloca);
-                        const alloca_i = store.pointer.get_index(); 
-                        const alloca = program.instructions.alloca[alloca_i];
-                        const stack_allocation = function.stack_allocator.get_allocation(alloca_i);
+                        const store_pointer_id = IR.Instruction.get_ID(store.pointer);
+                        log("Store pointer ID: {}\n", .{store_pointer_id});
+
 
                         const store_value_id = store.value.get_ID();
                         switch (store_value_id)
@@ -2439,20 +2528,35 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                                     .int =>
                                     {
                                         const integer_literal = program.integer_literals[store.value.get_index()];
-                                        const alloca_type = alloca.alloca_type;
-                                        if (alloca_type.get_ID() != .integer)
+                                        if (store.type.get_ID() != .integer)
                                         {
-                                            codegen_error("Expected type {}\n", .{alloca_type.get_ID()});
+                                            codegen_error("Expected type {}\n", .{store.type.get_ID()});
                                         }
 
-                                        const bit_count = Type.Integer.get_bit_count(alloca_type);
+                                        const bit_count = Type.Integer.get_bit_count(store.type);
                                         assert((bit_count & 0b111) == 0);
                                         const byte_count = bit_count >> 3;
+
+                                        // @TODO: delay this
+                                        const stack_allocation = switch (store_pointer_id)
+                                        {
+                                            .alloca => blk:
+                                            {
+                                                break :blk function.stack_allocator.get_allocation(store.pointer);
+                                            },
+                                            .load => blk:
+                                            {
+                                                break :blk fetch_load(program, function, store.pointer, instruction, false);
+                                            },
+                                            else => panic("{}\n", .{store_pointer_id}),
+                                        };
+
+                                        log("Allocation: {}\n", .{stack_allocation});
 
                                         if (!integer_literal.signed)
                                         {
                                             log("Allocation offset: {}\n", .{stack_allocation.offset});
-                                            const mov_stack_literal = mov_indirect_immediate_unsigned(stack_register, stack_allocation.offset, integer_literal.value, byte_count);
+                                            const mov_stack_literal = mov_indirect_immediate_unsigned(stack_allocation.register, stack_allocation.offset, integer_literal.value, byte_count);
                                             function.append_instruction(mov_stack_literal);
                                         }
                                         else
@@ -2466,25 +2570,62 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
                             .instruction =>
                             {
                                 const store_instruction_id = IR.Instruction.get_ID(store.value);
-                                const register_allocation = switch (store_instruction_id)
+
+                                // @TODO: delay this
+                                const stack_allocation = switch (store_pointer_id)
                                 {
-                                    .add, .sub, .mul => blk:
+                                    .alloca => blk:
                                     {
-                                        break :blk function.register_allocator.get_register(program, store.value, instruction) orelse unreachable;
+                                        break :blk function.stack_allocator.get_allocation(store.pointer);
+                                    },
+                                    .load => blk:
+                                    {
+                                        break :blk fetch_load(program, function, store.pointer, instruction, false);
+                                    },
+                                    else => panic("{}\n", .{store_pointer_id}),
+                                };
+                                log("Allocation: {}\n", .{stack_allocation});
+
+                                switch (store_instruction_id)
+                                {
+                                    .add, .sub, .mul =>
+                                    {
+                                        const register_allocation = function.register_allocator.fetch_direct(program, store.value, instruction) orelse unreachable;
+                                        const mov_stack_register = mov_indirect_register(stack_allocation.register, stack_allocation.offset, @intCast(u8, stack_allocation.size), register_allocation.register, register_allocation.size);
+                                        function.append_instruction(mov_stack_register);
+                                    },
+                                    .alloca =>
+                                    {
+                                        assert(stack_allocation.size == 8);
+                                        assert(store.type.get_size() == 8);
+
+                                        const register_allocation = function.register_allocator.fetch_direct(program, store.value, instruction) orelse blk:
+                                        {
+                                            log("Emitting lea\n", .{});
+
+                                            const alloca_in_stack = function.stack_allocator.get_allocation(store.value);
+                                            assert(alloca_in_stack.size == 4);
+                                            const register_size = Type.Pointer.size;
+                                            const register = function.register_allocator.allocate_direct(store.pointer, register_size);
+                                            log("Lea register: {}, size: {}. Lea indirect register: {}. Lea indirect offset: {}\n", .{register.register, register.size, alloca_in_stack.register, alloca_in_stack.offset});
+                                            const lea_stack = lea_indirect(register.register, register_size, alloca_in_stack.register, alloca_in_stack.offset);
+                                            function.append_instruction(lea_stack);
+                                            break :blk register;
+                                        };
+
+                                        const mov_stack_register = mov_indirect_register(stack_allocation.register, stack_allocation.offset, register_allocation.size, register_allocation.register, register_allocation.size);
+                                        function.append_instruction(mov_stack_register);
+                                        function.register_allocator.free(register_allocation.register);
                                     },
                                     else => panic("{}\n", .{store_instruction_id}),
-                                };
-
-                                const mov_stack_register = mov_indirect_register(stack_register, stack_allocation.offset, @intCast(u8, stack_allocation.size), register_allocation.value, register_allocation.size);
-                                function.append_instruction(mov_stack_register);
-
+                                }
                             },
                             else => panic("Store value id: {}\n", .{store_value_id}),
                         }
                     },
                     .load =>
                     {
-                        process_load(program, function, instruction);
+                        log("Skipping loads\n", .{});
                     },
                     .br =>
                     {
@@ -2580,3 +2721,325 @@ pub fn encode(allocator: *Allocator, program: *const IR.Program, executable_file
         else => panic("OS {} not implemented\n", .{os}),
     }
 }
+
+const Encoding = struct
+{
+    pub const OldInstruction = struct
+    {
+        //op_code: [4]u8,
+        //options: Options,
+        //operand_combinations: [4]Operand.Combination,
+        //operand_combination_count: u64,
+
+        pub const Options = struct
+        {
+            option: Option,
+            digit: u8,
+            explicit_byte_size: u8,
+
+            pub const Option = enum
+            {
+                None,
+                Digit,
+                Reg,
+                OpCodePlusReg,
+                ExplicitByteSize,
+            };
+        };
+
+        pub const ID = enum
+        {
+            adc,
+            adcx,
+            add,
+            adox,
+            @"and",
+            andn,
+            bextr,
+            blsi,
+            blsmsk,
+            blsr,
+            bndcl,
+            bndcu,
+            bndcn,
+            bndldx,
+            bndmk,
+            bndmov,
+            bndstx,
+            bsf,
+            bsr,
+            bswap,
+            bt,
+            btc,
+            btr,
+            bts,
+            bzhi,
+            call,
+            cbw,
+            cwde,
+            cdqe,
+            clac,
+            clc,
+            cld,
+            cldemote,
+            clflush,
+            clflushopt,
+            cli,
+            clrssbsy,
+            clts,
+            clwb,
+            cmc,
+            cmov,
+            cmp,
+            cmpxchg,
+            cmpxchg8,
+            cmpxchg16,
+            cpuid,
+            crc32,
+            cwd,
+            cdq,
+            cqo,
+            dec,
+            div,
+            endbr32,
+            endbr64,
+            enter,
+            hlt,
+            idiv,
+            imul,
+            in,
+            inc,
+            incssp,
+            ins,
+            int3,
+            int,
+            invd,
+            invlpg,
+            invpcid,
+            iret,
+            ja,
+            jae,
+            jb,
+            jbe,
+            jc,
+            jecxz,
+            jrcxz,
+            je,
+            jg,
+            jge,
+            jl,
+            jle,
+            jna,
+            jnae,
+            jnb,
+            jnbe,
+            jnc,
+            jne,
+            jng,
+            jnge,
+            jnl,
+            jnle,
+            jno,
+            jnp,
+            jns,
+            jnz,
+            jo,
+            jp,
+            jpe,
+            jpo,
+            js,
+            jz,
+            jmp,
+            lar,
+            lds,
+            lss,
+            les,
+            lfs,
+            lgs,
+            lea,
+            leave,
+            lfence,
+            lgdt,
+            lidt,
+            lldt,
+            lmsw,
+            lock,
+            lods,
+            lodsb,
+            lodsw,
+            lodsd,
+            lodsq,
+            loop,
+            loope,
+            loopne,
+            lsl,
+            ltr,
+            lzcnt,
+            mfence,
+            mov,
+            movcr,
+            movdbg,
+            movbe,
+            movdq,
+            movdiri,
+            movdir64,
+            movq,
+            movs,
+            movsx,
+            movzx,
+            mul,
+            mulx,
+            mwait,
+            neg,
+            nop,
+            not,
+            @"or",
+            out,
+            outs,
+            pause,
+            pdep,
+            pext,
+            pop,
+            popcnt,
+            popf,
+            por,
+            prefetch,
+            prefetchw,
+            ptwrite,
+            push,
+            pushf,
+            rotate,
+            rdfsbase,
+            rdgsbase,
+            rdmsr,
+            rdpid,
+            rdpmc,
+            rdrand,
+            rdseed,
+            rdssp,
+            rdtsc,
+            rdtscp,
+            rep,
+            ret,
+            rsm,
+            rstorssp,
+            sahf,
+            sal,
+            sar,
+            shl,
+            shr,
+            sarx,
+            shlx,
+            shrx,
+            saveprevssp,
+            sbb,
+            scas,
+            seta,
+            setae,
+            setb,
+            setbe,
+            setc,
+            sete,
+            setg,
+            setge,
+            setl,
+            setle,
+            setna,
+            setnae,
+            setnb,
+            setnbe,
+            setnc,
+            setne,
+            setng,
+            setnge,
+            setnl,
+            setnle,
+            setno,
+            setnp,
+            setns,
+            setnz,
+            seto,
+            setp,
+            setpe,
+            setpo,
+            sets,
+            setssbsy,
+            sfence,
+            sgdt,
+            shld,
+            shrd,
+            sidt,
+            sldt,
+            smsw,
+            stac,
+            stc,
+            std,
+            sti,
+            stos,
+            str,
+            sub,
+            swapgs,
+            syscall,
+            sysenter,
+            sysexit,
+            sysret,
+            @"test",
+            tpause,
+            tzcnt,
+            ud,
+            umonitor,
+            umwait,
+            wait,
+            wbinvd,
+            wbnoinvd,
+            wrfsbase,
+            wrgsbase,
+            wrmsr,
+            wrss,
+            wruss,
+            xacquire,
+            xrelease,
+            xabort,
+            xadd,
+            xbegin,
+            xchg,
+            xend,
+            xgetbv,
+            xlat,
+            xor,
+            xrstor,
+            xrstors,
+            xsave,
+            xsavec,
+            xsaveopt,
+            xsaves,
+            xsetbv,
+            xtest,
+        };
+    };
+};
+    pub const Rex = enum(u8)
+    {
+        None = 0,
+        Rex = 0x40,
+        B = 0x41,
+        X = 0x42,
+        R = 0x44,
+        W = 0x48,
+    };
+
+    pub const SIB = enum(u8)
+    {
+        scale1 = 0b00,
+        scale2 = 0b01,
+        scale3 = 0b10,
+        scale4 = 0b11,
+    };
+
+    pub const Mod = enum(u8)
+    {
+        no_displacement = 0b00,
+        displacement8 = 0b01,
+        displacement32 = 0b10,
+        register = 0b11,
+    };
