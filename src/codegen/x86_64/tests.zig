@@ -65,11 +65,37 @@ test "lea register indirect"
 }
 
 test "mov register indirect"
-
 {
     {
         const mov_reg_indirect = &[_]u8 { 0x48, 0x8b, 0x44, 0x24, 0x08 };
         const my_mov_reg_indirect = x86.mov_register_indirect(.A, 8, .SP, 8);
         try compare_resolved_instruction(mov_reg_indirect, my_mov_reg_indirect);
+    }
+
+    {
+        const mov_reg_indirect = &[_]u8 { 0x8b, 0x0c, 0x24 };
+        const my_mov_reg_indirect = x86.mov_register_indirect(.C, 4, .SP, 0);
+        try compare_resolved_instruction(mov_reg_indirect, my_mov_reg_indirect);
+    }
+    
+    {
+        const mov_reg_indirect = &[_]u8 { 0x8b, 0x54, 0x24, 0x04 };
+        const my_mov_reg_indirect = x86.mov_register_indirect(.D, 4, .SP, 4);
+        try compare_resolved_instruction(mov_reg_indirect, my_mov_reg_indirect);
+    }
+}
+
+test "mov indirect register"
+{
+    {
+        const mov_indirect_reg = &[_]u8 { 0x89, 0x0c, 0x24 };
+        const my_mov_indirect_reg = x86.mov_indirect_register(.SP, 0, 4, .C, 4);
+        try compare_resolved_instruction(mov_indirect_reg, my_mov_indirect_reg);
+    }
+
+    {
+        const mov_indirect_reg = &[_]u8 { 0x89, 0x54, 0x24, 0x04 };
+        const my_mov_indirect_reg = x86.mov_indirect_register(.SP, 4, 4, .D, 4);
+        try compare_resolved_instruction(mov_indirect_reg, my_mov_indirect_reg);
     }
 }

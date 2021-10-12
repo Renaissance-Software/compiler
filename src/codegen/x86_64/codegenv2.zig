@@ -311,6 +311,7 @@ fn encode_indirect_instruction_opcode_plus_register_indirect_offset(rex: ?u8, op
     bytes[encoded_byte_count] = register_byte;
     encoded_byte_count += 1;
 
+    log("Indirect register: {s}\n", .{@tagName(indirect_register)});
     if (indirect_register == .SP)
     {
         log("Appending SIB byte: {x:0>2}\n", .{0x24});
@@ -351,21 +352,21 @@ pub fn mov_register_indirect(dst_register: Register.ID, allocation_size: u8, ind
     return switch (allocation_size)
     {
         1, 2 => unreachable,
-        4 => encode_indirect_instruction_opcode_plus_register_indirect_offset(null, &[_]u8 { 0x8b }, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
-        8 => encode_indirect_instruction_opcode_plus_register_indirect_offset(0x48, &[_]u8 { 0x8b }, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
+        4 => encode_indirect_instruction_opcode_plus_register_indirect_offset(null, &[_]u8 { 0x8b }, @enumToInt(dst_register) << 3, indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
+        8 => encode_indirect_instruction_opcode_plus_register_indirect_offset(0x48, &[_]u8 { 0x8b }, @enumToInt(dst_register) << 3, indirect_register, indirect_offset, std.mem.zeroes([]const u8)),
         else => unreachable,
     };
 }
 
-fn mov_indirect_register(indirect_register: Register.ID, indirect_offset: i32, indirect_size: u8, dst_register: Register.ID, dst_register_size: u8) Instruction
+pub fn mov_indirect_register(indirect_register: Register.ID, indirect_offset: i32, indirect_size: u8, dst_register: Register.ID, dst_register_size: u8) Instruction
 {
     assert(dst_register_size == indirect_size);
+
     log("Mov indirect register\n", .{});
     log("Size: {}\n", .{indirect_size});
     const opcode: []const u8 = if (indirect_size > 1) &[_]u8 { 0x89 } else &[_]u8 { 0x88 };
 
-    return encode_indirect_instruction_opcode_plus_register_indirect_offset(if (dst_register_size == 8) @enumToInt(Rex.W) else null, opcode, @enumToInt(dst_register), indirect_register, indirect_offset, std.mem.zeroes([]u8));
-
+    return encode_indirect_instruction_opcode_plus_register_indirect_offset(if (dst_register_size == 8) @enumToInt(Rex.W) else null, opcode, @enumToInt(dst_register) << 3, indirect_register, indirect_offset, std.mem.zeroes([]u8));
 }
 
 pub fn add_register_indirect(dst_register: Register.ID, allocation_size: u8, indirect_register: Register.ID, indirect_offset: i32) Instruction
@@ -1285,6 +1286,7 @@ const Register = extern union
     comptime
     {
         assert(@sizeOf(Registers) == @sizeOf([Register.count]Register));
+        assert(@sizeOf(Occupation) == @sizeOf([Register.count]OccupationKind));
     }
 
     const Occupation = extern union
@@ -1315,6 +1317,7 @@ const Register = extern union
         {
             var result: Self = undefined;
             result.argument_registers = argument_registers;
+            result.state.occupation.array = std.mem.zeroes([Register.count]OccupationKind);
 
             return result;
         }
@@ -1430,30 +1433,59 @@ const Register = extern union
         //}
 
         // @TODO: improve
-        fn allocate_argument(self: *Self, argument_reference: IR.Reference, size: u8) Direct
+        fn allocate_argument(self: *Self, argument_index: u32, size: u8) Direct
         {
-            for (self.argument_registers) |r|
+            const target_register = self.argument_registers[argument_index];
+
+            log("Allocating argument #{} ({} bytes) in {s}\n", .{argument_index, size, @tagName(target_register)});
+            var reg_occupation = &self.state.occupation.array[@enumToInt(target_register)];
+
+            if (reg_occupation.* == .none)
             {
-                var reg_occupation = &self.state.occupation.array[@enumToInt(r)];
+                reg_occupation.* = .direct;
 
-                if (reg_occupation.* == .none)
+                var register = &self.state.registers.array[@enumToInt(target_register)];
+                register.* = .
                 {
-                    var register = &self.state.registers.array[@enumToInt(r)];
-                    reg_occupation.* = .direct;
-
-                    register.* = .
+                    .direct = .
                     {
-                        .direct = .
-                        {
-                            .reference = argument_reference,
-                            .size = size,
-                            .modifier = 0,
-                            .register = r,
-                        },
-                    };
+                        .reference = IR.Function.Argument.new(argument_index),
+                        .size = size,
+                        .modifier = 0,
+                        .register = target_register,
+                    },
+                };
 
-                    return register.direct;
-                }
+                return register.direct;
+            }
+
+            panic("No argument register ready\n", .{});
+        }
+
+        fn allocate_call_argument(self: *Self, argument_index: u32, argument: IR.Reference, size: u8) Direct
+        {
+            const target_register = self.argument_registers[argument_index];
+
+            log("Allocating argument #{} ({} bytes) in {}\n", .{argument_index, size, target_register});
+            var reg_occupation = &self.state.occupation.array[@enumToInt(target_register)];
+
+            if (reg_occupation.* == .none)
+            {
+                var register = &self.state.registers.array[@enumToInt(target_register)];
+                reg_occupation.* = .direct;
+
+                register.* = .
+                {
+                    .direct = .
+                    {
+                        .reference = argument,
+                        .size = size,
+                        .modifier = 0,
+                        .register = target_register,
+                    },
+                };
+
+                return register.direct;
             }
 
             panic("No argument register ready\n", .{});
@@ -1528,6 +1560,23 @@ const Register = extern union
                     return reg.indirect;
                 }
             }
+        }
+
+        fn fetch_argument(self: *Self, argument_index: u32) Direct
+        {
+            const argument_register = self.argument_registers[argument_index];
+            const register_occupation = self.state.occupation.array[@enumToInt(argument_register)];
+
+            if (register_occupation == .none or register_occupation == .indirect)
+            {
+                codegen_error("Register {s} is not occupied with the wanted value\n", .{@tagName(argument_register)});
+            }
+
+            const result = self.state.registers.array[@enumToInt(argument_register)];
+            if (result.direct.reference.get_ID() != .argument) codegen_error("Register {s} is not occupied by an argument\n", .{@tagName(argument_register)});
+            if (result.direct.reference.get_index() != argument_index) codegen_error("Register {s} is not occupied by the correct argument\n", .{@tagName(argument_register)});
+
+            return result.direct;
         }
 
         fn spill_registers_before_call(self: *Self) Saver
@@ -2224,6 +2273,14 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
     for (program.functions) |*function|
     {
         var stack_allocator = Stack.Allocator.new(allocator);
+        var register_allocator = Register.Allocator.new(argument_registers);
+
+        for (function.declaration.type.argument_types) |argument_type, argument_i|
+        {
+            assert(argument_i < register_allocator.argument_registers.len);
+            const argument_size = argument_type.get_size();
+            _ = register_allocator.allocate_argument(@intCast(u32, argument_i), @intCast(u8, argument_size));
+        }
         const basic_block_count = function.basic_blocks.len;
 
         const entry_block_index = function.basic_blocks[0];
@@ -2247,7 +2304,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                 .previous_patches = ArrayList(BackwardPatch).init(allocator),
                 .code_buffer_offset = 0,
                 .terminator = .noreturn,
-                .register_allocator = Register.Allocator.new(argument_registers),
+                .register_allocator = register_allocator,
                 .stack_allocator = stack_allocator,
             }) catch unreachable;
 
@@ -2260,6 +2317,14 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
     {
         log("\n\n======================\n[FUNCTION #{}]\n======================\n\n", .{ir_function_i});
         var function = &functions.items[ir_function_i];
+        var occupied_register_count: u32 = 0;
+        const argument_count = ir_function.declaration.type.argument_types.len;
+
+        for (function.register_allocator.state.occupation.array) |occupation|
+        {
+            occupied_register_count += @boolToInt(occupation != .none);
+        }
+        assert(occupied_register_count == argument_count);
 
         log("Basic blocks:\n", .{});
         for (ir_function.basic_blocks) |basic_block, basic_block_i|
@@ -2280,7 +2345,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
             //const function_offset = @intCast(u32, function.instructions.items.len);
 
             // Reset each time a basic block is processed
-            function.register_allocator.reset();
+            if (basic_block_i != 0) function.register_allocator.reset();
 
             const instruction_offset = function.instructions.items.len;
             function.basic_block_instruction_offsets.appendAssumeCapacity(instruction_offset);
@@ -2301,9 +2366,13 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                         const callee_id = callee.get_ID();
                         var callee_index = callee.get_index();
 
-                        const argument_count = call.arguments.len;
+                        const call_argument_count = call.arguments.len;
 
                         var function_type: Type.Function = undefined;
+
+                        assert(call_argument_count <= function.register_allocator.argument_registers.len);
+                        var register_allocator_saver = function.register_allocator.spill_registers_before_call();
+
                         const call_instruction = blk:
                         {
                             switch (callee_id)
@@ -2325,13 +2394,12 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                             }
                         };
 
-                        assert(argument_count <= function.register_allocator.argument_registers.len);
-                        var register_allocator_saver = function.register_allocator.spill_registers_before_call();
+                        log("Call argument count: {}\n", .{call_argument_count});
 
                         for (call.arguments) |argument, argument_i|
                         {
                             const argument_id = argument.get_ID();
-                            const argument_array_index = argument.get_index();
+                            const argument_element_index = argument.get_index();
                             const argument_type = function_type.argument_types[argument_i];
 
                             switch (argument_id)
@@ -2349,7 +2417,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                                 codegen_error("Expected integer\n", .{});
                                             }
 
-                                            const integer_literal = program.integer_literals[argument_array_index];
+                                            const integer_literal = program.integer_literals[argument_element_index];
                                             //@TODO: typecheck signedness
                                             assert(!integer_literal.signed);
                                             const literal = integer_literal.value;
@@ -2358,7 +2426,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                             // assert n % 8 == 0
                                             assert((integer_bit_count & 0x7) == 0);
                                             const integer_byte_count = @truncate(u8, integer_bit_count >> 3);
-                                            const argument_register = function.register_allocator.allocate_argument(argument, integer_byte_count);
+                                            const argument_register = function.register_allocator.allocate_call_argument(@intCast(u32, argument_i), argument, integer_byte_count);
 
                                             if (literal == 0)
                                             {
@@ -2374,9 +2442,32 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                         else => panic("Constant id: {}\n", .{constant_id}),
                                     }
                                 },
+                                .instruction =>
+                                {
+                                    const arg_instruction_id = IR.Instruction.get_ID(argument);
+                                    
+                                    switch (arg_instruction_id)
+                                    {
+                                        .load =>
+                                        {
+                                            const argument_load = program.instructions.load[argument.get_index()];
+                                            const argument_load_size = argument_load.type.get_size();
+                                            const argument_direct = function.register_allocator.allocate_call_argument(@intCast(u32, argument_i), argument, @intCast(u8, argument_load_size));
+                                            function.register_allocator.free(argument_direct.register);
+                                            assert(IR.Instruction.get_ID(argument_load.pointer) == .alloca);
+                                            const stack_indirect = function.stack_allocator.get_allocation(argument_load.pointer);
+
+                                            const argument_from_stack_to_reg = mov_register_indirect(argument_direct.register, argument_direct.size, stack_indirect.register, stack_indirect.offset);
+                                            function.append_instruction(argument_from_stack_to_reg);
+                                        },
+                                        else => panic("Instruction id: {}\n", .{arg_instruction_id}),
+                                    }
+                                },
                                 else => panic("Arg id: {}\n", .{argument_id}),
                             }
                         }
+
+                        //if (call.arguments.len == 2) @breakpoint();
 
                         function.append_instruction(call_instruction);
 
@@ -2384,7 +2475,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                         // @TODO: resolve callee
                         //var callee_function = functions[callee_index];
 
-                        var parameter_stack_size = @intCast(i32, std.math.max(4, argument_count) * 8);
+                        var parameter_stack_size = @intCast(i32, std.math.max(4, call_argument_count) * 8);
 
                         // @TODO: use count
                         if (call.type.value != Type.Builtin.void_type.value and call.type.value != Type.Builtin.noreturn_type.value)
@@ -2484,6 +2575,14 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                             _ = load_processed;
                                         },
                                         .add =>
+                                        {
+                                            const allocated_register = function.register_allocator.fetch_direct(program, return_expr, instruction) orelse unreachable;
+                                            if (allocated_register.register != .A)
+                                            {
+                                                panic("Badly allocated register\n", .{});
+                                            }
+                                        },
+                                        .call =>
                                         {
                                             const allocated_register = function.register_allocator.fetch_direct(program, return_expr, instruction) orelse unreachable;
                                             if (allocated_register.register != .A)
@@ -2619,6 +2718,16 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                     },
                                     else => panic("{}\n", .{store_instruction_id}),
                                 }
+                            },
+                            .argument =>
+                            {
+                                const argument_index = store.value.get_index();
+                                const argument_alloca = ir_function.argument_allocas[argument_index];
+                                const stack_allocation = function.stack_allocator.get_allocation(argument_alloca);
+                                const argument_register = function.register_allocator.fetch_argument(argument_index);
+
+                                const mov_arg_to_stack = mov_indirect_register(stack_allocation.register, stack_allocation.offset, @intCast(u8, stack_allocation.size), argument_register.register, argument_register.size);
+                                function.append_instruction(mov_arg_to_stack);
                             },
                             else => panic("Store value id: {}\n", .{store_value_id}),
                         }

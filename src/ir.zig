@@ -383,6 +383,7 @@ pub const Instruction = struct
 
             const call_instruction = Instruction.new(allocator, builder, .call, call_array_index);
             builder.append_use(callee, call_instruction);
+
             for (arguments) |argument|
             {
                 builder.append_use(argument, call_instruction);
@@ -675,9 +676,9 @@ pub const Function = struct
         }
     };
 
-    const Argument = struct
+    pub const Argument = struct
     {
-        fn new(index: u32) Reference
+        pub fn new(index: u32) Reference
         {
             return .{ .value = (@as(u64, @enumToInt(Reference.ID.argument)) << Reference.ID.position) | index };
         }
@@ -1346,8 +1347,9 @@ pub const Program = struct
                     {
                         .scope =>
                         {
-                            const ast_arg_array_index = ast_argument.get_array_id(.scope);
-                            switch (ast_arg_array_index)
+                            const argument_id = ast_argument.get_array_id(.scope);
+
+                            switch (argument_id)
                             {
                                 .integer_literals =>
                                 {
@@ -1355,7 +1357,14 @@ pub const Program = struct
                                     const int_literal = Constant.new(.int, ast_index);
                                     argument_list.append(int_literal) catch unreachable;
                                 },
-                                else => panic("{}\n", .{ast_arg_array_index}),
+                                .variable_declarations =>
+                                {
+                                    const argument_alloca_ref = self.find_expression_alloca(function_builder, ast_argument);
+                                    const argument_alloca = self.instructions.alloca.items[argument_alloca_ref.get_index()];
+                                    const argument_load = Instruction.Load.new(allocator, self, argument_alloca.alloca_type, argument_alloca_ref);
+                                    argument_list.append(argument_load) catch unreachable;
+                                },
+                                else => panic("{}\n", .{argument_id}),
                             }
                         },
                         else => panic("Level: {}\n", .{ast_arg_level}),
@@ -1438,6 +1447,14 @@ pub const Program = struct
                                 return dereference_load;
                             }
                         },
+                        .arguments =>
+                        {
+                            const argument_index = expression_index;
+                            const alloca_ref = function_builder.argument_allocas.items[expression_index];
+                            const argument_type = function_builder.declaration.type.argument_types[argument_index];
+                            const argument_load = Instruction.Load.new(allocator, self, argument_type, alloca_ref);
+                            return argument_load;
+                        },
                         else => panic("NI: {}\n", .{expression_id}),
                     }
                 },
@@ -1484,7 +1501,9 @@ pub const Program = struct
                 {
                     self.function_builders.items[value.get_index()].uses.append(use) catch unreachable;
                 },
+                // @TODO:
                 .external_function => {},
+                .argument => {},
                 else => panic("{}\n", .{value.get_ID()}),
             }
         }
@@ -1653,10 +1672,20 @@ pub const Formatter = struct
                 }
             }
 
-            if (function.declaration.argument_names.len > 0) unreachable;
+            try Format(writer, "\ndefine {s} @{s}(", .{function.declaration.type.return_type.to_string(self), function.declaration.name});
 
-            try Format(writer, "\ndefine {s} @{s}() #{}\n", .{function.declaration.type.return_type.to_string(self), function.declaration.name, function_i});
-            try Format(writer, "{c}\n", .{'{'});
+            const argument_count = function.declaration.type.argument_types.len;
+            if (argument_count > 0)
+            {
+                for (function.declaration.type.argument_types[0..argument_count - 1]) |argument_type, argument_i|
+                {
+                    try Format(writer, "{s} %{}, ", .{argument_type.to_string(self), argument_i});
+                }
+
+                try Format(writer, "{s} %{}", .{function.declaration.type.argument_types[argument_count - 1].to_string(self), argument_count - 1});
+            }
+
+            try Format(writer, ") #{}\n{c}\n", .{function_i, '{'});
 
             for (block_printers.items) |block_printer|
             {
@@ -1711,7 +1740,7 @@ pub const Formatter = struct
                             try Format(writer, "{s} @{s}(", .{callee_return_type, callee_declaration.name});
                             for (call.arguments) |argument, argument_i|
                             {
-                                try self.format_reference(writer, argument, &slot_tracker, callee_declaration.type.argument_types[argument_i]);
+                                try self.format_reference(writer, function, argument, &slot_tracker, callee_declaration.type.argument_types[argument_i]);
                                 if (argument_i < call.arguments.len - 1)
                                 {
                                     try writer.writeAll(", ");
@@ -1727,65 +1756,65 @@ pub const Formatter = struct
                         .store =>
                         {
                             const store = &self.builder.instructions.store.items[instruction_index];
-                            try self.format_reference(writer, store.value, &slot_tracker, store.type);
+                            try self.format_reference(writer, function, store.value, &slot_tracker, store.type);
                             try writer.writeAll(", ");
-                            try self.format_reference(writer, store.pointer, &slot_tracker, null);
+                            try self.format_reference(writer, function, store.pointer, &slot_tracker, null);
                         },
                         .br =>
                         {
                             const br = &self.builder.instructions.br.items[instruction_index];
                             if (br.condition) |br_condition|
                             {
-                                try self.format_reference(writer, br_condition, &slot_tracker, null);
+                                try self.format_reference(writer, function, br_condition, &slot_tracker, null);
                                 try writer.writeAll(", ");
-                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
+                                try self.format_reference(writer, function, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
                                 try writer.writeAll(", ");
-                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block_false.?), &slot_tracker, null);
+                                try self.format_reference(writer, function, BasicBlock.get_ref(br.dst_basic_block_false.?), &slot_tracker, null);
                             }
                             else
                             {
-                                try self.format_reference(writer, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
+                                try self.format_reference(writer, function, BasicBlock.get_ref(br.dst_basic_block), &slot_tracker, null);
                             }
                         },
                         .load =>
                         {
                             const load = &self.builder.instructions.load.items[instruction_ref.get_index()];
                             try Format(writer, "{s}, ", .{load.type.to_string(self)});
-                            try self.format_reference(writer, load.pointer, &slot_tracker, load.type);
+                            try self.format_reference(writer, function, load.pointer, &slot_tracker, load.type);
                         },
                         .icmp =>
                         {
                             const icmp = &self.builder.instructions.icmp.items[instruction_ref.get_index()];
                             try Format(writer, "{s} ", .{@tagName(icmp.id)});
-                            try self.format_reference(writer, icmp.left, &slot_tracker, null);
+                            try self.format_reference(writer, function, icmp.left, &slot_tracker, null);
                             try writer.writeAll(", ");
-                            try self.format_reference(writer, icmp.right, &slot_tracker, null);
+                            try self.format_reference(writer, function, icmp.right, &slot_tracker, null);
                         },
                         .mul =>
                         {
                             const mul = &self.builder.instructions.mul.items[instruction_ref.get_index()];
-                            try self.format_reference(writer, mul.left, &slot_tracker, null);
+                            try self.format_reference(writer, function, mul.left, &slot_tracker, null);
                             try writer.writeAll(", ");
-                            try self.format_reference(writer, mul.right, &slot_tracker, null);
+                            try self.format_reference(writer, function, mul.right, &slot_tracker, null);
                         },
                         .add =>
                         {
                             const add = &self.builder.instructions.add.items[instruction_ref.get_index()];
-                            try self.format_reference(writer, add.left, &slot_tracker, null);
+                            try self.format_reference(writer, function, add.left, &slot_tracker, null);
                             try writer.writeAll(", ");
-                            try self.format_reference(writer, add.right, &slot_tracker, null);
+                            try self.format_reference(writer, function, add.right, &slot_tracker, null);
                         },
                         .sub =>
                         {
                             const sub = &self.builder.instructions.sub.items[instruction_ref.get_index()];
-                            try self.format_reference(writer, sub.left, &slot_tracker, null);
+                            try self.format_reference(writer, function, sub.left, &slot_tracker, null);
                             try writer.writeAll(", ");
-                            try self.format_reference(writer, sub.right, &slot_tracker, null);
+                            try self.format_reference(writer, function, sub.right, &slot_tracker, null);
                         },
                         .ret =>
                         {
                             const ret = &self.builder.instructions.ret.items[instruction_ref.get_index()];
-                            try self.format_reference(writer, ret.value, &slot_tracker, ret.type);
+                            try self.format_reference(writer, function, ret.value, &slot_tracker, ret.type);
                         },
                         else =>
                         {
@@ -1802,7 +1831,7 @@ pub const Formatter = struct
         }
     }
 
-    fn format_reference(self: *const Formatter, writer: anytype, reference: Reference, slot_tracker: *SlotTracker, expected_type: ?Type) !void
+    fn format_reference(self: *const Formatter, writer: anytype, current_function: *Function.Builder, reference: Reference, slot_tracker: *SlotTracker, expected_type: ?Type) !void
     {
         switch (reference.get_ID())
         {
@@ -1871,6 +1900,12 @@ pub const Formatter = struct
             .basic_block =>
             {
                 try Format(writer, "label %{}", .{get_index(writer, reference, slot_tracker)});
+            },
+            .argument =>
+            {
+                const argument_index = reference.get_index();
+                const argument_type = current_function.declaration.type.argument_types[argument_index];
+                try Format(writer, "{s} %{}", .{argument_type.to_string(self), argument_index});
             },
             else => panic("NI: {}\n", .{reference.get_ID()}),
         }

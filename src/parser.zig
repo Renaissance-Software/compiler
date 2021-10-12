@@ -629,8 +629,8 @@ pub const ModuleParser = struct
 
                         .Declaration => Precedence.Declaration,
 
-                        //.AddressOf,
-                        //.Dereference => Precedence.Unary,
+                        .AddressOf,
+                        .Dereference => Precedence.Unary,
 
                         .LeftParenthesis,
                         .LeftBracket,
@@ -675,10 +675,19 @@ pub const ModuleParser = struct
                             const argument_id = self.parse_expression();
                             argument_list.append(argument_id) catch unreachable;
 
-                            arguments_left_to_parse = !(self.lexer.tokens[self.lexer.next_index] == .operator and self.get_token(.operator).value == .RightParenthesis);
-                            if (arguments_left_to_parse and (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ','))
+                            const after_arg_token = self.lexer.tokens[self.lexer.next_index];
+                            arguments_left_to_parse = !(after_arg_token == .operator and self.get_token(.operator).value == .RightParenthesis);
+                            if (arguments_left_to_parse)
                             {
-                                parser_error("Expected comma after argument in argument list\n", .{});
+                                if (after_arg_token == .sign)
+                                {
+                                    if (self.get_token(.sign).value == ',')
+                                    {
+                                        self.consume_token(.sign);
+                                        continue;
+                                    }
+                                }
+                                parser_error("Expected comma after function argument\n", .{});
                             }
                         }
 
@@ -1674,10 +1683,15 @@ pub const AST = struct
                                 arguments_left_to_parse = !(after_arg_token == .operator and parser.get_token(.operator).value == .RightParenthesis);
                                 if (arguments_left_to_parse)
                                 {
-                                    if (!(after_arg_token == .sign and parser.get_token(.sign).value == ','))
+                                    if (after_arg_token == .sign)
                                     {
-                                        parser_error("Expected comma after function argument\n", .{});
+                                        if (parser.get_token(.sign).value == ',')
+                                        {
+                                            parser.consume_token(.sign);
+                                            continue;
+                                        }
                                     }
+                                    parser_error("Expected comma after function argument\n", .{});
                                 }
                             }
 

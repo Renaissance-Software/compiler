@@ -70,6 +70,7 @@ pub const Entity = packed struct
         arithmetic_expressions,
         address_of_expressions,
         dereference_expressions,
+        arguments,
     };
 
     const LevelToArrayIDMap = blk:

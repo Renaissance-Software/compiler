@@ -167,6 +167,16 @@ pub fn resolve_identifier_expression(analyzer: *Analyzer, current_function: *Par
 {
     var current_scope_index = scope_index;
 
+    for (current_function.declaration.argument_names) |argument_name, argument_i|
+    {
+        if (std.mem.eql(u8, argument_name, name))
+        {
+            const argument_id = Entity.new(argument_i, Entity.ScopeID.arguments, 0);
+            expression.* = argument_id;
+            const argument_type = current_function.declaration.type.argument_types[argument_i];
+            return argument_type;
+        }
+    }
     _ = analyzer;
     //for (analyzer.functions.items) |function, function_i|
     //{
@@ -404,9 +414,8 @@ fn analyze_compound_assignment(analyzer: *Analyzer, function: *Parser.Function.I
 
 fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Function.Internal, scope: *Parser.Scope, invoke_expression: *Parser.InvokeExpression, module_index: u64) Type
 {
-    _ = current_function;
-
     const expression_to_invoke = invoke_expression.expression;
+    const scope_index = expression_to_invoke.get_array_index();
     const expression_to_invoke_index = expression_to_invoke.get_index();
     const expression_to_invoke_level = expression_to_invoke.get_level();
     assert(expression_to_invoke_level == .scope);
@@ -511,16 +520,38 @@ fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Func
             const arg_level = arg.get_level();
             assert(arg_level == .scope);
             const array_id = arg.get_array_id(.scope);
-            assert(array_id == Entity.ScopeID.integer_literals);
-            // @TODO: typecheck properly
-            if (argument_types[arg_i].get_ID() != .integer)
+            const argument_type = argument_types[arg_i];
+
+            switch (array_id)
             {
-                panic("Argument type must be integer\n", .{});
+                .integer_literals =>
+                {
+                    analyze_integer_literal(analyzer, arg, argument_type, module_index);
+                },
+                .identifier_expressions =>
+                {
+                    const identifier = scope.identifier_expressions[arg.get_index()];
+                    const expression_type = resolve_identifier_expression(analyzer, current_function, arg, scope_index, identifier);
+                    if (argument_type.value != expression_type.value)
+                    {
+                        report_error("Type mismatch\n", .{});
+                    }
+                },
+                else => panic("Ni: {}\n", .{array_id}),
             }
         }
     }
 
     return function_type.return_type;
+}
+
+pub fn analyze_integer_literal(analyzer: *Analyzer, entity: *Entity, expected_type: ?Type, module_index: u64) void
+{
+    assert(expected_type != null);
+    const type_to_typecheck_against = expected_type.?;
+    if (type_to_typecheck_against.get_ID() != .integer) report_error("Expected return type: {s}\n", .{@tagName(type_to_typecheck_against.get_ID())});
+
+    resolve_entity_index(analyzer, .integer_literals, entity, module_index);
 }
 
 pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
@@ -561,13 +592,7 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                     {
                         .integer_literals =>
                         {
-                            if (return_type.get_ID() != .integer)
-                            {
-                                report_error("Expected return type: {s}\n", .{@tagName(return_type.get_ID())});
-                            }
-
-                            resolve_entity_index(analyzer, .integer_literals, &return_expression.expression.?, module_index);
-                            // @TODO: do further checks?
+                            analyze_integer_literal(analyzer, &return_expression.expression.?, return_type, module_index);
                         },
                         .identifier_expressions =>
                         {
@@ -590,6 +615,12 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                             const dereference_expression = &scope.dereference_expressions[expression_to_return.get_index()];
                             const expression_type = analyze_dereference_expression(analyzer, current_function, module_index, dereference_expression);
                             _ = expression_type;
+                        },
+                        .invoke_expressions =>
+                        {
+                            var invoke_expression = &scope.invoke_expressions[expression_to_return.get_index()];
+                            const invoke_expression_type = analyze_invoke_expression(analyzer, current_function, scope, invoke_expression, module_index);
+                            _ = invoke_expression_type;
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_id}),
                     }
