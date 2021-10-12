@@ -1844,6 +1844,8 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
         }
     };
 
+    log("First operand allocation: {}\n", .{first_operand_allocation});
+
     switch (icmp.right.get_ID())
     {
         .constant =>
@@ -1886,9 +1888,8 @@ fn process_icmp(program: *const IR.Program, function: *Program.Function, icmp_re
                         function.register_allocator.alter_allocation_direct(load_register.register, icmp_reference);
                         function.append_instruction(mov_register_stack);
 
-                        const load = program.instructions.load[icmp.right.get_index()];
-                        const allocation = function.stack_allocator.get_allocation(load.pointer);
-                        const cmp_register_stack = cmp_register_indirect(load_register.register, register_size, allocation.register, allocation.offset);
+                        const second_operand = fetch_load(program, function, icmp.right, icmp_reference, false);
+                        const cmp_register_stack = cmp_register_indirect(load_register.register, register_size, second_operand.register, second_operand.offset);
                         function.append_instruction(cmp_register_stack);
                     }
                     else
@@ -1943,6 +1944,7 @@ fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref:
                     return indirect;
                 },
                 .load => return function.stack_allocator.get_allocation(load.pointer),
+                .icmp => return function.stack_allocator.get_allocation(load.pointer),
                 else => panic("NI: {}\n", .{load_use_id}),
             }
         },
@@ -1969,7 +1971,6 @@ fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref:
 
                 const stack_indirect = fetch_load(program, function, load.pointer, load_ref, needs_to_be_register_loaded);
                 const register = function.register_allocator.allocate_direct(load.pointer, @intCast(u8, stack_indirect.size));
-                assert(register.register == .A);
                 const mov_register_stack = mov_register_indirect(register.register, @intCast(u8, register.size), stack_indirect.register, stack_indirect.offset);
                 function.append_instruction(mov_register_stack);
 
@@ -2737,6 +2738,17 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                             function.append_instruction(lea_stack);
                                             break :blk register;
                                         };
+
+                                        const mov_stack_register = mov_indirect_register(stack_allocation.register, stack_allocation.offset, register_allocation.size, register_allocation.register, register_allocation.size);
+                                        function.append_instruction(mov_stack_register);
+                                        function.register_allocator.free(register_allocation.register);
+                                    },
+                                    .call =>
+                                    {
+                                        const store_size = store.type.get_size();
+                                        log("Store size: {}\n", .{store_size});
+                                        const register_allocation = function.register_allocator.fetch_direct(program, store.value, instruction) orelse unreachable;
+                                        log("RA: {}\n", .{register_allocation});
 
                                         const mov_stack_register = mov_indirect_register(stack_allocation.register, stack_allocation.offset, register_allocation.size, register_allocation.register, register_allocation.size);
                                         function.append_instruction(mov_stack_register);

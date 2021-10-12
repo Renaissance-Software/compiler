@@ -611,9 +611,14 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                             const identifier = scope.identifier_expressions[expression_to_return.get_index()];
                             const expression_type = resolve_identifier_expression(analyzer, current_function, &return_expression.expression.?, scope_index, identifier);
 
+                            log("Expected: {}. Got: {}\n", .{current_function.declaration.type.return_type.get_ID(), expression_type.get_ID()});
                             if (expression_type.value != current_function.declaration.type.return_type.value)
                             {
-                                report_error("Type mismatch\n", .{});
+                                log("Expected: {}. Got: {}\n", .{current_function.declaration.type.return_type.get_ID(), expression_type.get_ID()});
+                                if (current_function.declaration.type.return_type.get_ID() != expression_type.get_ID())
+                                {
+                                    report_error("Type mismatch\n", .{});
+                                }
                             }
                         },
                         .arithmetic_expressions =>
