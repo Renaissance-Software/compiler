@@ -1012,7 +1012,7 @@ pub const Program = struct
                             }
                             else
                             {
-                                log("Address of the jump is not yet known. Appending a patch to block #{}. Offset to be patched: 0x{x}\n", .{basic_block_index, code_buffer_offset});
+                                log("Address of the jump is not yet known. Appending a patch to block #{} from #{}. Offset to be patched: 0x{x}\n", .{basic_block_index, current_block_offset - 1, code_buffer_offset});
                                 text.buffer.appendNTimes(0xcc, operand_size) catch unreachable;
                                 post_function_patches[basic_block_index].append(code_buffer_offset) catch unreachable;
                                 post_function_patch_count += 1;
@@ -1022,6 +1022,18 @@ pub const Program = struct
                     }
                 }
             }
+
+            // end collecting block offsets
+            if (current_block_offset < function.basic_block_instruction_offsets.items.len)
+            {
+                const code_buffer_offset = text.buffer.items.len;
+
+                log("Appending block code buffer offset {} to block {}\n", .{code_buffer_offset, current_block_offset});
+                function.basic_block_buffer_offsets.append(code_buffer_offset) catch unreachable;
+                current_block_offset += 1;
+            }
+
+            assert(current_block_offset == function.basic_block_instruction_offsets.items.len);
 
             log("{}\n", .{current_block_offset});
 
@@ -1046,8 +1058,8 @@ pub const Program = struct
                 }
             }
 
+            log("Resolution count for this function: {}. Post function patch count: {}\n", .{resolution_count, post_function_patch_count});
             assert(resolution_count == post_function_patch_count);
-            log("Resolution count for this function: {}\n", .{resolution_count});
 
             if (add_rsp_at_epilogue)
             {
@@ -1630,7 +1642,7 @@ fn process_load_for_ret(program: *const IR.Program, function: *Program.Function,
 
             const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, allocation.size), allocation.register, allocation.offset);
             function.append_instruction(mov_register_stack);
-            unreachable;
+            return load_register;
         },
         .load =>
         {
@@ -1669,8 +1681,7 @@ fn process_add(program: *const IR.Program, function: *Program.Function, add_refe
             {
                 .load =>
                 {
-                    const first_operand_load = program.instructions.load[add.left.get_index()];
-                    const first_operand_allocation = function.stack_allocator.get_allocation(first_operand_load.pointer);
+                    const first_operand_allocation = fetch_load(program, function, add.left, add_reference, true);
 
                     switch (add.right.get_ID())
                     {
@@ -1686,10 +1697,16 @@ fn process_add(program: *const IR.Program, function: *Program.Function, add_refe
 
                                     // @TODO: be more subtle about register allocating the first operand
                                     const register_size = @intCast(u8, first_operand_allocation.size);
-                                    const load_register = function.register_allocator.allocate_direct(add.right, register_size);
-                                    const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                                    const load_register = function.register_allocator.allocate_direct(add.left, register_size);
+                                    const mov_reg_indirect = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                                    // @TODO: implement this in a better way
+                                    if (first_operand_allocation.register != stack_register)
+                                    {
+                                        function.register_allocator.free(first_operand_allocation.register);
+                                    }
+
                                     function.register_allocator.alter_allocation_direct(load_register.register, add_reference);
-                                    function.append_instruction(mov_register_stack);
+                                    function.append_instruction(mov_reg_indirect);
 
                                     if (second_operand_integer_literal.value == 1)
                                     {
@@ -1999,10 +2016,7 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                 {
                     .load =>
                     {
-                        first_operand_kind = .stack;
-                        const load = program.instructions.load[sub.left.get_index()];
-                        const allocation = function.stack_allocator.get_allocation(load.pointer);
-                        break :blk allocation;
+                        break :blk fetch_load(program, function, sub.left, sub_reference, true);
                     },
                     else => panic("ni: {}\n", .{instr_id}),
                 }
@@ -2011,7 +2025,7 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
         }
     };
 
-    log("First operand: {}\n", .{first_operand_kind});
+    log("First operand allocation: {}\n", .{first_operand_allocation});
 
     switch (sub.right.get_ID())
     {
@@ -2028,27 +2042,28 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
                     if (integer_literal.value == 0) return;
 
                     // @TODO: be more subtle about register allocating the first operand
-                    if (first_operand_kind == .stack)
+                    const register_size = @intCast(u8, first_operand_allocation.size);
+                    const load_register = function.register_allocator.allocate_direct(sub.right, register_size);
+                    const mov_reg_indirect = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
+                    function.register_allocator.alter_allocation_direct(load_register.register, sub_reference);
+                    function.append_instruction(mov_reg_indirect);
+                    // @TODO: implement this in a better way
+                    if (first_operand_allocation.register != stack_register)
                     {
-                        const register_size = @intCast(u8, first_operand_allocation.size);
-                        const load_register = function.register_allocator.allocate_direct(sub.right, register_size);
-                        const mov_register_stack = mov_register_indirect(load_register.register, @intCast(u8, first_operand_allocation.size), first_operand_allocation.register, first_operand_allocation.offset);
-                        function.register_allocator.alter_allocation_direct(load_register.register, sub_reference);
-                        function.append_instruction(mov_register_stack);
-
-                        if (integer_literal.value == 1)
-                        {
-                            const dec_reg = dec_register(load_register.register, register_size);
-                            function.append_instruction(dec_reg);
-                        }
-                        else
-                        {
-                            log("Sub register immediate\n", .{});
-                            const sub_register_literal = sub_register_immediate(load_register.register, register_size, integer_literal);
-                            function.append_instruction(sub_register_literal);
-                        }
+                        function.register_allocator.free(first_operand_allocation.register);
                     }
-                    else unreachable;
+
+                    if (integer_literal.value == 1)
+                    {
+                        const dec_reg = dec_register(load_register.register, register_size);
+                        function.append_instruction(dec_reg);
+                    }
+                    else
+                    {
+                        log("Sub register immediate\n", .{});
+                        const sub_register_literal = sub_register_immediate(load_register.register, register_size, integer_literal);
+                        function.append_instruction(sub_register_literal);
+                    }
                 },
                 else => panic("ni: {}\n", .{IR.Constant.get_ID(sub.right)}),
             }
@@ -2086,6 +2101,9 @@ fn process_sub(program: *const IR.Program, function: *Program.Function, sub_refe
         },
         else => panic("ni: {}\n", .{sub.right.get_ID()}),
     }
+
+    log("First operand: {}\n", .{first_operand_kind});
+
 
     log("Second operand kind: {}\n", .{second_operand_kind});
 
@@ -2459,6 +2477,14 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
 
                                             const argument_from_stack_to_reg = mov_register_indirect(argument_direct.register, argument_direct.size, stack_indirect.register, stack_indirect.offset);
                                             function.append_instruction(argument_from_stack_to_reg);
+                                        },
+                                        .alloca =>
+                                        {
+                                            const address_of_variable = function.stack_allocator.get_allocation(argument);
+                                            const argument_register = function.register_allocator.allocate_call_argument(@intCast(u32, argument_i), argument, Type.Pointer.size);
+                                            function.register_allocator.free(argument_register.register);
+                                            const argument_pointer_from_stack_to_reg = lea_indirect(argument_register.register, argument_register.size, address_of_variable.register, address_of_variable.offset);
+                                            function.append_instruction(argument_pointer_from_stack_to_reg);
                                         },
                                         else => panic("Instruction id: {}\n", .{arg_instruction_id}),
                                     }

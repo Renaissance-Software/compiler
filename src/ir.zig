@@ -1302,8 +1302,6 @@ pub const Program = struct
 
         fn process_invoke_expression(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, result: Semantics.Result, ast_invoke_expression_ref: Entity) Reference
         {
-            _ = function_builder;
-
             assert(ast_invoke_expression_ref.get_level() == .scope);
             assert(ast_invoke_expression_ref.get_array_id(.scope) == Entity.ScopeID.invoke_expressions);
 
@@ -1363,6 +1361,16 @@ pub const Program = struct
                                     const argument_alloca = self.instructions.alloca.items[argument_alloca_ref.get_index()];
                                     const argument_load = Instruction.Load.new(allocator, self, argument_alloca.alloca_type, argument_alloca_ref);
                                     argument_list.append(argument_load) catch unreachable;
+                                },
+                                .address_of_expressions =>
+                                {
+                                    const address_of_expression = &result.functions[self.current_function].scopes[scope_index].address_of_expressions[ast_index];
+                                    const expression_to_take_address_of = address_of_expression.reference;
+                                    const expression_id = expression_to_take_address_of.get_array_id(.scope);
+                                    assert(expression_id == .variable_declarations);
+
+                                    const ast_argument_alloca = self.find_expression_alloca(function_builder, expression_to_take_address_of);
+                                    argument_list.append(ast_argument_alloca) catch unreachable;
                                 },
                                 else => panic("{}\n", .{argument_id}),
                             }
@@ -1906,6 +1914,11 @@ pub const Formatter = struct
                 const argument_index = reference.get_index();
                 const argument_type = current_function.declaration.type.argument_types[argument_index];
                 try Format(writer, "{s} %{}", .{argument_type.to_string(self), argument_index});
+            },
+            // @INFO: this is void type
+            .none =>
+            {
+                try writer.writeAll("void");
             },
             else => panic("NI: {}\n", .{reference.get_ID()}),
         }

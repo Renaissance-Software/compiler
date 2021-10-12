@@ -537,6 +537,18 @@ fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Func
                         report_error("Type mismatch\n", .{});
                     }
                 },
+                .address_of_expressions =>
+                {
+                    var address_of_expression = &scope.address_of_expressions[arg.get_index()];
+                    const expression_type = analyze_address_of_expression(analyzer, current_function, module_index, address_of_expression);
+                    if (argument_type.value != expression_type.value)
+                    {
+                        if (argument_type.get_ID() != expression_type.get_ID())
+                        {
+                            report_error("Type mismatch. Expected argument type: {}. Actual type: {}\n", .{argument_type.get_ID(), expression_type.get_ID()});
+                        }
+                    }
+                },
                 else => panic("Ni: {}\n", .{array_id}),
             }
         }
