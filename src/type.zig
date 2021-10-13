@@ -104,11 +104,6 @@ pub const Function = struct
     }
 };
 
-pub const Array = struct
-{
-    type: Type,
-    length_expression: u64, // @INFO: @TODO: Length should be resolved at compile-time
-};
 
 pub const Struct = struct
 {
@@ -116,6 +111,17 @@ pub const Struct = struct
     names: [][]const u8,
     name: []const u8,
     alignment: u64,
+};
+
+pub const Array = struct
+{
+    type: Type,
+    length_expression: u64, // @INFO: @TODO: Length should be resolved at compile-time
+
+    pub fn new(index: u64, module_index: u64) Type
+    {
+        return .{ .value = (@as(u64, @enumToInt(Type.ID.array)) << Type.ID.position) | (module_index << Module.position) | index };
+    }
 };
 
 pub const Pointer = struct
@@ -190,13 +196,36 @@ pub fn get_module_index(self: Type) u64
     return (self.value & (Module.mask << Module.position)) >> Module.position;
 }
 
-pub fn get_size(self: Type) u64
+pub fn get_size(self: Type, builder: *IR.Program.Builder) u64
 {
     const id = self.get_ID();
     switch (id)
     {
         .integer => return Integer.get_bit_count(self) >> 3,
         .pointer => return Pointer.size,
+        .array =>
+        {
+            const array_type = &builder.array_types.items[self.get_index()];
+            const array_size = array_type.type.get_size(builder) * array_type.length_expression;
+            return array_size;
+        },
+        else => panic("ID: {}\n", .{id}),
+    }
+}
+
+pub fn get_size_resolved(self: Type, program: *const IR.Program) u64
+{
+    const id = self.get_ID();
+    switch (id)
+    {
+        .integer => return Integer.get_bit_count(self) >> 3,
+        .pointer => return Pointer.size,
+        .array =>
+        {
+            const array_type = &program.array_types[self.get_index()];
+            const array_size = array_type.type.get_size_resolved(program) * array_type.length_expression;
+            return array_size;
+        },
         else => panic("ID: {}\n", .{id}),
     }
 }
@@ -234,6 +263,12 @@ pub fn to_string(self: Type, formatter: *const IR.Formatter) []const u8
             const pointer_type = &formatter.builder.pointer_types.items[self.get_index()];
             const pointer_str = std.fmt.allocPrint(formatter.allocator, "{s}*", .{pointer_type.type.to_string(formatter)}) catch unreachable;
             return pointer_str;
+        },
+        .array =>
+        {
+            const array_type = &formatter.builder.array_types.items[self.get_index()];
+            const array_str = std.fmt.allocPrint(formatter.allocator, "[{} x {s}]", .{array_type.length_expression, array_type.type.to_string(formatter)}) catch unreachable;
+            return array_str;
         },
         else => panic("{}\n", .{self.get_ID()}),
     }

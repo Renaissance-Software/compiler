@@ -48,6 +48,7 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
             .internal_functions => analyzer.functions.items.len,
             .external_functions => analyzer.external_functions.items.len,
             .integer_literals => analyzer.integer_literals.items.len,
+            .array_literals => analyzer.array_literals.items.len,
             else => unreachable,
         };
 
@@ -104,6 +105,43 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
 
             return resolved_pointer_type;
         },
+        .array =>
+        {
+            const array_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.array_types)];
+            const resolved_index = array_type_module_offset + unresolved_type.get_index();
+            var resolved_array_type = resolve_type(unresolved_type, resolved_index);
+
+            if (!analyzer.is_array_type_resolved(resolved_index))
+            {
+                var array_type = &analyzer.array_types.items[resolved_index];
+                log("Array type resolved index: {}\n", .{resolved_index});
+                array_type.type = analyze_type(analyzer, array_type.type);
+                log("Array element type: {}\n", .{array_type.type});
+                // resolve length
+                {
+                    var array_length_expression = Entity { .value = array_type.length_expression };
+                    const array_length_expression_id = array_length_expression.get_array_id(.scope);
+                    const array_length = switch (array_length_expression_id)
+                    {
+                        .integer_literals => blk:
+                        {
+                            resolve_entity_index(analyzer, .integer_literals, &array_length_expression, module_index);
+                            const integer_literal = analyzer.integer_literals.items[array_length_expression.get_index()];
+                            break :blk integer_literal.value;
+                        },
+                        else => panic("NI: {}\n", .{array_length_expression_id}),
+                    };
+
+                    array_type.length_expression = array_length;
+                }
+
+                log("Resolved array type: {}\n", .{array_type});
+
+                analyzer.set_array_type_resolved(resolved_index);
+            }
+
+            return resolved_array_type;
+        },
         else => panic("Type ID: {}\n", .{type_id}),
     }
 }
@@ -117,7 +155,9 @@ const ModuleStats = struct
         internal_functions,
         external_functions,
         imported_modules,
+
         integer_literals,
+        array_literals,
 
         unresolved_types,
         pointer_types,
@@ -148,7 +188,6 @@ const ModuleStats = struct
                 .array_types => Type.Array,
                 .struct_types => Type.Struct,
             };
-
         }
 
         break :blk array;
@@ -222,6 +261,59 @@ pub fn resolve_identifier_expression(analyzer: *Analyzer, current_function: *Par
     report_error("Identifier expression \"{s}\" not found\n", .{name});
 }
 
+fn analyze_integer_literal(analyzer: *Analyzer, entity: *Entity, expected_type: ?Type, module_index: u64) void
+{
+    assert(expected_type != null);
+    const type_to_typecheck_against = expected_type.?;
+    if (type_to_typecheck_against.get_ID() != .integer) report_error("Expected return type: {s}\n", .{@tagName(type_to_typecheck_against.get_ID())});
+
+    resolve_entity_index(analyzer, .integer_literals, entity, module_index);
+}
+
+fn analyze_array_literal(analyzer: *Analyzer, expression: *Entity, module_index: u64, expected_type: ?Type) Type
+{
+    resolve_entity_index(analyzer, .array_literals, expression, module_index);
+    const array_literal = &analyzer.array_literals.items[expression.get_index()];
+
+    assert(expected_type != null);
+    const type_to_typecheck_against = expected_type.?;
+    assert(type_to_typecheck_against.get_ID() == .array);
+    const array_type = &analyzer.array_types.items[type_to_typecheck_against.get_index()];
+    if (array_type.length_expression != array_literal.elements.len) report_error("Array length differ. Expected: {}. Have: {}\n", .{array_type.length_expression, array_literal.elements.len});
+    log("Array literal: {}. Element count: {}\n", .{array_literal, array_literal.elements.len});
+    // @TODO: do further typechecking
+    array_literal.type = type_to_typecheck_against;
+    return type_to_typecheck_against;
+}
+
+fn analyze_array_subscript_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, array_subscript_expression: *Parser.ArraySubscriptExpression, module_index: u64, expected_type: ?Type) Type
+{
+
+    const array_type_ref = analyze_expression_typed(analyzer, function, &array_subscript_expression.expression, module_index, null);
+    assert(array_type_ref.get_ID() == .array);
+    const array_type_index = array_type_ref.get_index();
+    assert(analyzer.is_array_type_resolved(array_type_index));
+    const array_type = &analyzer.array_types.items[array_type_index];
+
+
+    const expected_type_hint = Type.Integer.new(64, .unsigned);
+    const index_expression_type = analyze_expression_typed(analyzer, function, &array_subscript_expression.index, module_index, expected_type_hint);
+    assert(index_expression_type.get_ID() == .integer);
+
+    const actual = array_type.type;
+    if (expected_type) |type_to_typecheck_against|
+    {
+        const expected = type_to_typecheck_against;
+        log("Expected array subscript type: {}. Have: {}\n", .{expected.get_ID(), actual.get_ID()});
+        if (expected.get_ID() != actual.get_ID())
+        {
+            report_error("Type mismatch\n", .{});
+        }
+    }
+
+    return actual;
+}
+
 pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.Internal, expression: *Entity, module_index: u64, expected_type: ?Type) Type
 {
     const expression_level = expression.get_level();
@@ -238,6 +330,25 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
 
                 switch (array_id)
                 {
+                    .integer_literals =>
+                    {
+                        analyze_integer_literal(analyzer, expression, expected_type, module_index);
+                        if (expected_type) |type_to_typecheck_against|
+                        {
+                            const type_id = type_to_typecheck_against.get_ID();
+                            if (type_id != .integer)
+                            {
+                                report_error("Expected: {}\n", .{type_id});
+                            }
+
+                            break :blk type_to_typecheck_against;
+                        }
+                        else unreachable;
+                    },
+                    .array_literals =>
+                    {
+                        break :blk analyze_array_literal(analyzer, expression, module_index, expected_type);
+                    },
                     // @TODO: this is mostly a reference to a declaration, not a declaration in itself
                     .variable_declarations =>
                     {
@@ -252,25 +363,6 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
                         }
 
                         break :blk variable_declaration.type;
-                    },
-                    .integer_literals =>
-                    {
-                        const int_module_index = scope_index;
-                        resolve_entity_index(analyzer, .integer_literals, expression, int_module_index);
-
-                        assert(expected_type != null);
-                        if (expected_type) |type_to_typecheck_against|
-                        {
-                            const type_id = type_to_typecheck_against.get_ID();
-                            if (type_id != .integer)
-                            {
-                                report_error("Expected: {}\n", .{type_id});
-                            }
-
-                            break :blk type_to_typecheck_against;
-                        }
-
-                        unreachable;
                     },
                     .identifier_expressions =>
                     {
@@ -557,14 +649,6 @@ fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Func
     return function_type.return_type;
 }
 
-pub fn analyze_integer_literal(analyzer: *Analyzer, entity: *Entity, expected_type: ?Type, module_index: u64) void
-{
-    assert(expected_type != null);
-    const type_to_typecheck_against = expected_type.?;
-    if (type_to_typecheck_against.get_ID() != .integer) report_error("Expected return type: {s}\n", .{@tagName(type_to_typecheck_against.get_ID())});
-
-    resolve_entity_index(analyzer, .integer_literals, entity, module_index);
-}
 
 pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function: *Parser.Function.Internal, module_index: u64) void
 {
@@ -638,6 +722,11 @@ pub fn analyze_scope(analyzer: *Analyzer, scope: *Parser.Scope, current_function
                             var invoke_expression = &scope.invoke_expressions[expression_to_return.get_index()];
                             const invoke_expression_type = analyze_invoke_expression(analyzer, current_function, scope, invoke_expression, module_index);
                             _ = invoke_expression_type;
+                        },
+                        .array_subscript_expressions =>
+                        {
+                            var array_subscript_expression = &scope.array_subscript_expressions[expression_to_return.get_index()];
+                            _ = analyze_array_subscript_expression(analyzer, current_function, array_subscript_expression, module_index, null);
                         },
                         else => panic("NI: {}\n", .{ret_expr_array_id}),
                     }
@@ -736,16 +825,37 @@ pub const Analyzer = struct
     external_symbol_names: ArrayList([]const u8),
     external_libraries: ArrayList(External.Library),
     imported_modules: ArrayList(Parser.ImportedModule),
+
     integer_literals: ArrayList(Parser.IntegerLiteral),
+    array_literals: ArrayList(Parser.ArrayLiteral),
 
     unresolved_types: ArrayList([]const u8),
     pointer_types: ArrayList(Type.Pointer),
     function_types: ArrayList(Type.Function),
     slice_types: ArrayList(Type.Slice),
     array_types: ArrayList(Type.Array),
+    array_type_resolution_bitsets: ArrayList([ArrayResolutionBitsetSize]u1),
     struct_types: ArrayList(Type.Struct),
 
     module_offsets: []ModuleStats,
+
+    const ArrayResolutionBitsetSize = 64;
+
+    fn is_array_type_resolved(self: *Analyzer, resolved_array_type_index: u64) bool
+    {
+        const bitset_index = resolved_array_type_index / ArrayResolutionBitsetSize;
+        const array_type_index_in_bitset = resolved_array_type_index % ArrayResolutionBitsetSize;
+
+        return self.array_type_resolution_bitsets.items[bitset_index][array_type_index_in_bitset] == 1;
+    }
+
+    fn set_array_type_resolved(self: *Analyzer, resolved_array_type_index: u64) void
+    {
+        const bitset_index = resolved_array_type_index / ArrayResolutionBitsetSize;
+        const array_index_in_bitset = resolved_array_type_index % ArrayResolutionBitsetSize;
+
+        self.array_type_resolution_bitsets.items[bitset_index][array_index_in_bitset] = 1;
+    }
 };
 
 pub const Result = struct
@@ -754,6 +864,7 @@ pub const Result = struct
     external: External,
     imported_modules: []Parser.ImportedModule,
     integer_literals: []Parser.IntegerLiteral,
+    array_literals: []Parser.ArrayLiteral,
 
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
@@ -790,7 +901,9 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.external_functions)] = total.counters[@enumToInt(ModuleStats.ID.external_functions)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.imported_modules)] = total.counters[@enumToInt(ModuleStats.ID.imported_modules)];
         log("Imported module count: {}\n", .{module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.imported_modules)]});
+
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.integer_literals)] = total.counters[@enumToInt(ModuleStats.ID.integer_literals)];
+        module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.array_literals)] = total.counters[@enumToInt(ModuleStats.ID.array_literals)];
 
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.unresolved_types)] = total.counters[@enumToInt(ModuleStats.ID.unresolved_types)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.pointer_types)] = total.counters[@enumToInt(ModuleStats.ID.pointer_types)];
@@ -803,6 +916,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         total.counters[@enumToInt(ModuleStats.ID.external_functions)] += module.external_functions.len;
         total.counters[@enumToInt(ModuleStats.ID.imported_modules)] += module.imported_modules.len;
         total.counters[@enumToInt(ModuleStats.ID.integer_literals)] += module.integer_literals.len;
+        total.counters[@enumToInt(ModuleStats.ID.array_literals)] += module.array_literals.len;
 
         total.counters[@enumToInt(ModuleStats.ID.unresolved_types)] += module.unresolved_types.len;
         total.counters[@enumToInt(ModuleStats.ID.pointer_types)] += module.pointer_types.len;
@@ -817,6 +931,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .functions = ArrayList(Parser.Function.Internal).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.internal_functions)]) catch unreachable,
         .imported_modules = ArrayList(Parser.ImportedModule).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.imported_modules)]) catch unreachable,
         .integer_literals = ArrayList(Parser.IntegerLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.integer_literals)]) catch unreachable,
+        .array_literals = ArrayList(Parser.ArrayLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_literals)]) catch unreachable,
 
         .external_functions = ArrayList(Parser.Function.External).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.external_functions)]) catch unreachable,
         .external_library_names = ArrayList([]const u8).init(allocator),
@@ -828,6 +943,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .slice_types = ArrayList(Type.Slice).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.slice_types)]) catch unreachable,
         .function_types = ArrayList(Type.Function).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.function_types)]) catch unreachable,
         .array_types = ArrayList(Type.Array).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_types)]) catch unreachable,
+        .array_type_resolution_bitsets = ArrayList([Analyzer.ArrayResolutionBitsetSize]u1).initCapacity(allocator, (total.counters[@enumToInt(ModuleStats.ID.array_types)] / Analyzer.ArrayResolutionBitsetSize) + @boolToInt(total.counters[@enumToInt(ModuleStats.ID.array_types)] % Analyzer.ArrayResolutionBitsetSize != 0)) catch unreachable,
         .struct_types = ArrayList(Type.Struct).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.struct_types)]) catch unreachable,
         .module_offsets = module_offsets.items,
     };
@@ -847,6 +963,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
             analyzer.external_library_names.append(new_library_name) catch unreachable;
         }
     }
+
 
     const library_count = analyzer.external_library_names.items.len;
     var libraries_symbols_indices = ArrayList(ArrayList(u32)).initCapacity(allocator, library_count) catch unreachable;
@@ -974,6 +1091,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         analyzer.external_functions.appendSlice(module.external_functions) catch unreachable;
         analyzer.imported_modules.appendSlice(module.imported_modules) catch unreachable;
         analyzer.integer_literals.appendSlice(module.integer_literals) catch unreachable;
+        analyzer.array_literals.appendSlice(module.array_literals) catch unreachable;
         analyzer.unresolved_types.appendSlice(module.unresolved_types) catch unreachable;
         analyzer.pointer_types.appendSlice(module.pointer_types) catch unreachable;
         analyzer.slice_types.appendSlice(module.slice_types) catch unreachable;
@@ -981,6 +1099,8 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         analyzer.array_types.appendSlice(module.array_types) catch unreachable;
         analyzer.struct_types.appendSlice(module.struct_types) catch unreachable;
     }
+    analyzer.array_type_resolution_bitsets.items.len = analyzer.array_literals.items.len;
+    std.mem.set([64]u1, analyzer.array_type_resolution_bitsets.items, std.mem.zeroes([64]u1));
 
     log("Internal:\t{}\n", .{analyzer.functions.items.len});
     log("External libraries:\t{}\n", .{analyzer.external_library_names.items.len});
@@ -1042,6 +1162,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .functions = analyzer.functions.items,
         .imported_modules = analyzer.imported_modules.items,
         .integer_literals = analyzer.integer_literals.items,
+        .array_literals = analyzer.array_literals.items,
 
         .external = .
         {

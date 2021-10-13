@@ -28,6 +28,25 @@ pub fn log(comptime format: []const u8, arguments: anytype) void
     Compiler.log(.parser, "[PARSER] " ++ format, arguments);
 }
 
+const Precedence = enum
+{
+    None,
+    Assignment,
+    Logical,
+    Compare,
+    LightArithmetic, // add, sub
+    HeavyArithmetic, // mul, div
+    Unary,
+    Call,
+    Declaration,
+    Primary,
+
+    fn increment(comptime self: Precedence) Precedence
+    {
+        return comptime @intToEnum(Precedence, (@enumToInt(self) + 1));
+    }
+};
+
 pub const IntegerLiteral = struct
 {
     value: u64,
@@ -42,6 +61,25 @@ pub const IntegerLiteral = struct
             {
                 .value = value,
                 .signed = signed,
+            }) catch unreachable;
+
+        return id;
+    }
+};
+
+pub const ArrayLiteral = struct
+{
+    elements: []Entity,
+    type: Type,
+
+    fn new(list: *ArrayList(ArrayLiteral), elements: []Entity, module_index: u64) Entity
+    {
+        const index = list.items.len;
+        const id = Entity.new(index, Entity.ScopeID.array_literals, module_index);
+        list.append(.
+            {
+                .elements = elements,
+                .type = undefined,
             }) catch unreachable;
 
         return id;
@@ -238,6 +276,26 @@ pub const InvokeExpression = struct
     }
 };
 
+pub const ArraySubscriptExpression = struct
+{
+    expression: Entity,
+    index: Entity,
+
+    fn new(function_builder: *Function.Builder, array_expression: Entity, array_index_expression: Entity) Entity
+    {
+        var current_scope = &function_builder.scope_builders.items[function_builder.current_scope];
+        const index = current_scope.array_subscript_expressions.items.len;
+        const expression_id = Entity.new(index, Entity.ScopeID.array_subscript_expressions, function_builder.current_scope);
+        current_scope.array_subscript_expressions.append(.
+            {
+                .expression = array_expression,
+                .index = array_index_expression,
+            }) catch unreachable;
+
+        return expression_id;
+    }
+};
+
 pub const FieldAccessExpression = struct
 {
     left_expression: Entity,
@@ -289,6 +347,7 @@ pub const Scope = struct
     break_expressions: []BreakExpression,
     address_of_expressions: []UnaryExpression,
     dereference_expressions: []UnaryExpression,
+    array_subscript_expressions: []ArraySubscriptExpression,
     parent: Parent,
 
     pub const Builder = struct
@@ -308,6 +367,7 @@ pub const Scope = struct
         break_expressions: ArrayList(BreakExpression),
         address_of_expressions: ArrayList(UnaryExpression),
         dereference_expressions: ArrayList(UnaryExpression),
+        array_subscript_expressions: ArrayList(ArraySubscriptExpression),
         parent: Parent,
         last_loop: Entity,
 
@@ -335,6 +395,7 @@ pub const Scope = struct
                     .break_expressions = ArrayList(BreakExpression).init(allocator),
                     .address_of_expressions = ArrayList(UnaryExpression).init(allocator),
                     .dereference_expressions = ArrayList(UnaryExpression).init(allocator),
+                    .array_subscript_expressions = ArrayList(ArraySubscriptExpression).init(allocator),
                     .parent = .{ .expression = parent_expression, .scope = parent_scope },
                     .last_loop = last_loop,
                 }) catch unreachable;
@@ -550,7 +611,7 @@ pub const ModuleParser = struct
 
                     break :blk switch (operator)
                     {
-                        .LeftBracket => unreachable, // self.parse_array_literal(allocator),
+                        .LeftBracket => self.parse_array_literal(),
                         .AddressOf => self.parse_unary_expression(Operator.ID.AddressOf),
                         .Dereference => self.parse_unary_expression(Operator.ID.Dereference),
                         else => panic("NI: {}\n", .{operator}),
@@ -703,10 +764,17 @@ pub const ModuleParser = struct
                         // break :blk self.parse_declaration(allocator, parser, parent_node, left_expr);
                         unreachable;
                     },
-                    .LeftBracket =>
+                    .LeftBracket => blk:
                     {
-                        //break :blk self.parse_array_subscript(allocator, parser, parent_node, left_expr);
-                        unreachable;
+                        const array_expression = left_expression;
+                        const array_index_expression = self.parse_expression();
+
+                        const expected_right_bracket = self.lexer.tokens[self.lexer.next_index];
+                        if (expected_right_bracket != .operator) parser_error("Expected right bracket after array subscript expression\n", .{});
+                        if (self.get_token(.operator).value != Operator.ID.RightBracket) parser_error("Expected right bracket after array subscript expression\n", .{});
+                        self.consume_token(.operator);
+
+                        break :blk ArraySubscriptExpression.new(&self.function_builder, array_expression, array_index_expression);
                     },
                     .Dot => FieldAccessExpression.new(&self.function_builder, left_expression, self.parse_precedence(comptime Precedence.Call.increment())),
                     else => panic("operator not implemented: {}\n", .{operator}),
@@ -1137,6 +1205,35 @@ pub const ModuleParser = struct
         return unary_expression;
     }
 
+    fn parse_array_literal(self: *Self) Entity
+    {
+        // @INFO: Left bracket has already been consumed
+        var found_right_bracket = false;
+        var array_literal_expression_list = ArrayList(Entity).init(self.allocator);
+
+        while (!found_right_bracket)
+        {
+            const array_lit_element = self.parse_expression();
+            array_literal_expression_list.append(array_lit_element) catch unreachable;
+
+            const next_token = self.lexer.tokens[self.lexer.next_index];
+            if (next_token == .operator and self.get_token(.operator).value == Operator.ID.RightBracket)
+            {
+                found_right_bracket = true;
+                self.consume_token(.operator);
+            }
+            else
+            {
+                if (next_token != .sign) parser_error("Expected comma after array literal element\n", .{});
+                if (self.get_token(.sign).value != ',') parser_error("Expected comma after array literal element\n", .{});
+
+                self.consume_token(.sign);
+            }
+        }
+
+        return ArrayLiteral.new(&self.module_builder.array_literals, array_literal_expression_list.items, self.module_builder.index);
+    }
+
     fn parse_scope(self: *Self, parent_expression: Entity) u32
     {
         const previous_scope = self.function_builder.current_scope;
@@ -1191,6 +1288,7 @@ pub const ModuleParser = struct
             .address_of_expressions = scope_builder.address_of_expressions.items,
             .dereference_expressions = scope_builder.dereference_expressions.items,
             .arithmetic_expressions = scope_builder.arithmetic_expressions.items,
+            .array_subscript_expressions = scope_builder.array_subscript_expressions.items,
             .parent = scope_builder.parent,
         };
 
@@ -1241,6 +1339,23 @@ pub const ModuleParser = struct
                         }) catch unreachable;
 
                         return Type.Pointer.new(pointer_type_index, self.module_builder.index);
+                    },
+                    .LeftBracket =>
+                    {
+                        const array_type_index = self.module_builder.array_types.items.len;
+                        const array_length = self.parse_expression();
+                        const expected_right_bracket = self.lexer.tokens[self.lexer.next_index];
+                        if (expected_right_bracket != .operator) parser_error("Expected right bracket after array length expression\n", .{});
+                        if (self.get_and_consume_token(.operator).value != Operator.ID.RightBracket) parser_error("Expected right bracket after array length expression\n", .{});
+
+                        self.module_builder.array_types.append(.
+                            {
+                                .type = self.parse_type(),
+                                // @INFO: this is later casted in type analysis and replaced by the correct value
+                                .length_expression = array_length.value,
+                            }) catch unreachable;
+
+                        return Type.Array.new(array_type_index, self.module_builder.index);
                     },
                     else => panic("ni: {}\n", .{operator}),
                 }
@@ -1462,7 +1577,9 @@ pub const Module = struct
     library_names: []([]const u8),
     libraries: []Library.Builder,
     imported_modules: []ImportedModule,
+
     integer_literals: []IntegerLiteral,
+    array_literals: []ArrayLiteral,
 
     unresolved_types: [][]const u8,
     pointer_types: []Type.Pointer,
@@ -1479,7 +1596,9 @@ pub const Module = struct
         libraries: ArrayList(Library.Builder),
 
         imported_modules: ArrayList(ImportedModule),
+
         integer_literals: ArrayList(IntegerLiteral),
+        array_literals: ArrayList(ArrayLiteral),
 
         unresolved_types: ArrayList([]const u8),
         pointer_types: ArrayList(Type.Pointer),
@@ -1487,6 +1606,7 @@ pub const Module = struct
         function_types: ArrayList(Type.Function),
         array_types: ArrayList(Type.Array),
         struct_types: ArrayList(Type.Struct),
+
         index: u32,
     };
 };
@@ -1598,7 +1718,9 @@ pub const AST = struct
                 .library_names = ArrayList([]const u8).init(allocator),
                 .libraries = ArrayList(Library.Builder).init(allocator),
                 .imported_modules = ArrayList(ImportedModule).init(allocator),
+
                 .integer_literals = ArrayList(IntegerLiteral).init(allocator),
+                .array_literals = ArrayList(ArrayLiteral).init(allocator),
 
                 .unresolved_types = ArrayList([]const u8).init(allocator),
                 .pointer_types = ArrayList(Type.Pointer).init(allocator),
@@ -1973,6 +2095,7 @@ pub const AST = struct
             .libraries = parser.module_builder.libraries.items,
             .imported_modules = parser.module_builder.imported_modules.items,
             .integer_literals = parser.module_builder.integer_literals.items,
+            .array_literals = parser.module_builder.array_literals.items,
             .unresolved_types = parser.module_builder.unresolved_types.items,
             .pointer_types = parser.module_builder.pointer_types.items,
             .slice_types = parser.module_builder.slice_types.items,
@@ -2003,6 +2126,8 @@ pub const AST = struct
     }
 };
 
+
+
 //const Intrinsic = struct
 //{
     //const Value = union(ID)
@@ -2031,25 +2156,6 @@ pub const AST = struct
     //};
 //};
 
-const Precedence = enum
-{
-    None,
-    Assignment,
-    Logical,
-    Compare,
-    LightArithmetic, // add, sub
-    HeavyArithmetic, // mul, div
-    Unary,
-    Call,
-    Declaration,
-    Primary,
-
-    fn increment(comptime self: Precedence) Precedence
-    {
-        return comptime @intToEnum(Precedence, (@enumToInt(self) + 1));
-    }
-};
-
 //const Parser = struct
 //{
     //current_function: *Node,
@@ -2059,53 +2165,6 @@ const Precedence = enum
 
     //const Self = @This();
 
-
-
-    //fn parse_array_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //const array_literal_node = Node
-        //{
-            //.value = Node.Value {
-                //.array_lit = ArrayLiteral {
-                    //.elements = NodeRefBuffer.init(allocator),
-                //},
-            //},
-            //.value_type = Node.ValueType.RValue,
-            //.parent = parent_node,
-            //.type = undefined,
-        //};
-
-        //const array_literal = self.append_and_get(array_literal_node);
-            
-        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
-        //{
-            //while (true)
-            //{
-                //const array_elem = self.parse_expression(allocator, parser, parent_node);
-                //array_literal.value.array_lit.elements.append(array_elem) catch {
-                    //panic("Error allocating memory for array literal element\n", .{});
-                //};
-                
-                //const next_token = parser.peek();
-                //parser.consume();
-
-                //if (next_token.value == Token.ID.operator and next_token.value.operator == Operator.RightBracket)
-                //{
-                    //break;
-                //}
-                //else if (next_token.value == Token.ID.sign and next_token.value.sign != ',')
-                //{
-                    //parser_error("Expected comma after argument. Found: {}\n", .{next_token.value});
-                //}
-            //}
-        //}
-        //else
-        //{
-            //parser_error("Empty array literal is not allowed\n", .{});
-        //}
-
-        //return array_literal;
-    //}
 
     //fn parse_struct_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
     //{
@@ -2190,34 +2249,6 @@ const Precedence = enum
 
         //return struct_lit_node;
     //}
-
-
-    //fn parse_array_subscript(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node, left_expr: *Node) *Node
-    //{
-        //const subscript_node_value = Node
-        //{
-            //.value = Node.Value {
-                //.array_subscript_expr = ArraySubscriptExpression {
-                    //.expression = left_expr,
-                    //.index = undefined,
-                //},
-            //},
-            //.parent = parent_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-
-        //var subscript_node = self.append_and_get(subscript_node_value);
-        //subscript_node.value.array_subscript_expr.index = self.parse_expression(allocator, parser, parent_node);
-
-        //if (parser.expect_and_consume_operator(Operator.RightBracket) == null)
-        //{
-            //parser_error("Expected ']' in array subscript expression", .{});
-        //}
-
-        //return subscript_node;
-    //}
-
 
     //fn parse_intrinsic(self: *Parser, allocator: *Allocator, parser: *ModuleParser, intrinsic_name: []const u8) void
     //{
@@ -2380,29 +2411,6 @@ const Precedence = enum
             //panic("Intrinsic not found: {s}\n", .{intrinsic_name});
         //}
     //}
-//};
-
-//pub const UnaryExpression = struct
-//{
-    //node_ref: *Node,
-    //id: ID,
-
-    //pub const ID = enum
-    //{
-        //AddressOf,
-        //Dereference,
-    //};
-//};
-
-//const ArraySubscriptExpression = struct
-//{
-    //expression: *Node,
-    //index: *Node,
-//};
-
-//const ArrayLiteral = struct
-//{
-    //elements: NodeRefBuffer,
 //};
 
 //const StructLiteral = struct

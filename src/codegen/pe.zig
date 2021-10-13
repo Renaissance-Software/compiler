@@ -481,8 +481,9 @@ pub const Section = struct
         return text;
     }
 
-    fn encode_data_section(allocator: *Allocator, offset: *Offset) Section
+    fn encode_data_section(allocator: *Allocator, data_buffer: []const u8, offset: *Offset) Section
     {
+        const data_buffer_length = if (data_buffer.len == 0) 1 else data_buffer.len;
         var data = Section
         {
             .header = std.mem.zeroInit(ImageSectionHeader, .
@@ -492,12 +493,18 @@ pub const Section = struct
                 .name = Section.names[@enumToInt(Section.Index.@".data")],
                 .characteristics = Section.characteristics[@enumToInt(Section.Index.@".data")],
             }),
-            .buffer = DataBuffer.init(allocator),
+            .buffer = DataBuffer.initCapacity(allocator, data_buffer_length) catch unreachable,
         };
 
-        // dont hardcode this
-        data.buffer.append(0) catch unreachable;
-        
+        if (data_buffer.len == 0)
+        {
+            data.buffer.appendAssumeCapacity(0);
+        }
+        else
+        {
+            data.buffer.appendSliceAssumeCapacity(data_buffer);
+        }
+
         data.header.misc.virtual_size = @intCast(u32, data.buffer.items.len);
         data.header.size_of_raw_data = @intCast(u32, alignForward(data.buffer.items.len, file_alignment));
         offset.after_size(data.header.size_of_raw_data);
@@ -519,7 +526,7 @@ const LibraryOffsets = struct
     symbol_offsets: []u32,
 };
 
-pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []const u8, external: Semantics.External, target: std.Target) void
+pub fn write(allocator: *Allocator, executable: anytype, data_buffer: []const u8, executable_filename: []const u8, external: Semantics.External, target: std.Target) void
 {
     const null_section_header_count = 1;
     var section_headers_size = @sizeOf(ImageSectionHeader) * (Section.count + null_section_header_count);
@@ -539,7 +546,7 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
     {
         Section.encode_text_section(executable, allocator, &text_out, target.cpu.arch, &offset),
         Section.encode_rdata_section(allocator, external, &rdata_out, &offset),
-        Section.encode_data_section(allocator, &offset),
+        Section.encode_data_section(allocator, data_buffer, &offset),
     };
 
     log("Patch count: {}\n", .{text_out.patches.items.len});
@@ -559,6 +566,12 @@ pub fn write(allocator: *Allocator, executable: anytype, executable_filename: []
                 const index = Parser.Function.External.Index.from_u32(patch.section_buffer_index_from);
                 const symbol_offset = rdata_out.libraries_offsets.items[index.library].symbol_offsets[index.function];
                 const symbol_RVA = sections[@enumToInt(Section.Index.@".rdata")].header.virtual_address + symbol_offset;
+                break :blk symbol_RVA;
+            },
+            .@".data" => blk:
+            {
+                const symbol_offset = patch.section_buffer_index_from;
+                const symbol_RVA = sections[@enumToInt(Section.Index.@".data")].header.virtual_address + symbol_offset;
                 break :blk symbol_RVA;
             },
             else => panic("Not implemented: {}\n", .{patch.section_to_read_from}),
