@@ -288,7 +288,6 @@ fn analyze_array_literal(analyzer: *Analyzer, expression: *Entity, module_index:
 
 fn analyze_array_subscript_expression(analyzer: *Analyzer, function: *Parser.Function.Internal, array_subscript_expression: *Parser.ArraySubscriptExpression, module_index: u64, expected_type: ?Type) Type
 {
-
     const array_type_ref = analyze_expression_typed(analyzer, function, &array_subscript_expression.expression, module_index, null);
     assert(array_type_ref.get_ID() == .array);
     const array_type_index = array_type_ref.get_index();
@@ -398,6 +397,11 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
                         var dereference_expressions = expression_scope.dereference_expressions;
                         var dereference_expression = &dereference_expressions[expression_index];
                         break :blk analyze_dereference_expression(analyzer, function, module_index, dereference_expression);
+                    },
+                    .array_subscript_expressions =>
+                    {
+                        var array_subscript_expression = &function.scopes[scope_index].array_subscript_expressions[expression_index];
+                        break :blk analyze_array_subscript_expression(analyzer, function, array_subscript_expression, module_index, expected_type);
                     },
                     else => panic("NI: {}\n", .{array_id}),
                 }

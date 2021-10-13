@@ -363,11 +363,16 @@ pub fn mov_register_indirect(dst_register: Register.ID, allocation_size: u8, ind
 pub fn mov_register_ds_relative(dst_register: Register.ID, size: u8, ds_offset: u32) Instruction
 {
     assert(size <= 8);
-    assert(size == 4);
+    assert(size == 4 or size == 8);
 
-    const known_bytes = &[_]u8 { 0x8b, (@enumToInt(dst_register) << 3) | 0x05 };
+    const known_bytes = 
+        if (size == 4)
+            &[_]u8 { 0x8b, (@enumToInt(dst_register) << 3) | 0x05 }
+        else if (size == 8)
+            &[_]u8 { 0x48, 0x8b, (@enumToInt(dst_register) << 3) | 0x05 }
+        else unreachable;
 
-    return Instruction.Unresolved.new(known_bytes, ds_offset, Instruction.Unresolved.UnknownOperand.Kind.relative_data_segment, size, known_bytes.len);
+    return Instruction.Unresolved.new(known_bytes, ds_offset, Instruction.Unresolved.UnknownOperand.Kind.relative_data_segment, 4, @intCast(u8, known_bytes.len));
 }
 
 pub fn mov_indirect_register(indirect_register: Register.ID, indirect_offset: i32, indirect_size: u8, dst_register: Register.ID, dst_register_size: u8) Instruction
@@ -885,18 +890,19 @@ pub const Program = struct
                 log("Writing instruction #{}\n", .{instruction_i});
                 log("Current block offset: {}\n", .{current_block_offset});
 
+                const instruction_buffer_offset = text.buffer.items.len;
+
                 if (current_block_offset < function.basic_block_instruction_offsets.items.len)
                 {
                     const instruction_offsets = function.basic_block_instruction_offsets.items[current_block_offset..];
-                    const code_buffer_offset = text.buffer.items.len;
 
                     for (instruction_offsets) |current_block_instruction_offset|
                     {
                         if (current_block_instruction_offset > instruction_i) break;
 
                         assert(current_block_instruction_offset == instruction_i);
-                        log("Appending block code buffer offset {} to block {}\n", .{code_buffer_offset, current_block_offset});
-                        function.basic_block_buffer_offsets.append(code_buffer_offset) catch unreachable;
+                        log("Appending block code buffer offset {} to block {}\n", .{instruction_buffer_offset, current_block_offset});
+                        function.basic_block_buffer_offsets.append(instruction_buffer_offset) catch unreachable;
 
                         current_block_offset += 1;
                     }
@@ -1016,6 +1022,12 @@ pub const Program = struct
                         },
                         else => unreachable,
                     }
+                }
+
+                log("Instruction bytes\n", .{});
+                for (text.buffer.items[instruction_buffer_offset..]) |instruction_byte|
+                {
+                    log("0x{x:0>2}\n", .{instruction_byte});
                 }
             }
 
@@ -1155,37 +1167,77 @@ const Stack = struct
             self.allocations.append(indirect) catch unreachable;
         }
         
-        fn get_allocation(self: *Self, alloca: IR.Reference) Indirect
+        fn get_allocation(self: *Self, program: *const IR.Program, reference: IR.Reference) Indirect
         {
-            log("Searching for alloca #{}\n", .{alloca.get_index()});
-
-            for (self.allocations.items) |allocation|
+            switch (IR.Instruction.get_ID(reference))
             {
-                if (allocation.reference.value == alloca.value) return allocation;
+                .alloca =>
+                {
+                    log("Searching for alloca #{}\n", .{reference.get_index()});
+
+                    for (self.allocations.items) |allocation|
+                    {
+                        if (allocation.reference.value == reference.value) return allocation;
+                    }
+                },
+                .get_element_ptr => return self.process_gep(program, reference),
+                else => unreachable,
             }
 
             panic("Not found\n", .{});
         }
 
-        fn get_allocation_with_offset(self: *Self, alloca: IR.Reference, new_reference: IR.Reference, offset: i32, size: u32) Indirect
+        fn process_gep(self: *Self, program: *const IR.Program, instruction: IR.Reference) Indirect
         {
-            log("Searching for alloca #{} with offset {}\n", .{alloca.get_index(), offset});
+            const gep = program.instructions.gep[instruction.get_index()];
+            assert(gep.indices.len == 2);
+            assert(gep.indices[0] == 0);
+            const gep_index = gep.indices[1];
 
-            for (self.allocations.items) |allocation|
+            assert(gep.pointer.get_ID() == .instruction);
+            const gep_pointer_instruction_id = IR.Instruction.get_ID(gep.pointer);
+
+            switch (gep_pointer_instruction_id)
             {
-                if (allocation.reference.value == alloca.value)
+                .alloca =>
                 {
-                    var allocation_with_offset = allocation;
-                    allocation_with_offset.offset += offset;
-                    allocation_with_offset.size = size;
-                    allocation_with_offset.alignment = size;
-                    allocation_with_offset.reference = new_reference;
+                    const alloca = program.instructions.alloca[gep.pointer.get_index()];
 
-                    return allocation_with_offset;
-                }
+                    const alloca_type = alloca.base_type;
+
+                    switch (alloca_type.get_ID())
+                    {
+                        .array =>
+                        {
+                            const array_type = program.array_types[alloca_type.get_index()];
+                            const element_type_size = @intCast(u32, array_type.type.get_size_resolved(program));
+                            const array_offset_in_bytes = @intCast(i32, @intCast(i64, element_type_size) * gep_index);
+                            log("Array offset in bytes: {}\n", .{array_offset_in_bytes});
+                            //const indirect = self.get_allocation_with_offset(gep.pointer, instruction, array_offset_in_bytes, element_type_size);
+
+                            log("Searching for alloca #{} with offset {}\n", .{gep.pointer.get_index(), array_offset_in_bytes});
+
+                            for (self.allocations.items) |allocation|
+                            {
+                                if (allocation.reference.value == gep.pointer.value)
+                                {
+                                    var allocation_with_offset = allocation;
+                                    allocation_with_offset.offset += array_offset_in_bytes;
+                                    allocation_with_offset.size = element_type_size;
+                                    allocation_with_offset.alignment = element_type_size;
+                                    allocation_with_offset.reference = instruction;
+
+                                    return allocation_with_offset;
+                                }
+                            }
+
+                            panic("Not found\n", .{});
+                        },
+                        else => panic("{}\n", .{alloca_type.get_ID()}),
+                    }
+                },
+                else => panic("{}\n", .{gep_pointer_instruction_id}),
             }
-
-            panic("Not found\n", .{});
         }
     };
 };
@@ -1651,7 +1703,7 @@ fn process_load_for_ret(program: *const IR.Program, function: *Program.Function,
     {
         .alloca =>
         {
-            const allocation = function.stack_allocator.get_allocation(load.pointer);
+            const allocation = function.stack_allocator.get_allocation(program, load.pointer);
             assert(allocation.size <= 8);
             const register_size = @intCast(u8, allocation.size);
 
@@ -1668,7 +1720,7 @@ fn process_load_for_ret(program: *const IR.Program, function: *Program.Function,
             const load_s_load = program.instructions.load[load.pointer.get_index()];
             const alloca_ref = load_s_load.pointer;
             assert(IR.Instruction.get_ID(alloca_ref) == .alloca);
-            const allocation = function.stack_allocator.get_allocation(alloca_ref);
+            const allocation = function.stack_allocator.get_allocation(program, alloca_ref);
             const direct = function.register_allocator.allocate_direct(load.pointer, @intCast(u8, allocation.size));
             function.register_allocator.free(direct.register);
             const mov_reg_stack = mov_register_indirect(direct.register, direct.size, allocation.register, allocation.offset);
@@ -1683,7 +1735,7 @@ fn process_load_for_ret(program: *const IR.Program, function: *Program.Function,
         },
         .get_element_ptr =>
         {
-            const gep_indirect = process_gep(program, function, load.pointer);
+            const gep_indirect = function.stack_allocator.process_gep(program, load.pointer);
             const allocated_return = function.register_allocator.allocate_return(load_reference, @intCast(u8, gep_indirect.size));
             const mov_to_return_register = mov_register_indirect(allocated_return.register, allocated_return.size, gep_indirect.register, gep_indirect.offset);
             function.append_instruction(mov_to_return_register);
@@ -1707,6 +1759,9 @@ fn process_add(program: *const IR.Program, function: *Program.Function, add_refe
             {
                 .load =>
                 {
+                    const first_operand_load = program.instructions.load[add.left.get_index()];
+                    const first_operand_load_id = IR.Instruction.get_ID(first_operand_load.pointer);
+                    log("First operand load id: {}\n", .{first_operand_load_id});
                     const first_operand_allocation = fetch_load(program, function, add.left, add_reference, true);
 
                     switch (add.right.get_ID())
@@ -1757,7 +1812,8 @@ fn process_add(program: *const IR.Program, function: *Program.Function, add_refe
                                 .load =>
                                 {
                                     const second_operand_load = program.instructions.load[add.right.get_index()];
-                                    const second_operand_allocation = function.stack_allocator.get_allocation(second_operand_load.pointer);
+                                    log("Second operand load pointer: {}\n", .{IR.Instruction.get_ID(second_operand_load.pointer)});
+                                    const second_operand_allocation = function.stack_allocator.get_allocation(program, second_operand_load.pointer);
 
                                     // move to a register first operand if it is also a stack operand
                                     log("First operand is also stack, we have to allocate it into a register\n", .{});
@@ -1958,7 +2014,7 @@ fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref:
                     log("Resulting size: {}\n", .{resulting_size});
                     assert(resulting_size == 4);
 
-                    const allocation = function.stack_allocator.get_allocation(load.pointer);
+                    const allocation = function.stack_allocator.get_allocation(program, load.pointer);
                     assert(allocation.size <= 8);
                     const register_size = @intCast(u8, allocation.size);
 
@@ -1969,8 +2025,8 @@ fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref:
                     const indirect = function.register_allocator.allocate_indirect(load_ref, 0, resulting_size);
                     return indirect;
                 },
-                .load => return function.stack_allocator.get_allocation(load.pointer),
-                .icmp => return function.stack_allocator.get_allocation(load.pointer),
+                .load => return function.stack_allocator.get_allocation(program, load.pointer),
+                .icmp => return function.stack_allocator.get_allocation(program, load.pointer),
                 else => panic("NI: {}\n", .{load_use_id}),
             }
         },
@@ -2006,23 +2062,19 @@ fn fetch_load(program: *const IR.Program, function: *Program.Function, load_ref:
                 return register_indirect;
             }
         },
-        //.get_element_ptr => get_mc_value_from_ir_value(function, executable, constant_data_list, data_buffer, mc_function, first_operand, ir_value),
+        .get_element_ptr =>
+        {
+            const gep_indirect = function.stack_allocator.process_gep(program, load.pointer);
+            return gep_indirect;
+            //const register = function.register_allocator.allocate_direct(load_ref, @intCast(u8, gep_indirect.size));
+            //const mov_to_register = mov_register_indirect(register.register, register.size, gep_indirect.register, gep_indirect.offset);
+            //function.append_instruction(mov_to_register);
+
+            //return register;
+        },
         else => panic("load ptr id: {}\n", .{load_pointer_id}),
     }
-
-    //if (function.register_allocator.get_allocation(program, load_ref, load_use)) |load_pointer|
-    //{
-        //_ = load_pointer;
-        //unreachable;
-    //}
-    //else
-    //{
-        //assert(load.pointer.get_ID() == .instruction);
-        //log("Load pointer id: {}\n", .{load_pointer_id});
-
-    //}
 }
-
 
 fn process_sub(program: *const IR.Program, function: *Program.Function, sub_reference: IR.Reference) void
 {
@@ -2164,7 +2216,7 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                         first_operand_kind = .stack;
                         const load = program.instructions.load[mul.left.get_index()];
                         signedness = Type.Integer.get_signedness(load.type);
-                        const allocation = function.stack_allocator.get_allocation(load.pointer);
+                        const allocation = function.stack_allocator.get_allocation(program, load.pointer);
                         break :blk allocation;
                     },
                     else => panic("ni: {}\n", .{instr_id}),
@@ -2226,7 +2278,7 @@ fn process_mul(program: *const IR.Program, function: *Program.Function, mul_refe
                     second_operand_kind = .stack;
 
                     const load = program.instructions.load[mul.right.get_index()];
-                    const second_operand_allocation = function.stack_allocator.get_allocation(load.pointer);
+                    const second_operand_allocation = function.stack_allocator.get_allocation(program, load.pointer);
 
                     if (first_operand_kind == .stack)
                     {
@@ -2285,7 +2337,7 @@ fn process_memcopy(program: *const IR.Program, data_buffer_offsets: *ArrayList(u
                     const mov_ds_to_reg = mov_register_ds_relative(temporary_register.register, temporary_register.size, data_buffer_offset);
                     function.append_instruction(mov_ds_to_reg);
                     function.register_allocator.free(temporary_register.register);
-                    const stack_allocation = function.stack_allocator.get_allocation(memcopy.destination);
+                    const stack_allocation = function.stack_allocator.get_allocation(program, memcopy.destination);
                     const mov_reg_stack = mov_indirect_register(stack_allocation.register, stack_allocation.offset, @intCast(u8, stack_allocation.size), temporary_register.register, temporary_register.size);
                     function.append_instruction(mov_reg_stack);
                 },
@@ -2296,41 +2348,6 @@ fn process_memcopy(program: *const IR.Program, data_buffer_offsets: *ArrayList(u
     }
 }
 
-fn process_gep(program: *const IR.Program, function: *Program.Function, instruction: IR.Reference) Indirect
-{
-    const gep = program.instructions.gep[instruction.get_index()];
-    assert(gep.indices.len == 2);
-    assert(gep.indices[0] == 0);
-    const gep_index = gep.indices[1];
-
-    assert(gep.pointer.get_ID() == .instruction);
-    const gep_pointer_instruction_id = IR.Instruction.get_ID(gep.pointer);
-
-    switch (gep_pointer_instruction_id)
-    {
-        .alloca =>
-        {
-            const alloca = program.instructions.alloca[gep.pointer.get_index()];
-
-            const alloca_type = alloca.base_type;
-
-            switch (alloca_type.get_ID())
-            {
-                .array =>
-                {
-                    const array_type = program.array_types[alloca_type.get_index()];
-                    const element_type_size = @intCast(u32, array_type.type.get_size_resolved(program));
-                    const array_offset_in_bytes = @intCast(i32, @intCast(i64, element_type_size) * gep_index);
-                    log("Array offset in bytes: {}\n", .{array_offset_in_bytes});
-                    const indirect = function.stack_allocator.get_allocation_with_offset(gep.pointer, instruction, array_offset_in_bytes, element_type_size);
-                    return indirect;
-                },
-                else => panic("{}\n", .{alloca_type.get_ID()}),
-            }
-        },
-        else => panic("{}\n", .{gep_pointer_instruction_id}),
-    }
-}
 
 const JmpOpcode = enum(u8)
 {
@@ -2585,14 +2602,14 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                             const argument_direct = function.register_allocator.allocate_call_argument(@intCast(u32, argument_i), argument, @intCast(u8, argument_load_size));
                                             function.register_allocator.free(argument_direct.register);
                                             assert(IR.Instruction.get_ID(argument_load.pointer) == .alloca);
-                                            const stack_indirect = function.stack_allocator.get_allocation(argument_load.pointer);
+                                            const stack_indirect = function.stack_allocator.get_allocation(program, argument_load.pointer);
 
                                             const argument_from_stack_to_reg = mov_register_indirect(argument_direct.register, argument_direct.size, stack_indirect.register, stack_indirect.offset);
                                             function.append_instruction(argument_from_stack_to_reg);
                                         },
                                         .alloca =>
                                         {
-                                            const address_of_variable = function.stack_allocator.get_allocation(argument);
+                                            const address_of_variable = function.stack_allocator.get_allocation(program, argument);
                                             const argument_register = function.register_allocator.allocate_call_argument(@intCast(u32, argument_i), argument, Type.Pointer.size);
                                             function.register_allocator.free(argument_register.register);
                                             const argument_pointer_from_stack_to_reg = lea_indirect(argument_register.register, argument_register.size, address_of_variable.register, address_of_variable.offset);
@@ -2779,7 +2796,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                         {
                                             .alloca => blk:
                                             {
-                                                break :blk function.stack_allocator.get_allocation(store.pointer);
+                                                break :blk function.stack_allocator.get_allocation(program, store.pointer);
                                             },
                                             .load => blk:
                                             {
@@ -2813,12 +2830,13 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                 {
                                     .alloca => blk:
                                     {
-                                        break :blk function.stack_allocator.get_allocation(store.pointer);
+                                        break :blk function.stack_allocator.get_allocation(program, store.pointer);
                                     },
                                     .load => blk:
                                     {
                                         break :blk fetch_load(program, function, store.pointer, instruction, false);
                                     },
+                                    .get_element_ptr => function.stack_allocator.process_gep(program, store.pointer),
                                     else => panic("{}\n", .{store_pointer_id}),
                                 };
                                 log("Allocation: {}\n", .{stack_allocation});
@@ -2840,7 +2858,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                                         {
                                             log("Emitting lea\n", .{});
 
-                                            const alloca_in_stack = function.stack_allocator.get_allocation(store.value);
+                                            const alloca_in_stack = function.stack_allocator.get_allocation(program, store.value);
                                             assert(alloca_in_stack.size == 4);
                                             const register_size = Type.Pointer.size;
                                             const register = function.register_allocator.allocate_direct(store.pointer, register_size);
@@ -2872,7 +2890,7 @@ pub fn encode(allocator: *std.mem.Allocator, program: *const IR.Program, executa
                             {
                                 const argument_index = store.value.get_index();
                                 const argument_alloca = ir_function.argument_allocas[argument_index];
-                                const stack_allocation = function.stack_allocator.get_allocation(argument_alloca);
+                                const stack_allocation = function.stack_allocator.get_allocation(program, argument_alloca);
                                 const argument_register = function.register_allocator.fetch_argument(argument_index);
 
                                 const mov_arg_to_stack = mov_indirect_register(stack_allocation.register, stack_allocation.offset, @intCast(u8, stack_allocation.size), argument_register.register, argument_register.size);

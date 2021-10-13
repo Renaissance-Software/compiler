@@ -1189,6 +1189,14 @@ pub const Program = struct
 
                                             _ = Instruction.Store.new(allocator, self, right_reference, left_reference, store_type);
                                         },
+                                        .array_subscript_expressions =>
+                                        {
+                                            const array_subscript_expression = &result.functions[self.current_function].scopes[scope_index].array_subscript_expressions[assignment.left.get_index()];
+                                            var array_element_type: Type = undefined;
+                                            const gep = self.get_gep_from_array_subscript(allocator, function_builder, array_subscript_expression, &array_element_type);
+                                            const right_reference = self.process_expression(allocator, function_builder, result, assignment.right);
+                                            _ = Instruction.Store.new(allocator, self, right_reference, gep, array_element_type);
+                                        },
                                         else => panic("NI: {}\n", .{left_id}),
                                     }
                                 },
@@ -1490,6 +1498,26 @@ pub const Program = struct
             }
         }
 
+        fn get_gep_from_array_subscript(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, array_subscript_expression: *Parser.ArraySubscriptExpression, array_element_type: *Type) Reference
+        {
+            const index_expression = self.get_constant_integer(array_subscript_expression.index);
+            log("Index expression: {}\n", .{index_expression});
+            const array_expression_alloca = self.find_expression_alloca(function_builder, array_subscript_expression.expression);
+            const alloca = self.instructions.alloca.items[array_expression_alloca.get_index()];
+            const array_type_ref = alloca.base_type;
+            assert(array_type_ref.get_ID() == .array);
+            const array_type = self.array_types.items[array_type_ref.get_index()];
+            array_element_type.* = array_type.type;
+            // @TODO: should we dynamically allocate this? It can cause stack corruption problems
+            var indices = ArrayList(i64).initCapacity(allocator, 2) catch unreachable;
+            indices.appendAssumeCapacity(0);
+            indices.appendAssumeCapacity(index_expression);
+
+            const gep = Instruction.GetElementPointer.new(allocator, self, array_element_type.*, array_expression_alloca, indices.items);
+
+            return gep;
+        }
+
         fn process_expression(self: *Builder, allocator: *Allocator, function_builder: *Function.Builder, result: Semantics.Result, ast_expression: Entity) Reference
         {
             const ast_expr_level = ast_expression.get_level();
@@ -1575,22 +1603,8 @@ pub const Program = struct
                         {
                             const array_subscript_expression = &result.functions[self.current_function].scopes[scope_index].array_subscript_expressions[expression_index];
 
-                            const index_expression = self.get_constant_integer(array_subscript_expression.index);
-                            log("Index expression: {}\n", .{index_expression});
-                            const array_expression_alloca = self.find_expression_alloca(function_builder, array_subscript_expression.expression);
-                            const alloca = self.instructions.alloca.items[array_expression_alloca.get_index()];
-                            const array_type_ref = alloca.base_type;
-                            assert(array_type_ref.get_ID() == .array);
-                            const array_type = self.array_types.items[array_type_ref.get_index()];
-                            const array_element_type = array_type.type;
-                            // @TODO: should we dynamically allocate this? It can cause stack corruption problems
-                            var indices = ArrayList(i64).initCapacity(allocator, 2) catch unreachable;
-                            indices.appendAssumeCapacity(0);
-                            indices.appendAssumeCapacity(index_expression);
-
-                            const gep = Instruction.GetElementPointer.new(allocator, self, array_element_type, array_expression_alloca, indices.items);
-
-                            // @TODO: this is always RVALUE
+                            var array_element_type: Type = undefined;
+                            const gep = self.get_gep_from_array_subscript(allocator, function_builder, array_subscript_expression, &array_element_type);
 
                             const gep_load = Instruction.Load.new(allocator, self, array_element_type, gep);
                             return gep_load;
