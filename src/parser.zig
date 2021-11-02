@@ -18,7 +18,7 @@ const Entity = @import("entity.zig").Entity;
 
 const IR = @import("ir.zig");
 
-pub fn parser_error(comptime format: []const u8, args: anytype) noreturn
+pub fn report_error(comptime format: []const u8, args: anytype) noreturn
 {
     panic(format, args);
 }
@@ -80,6 +80,33 @@ pub const ArrayLiteral = struct
             {
                 .elements = elements,
                 .type = undefined,
+            }) catch unreachable;
+
+        return id;
+    }
+};
+
+pub const StructLiteral = struct
+{
+    fields: struct
+    {
+        names: []IdentifierExpression,
+        initialization_expressions: []Entity,
+    },
+    type: Type,
+
+    fn new(list: *ArrayList(StructLiteral), field_names: []IdentifierExpression, field_expressions: []Entity, module_index: u64) Entity
+    {
+        const index = list.items.len;
+        const id = Entity.new(index, Entity.ScopeID.struct_literals, module_index);
+        list.append(.
+            {
+                .fields = .
+                {
+                    .names = field_names,
+                    .initialization_expressions = field_expressions,
+                },
+                .type = std.mem.zeroes(Type),
             }) catch unreachable;
 
         return id;
@@ -619,17 +646,12 @@ pub const ModuleParser = struct
                 },
                 .sign =>
                 {
-                    //const sign = token.value.sign;
-                    //switch (sign)
-                    //{
-                    //'{' =>
-                    //{
-                    //const struct_lit_expr = self.parse_struct_literal(allocator, parser, parent_node);
-                    //return struct_lit_expr;
-                    //},
-                    //else => panic("ni: {c}\n", .{sign}),
-                    //}
-                    unreachable;
+                    const sign = self.get_and_consume_token(.sign).value;
+                    switch (sign)
+                    {
+                        '{' => return self.parse_struct_literal(),
+                        else => panic("NI: \'{c}\'\n", .{sign}),
+                    }
                 },
                 else => panic("ni: {}\n", .{prefix_token}),
             }
@@ -748,13 +770,13 @@ pub const ModuleParser = struct
                                         continue;
                                     }
                                 }
-                                parser_error("Expected comma after function argument\n", .{});
+                                report_error("Expected comma after function argument\n", .{});
                             }
                         }
 
                         if (self.get_and_consume_token(.operator).value != .RightParenthesis)
                         {
-                            parser_error("Expected right parenthesis to finish argument list\n", .{});
+                            report_error("Expected right parenthesis to finish argument list\n", .{});
                         }
 
                         break :blk InvokeExpression.new(&self.function_builder, argument_list.items, left_expression);
@@ -770,8 +792,8 @@ pub const ModuleParser = struct
                         const array_index_expression = self.parse_expression();
 
                         const expected_right_bracket = self.lexer.tokens[self.lexer.next_index];
-                        if (expected_right_bracket != .operator) parser_error("Expected right bracket after array subscript expression\n", .{});
-                        if (self.get_token(.operator).value != Operator.ID.RightBracket) parser_error("Expected right bracket after array subscript expression\n", .{});
+                        if (expected_right_bracket != .operator) report_error("Expected right bracket after array subscript expression\n", .{});
+                        if (self.get_token(.operator).value != Operator.ID.RightBracket) report_error("Expected right bracket after array subscript expression\n", .{});
                         self.consume_token(.operator);
 
                         break :blk ArraySubscriptExpression.new(&self.function_builder, array_expression, array_index_expression);
@@ -909,7 +931,7 @@ pub const ModuleParser = struct
                         const dereference_statement = self.parse_expression();
                         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_token(.sign).value != ';')
                         {
-                            parser_error("Expected semicolon at the end of identifier expression\n", .{});
+                            report_error("Expected semicolon at the end of identifier expression\n", .{});
                         }
 
                         self.function_builder.scope_builders.items[self.function_builder.current_scope].statements.append(dereference_statement) catch unreachable;
@@ -968,7 +990,7 @@ pub const ModuleParser = struct
                         const expected_identifier = self.lexer.tokens[self.lexer.next_index];
                         if (expected_identifier != .identifier)
                         {
-                            parser_error("Expected identifier, found {s}\n", .{@tagName(expected_identifier)});
+                            report_error("Expected identifier, found {s}\n", .{@tagName(expected_identifier)});
                         }
 
                         const it_decl_identifier = self.get_and_consume_token(.identifier).value;
@@ -990,7 +1012,7 @@ pub const ModuleParser = struct
                         
                         if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_token(.operator).value != .Declaration)
                         {
-                            parser_error("Expected declaration operator\n", .{});
+                            report_error("Expected declaration operator\n", .{});
                         }
 
                         self.consume_token(.operator);
@@ -1095,7 +1117,7 @@ pub const ModuleParser = struct
                         const last_loop = scope.last_loop;
                         if (last_loop.value == std.mem.zeroes(Entity).value)
                         {
-                            parser_error("No loops found\n", .{});
+                            report_error("No loops found\n", .{});
                         }
 
                         const break_expression_index = scope.break_expressions.items.len;
@@ -1133,7 +1155,7 @@ pub const ModuleParser = struct
 
         
         log("For next_token: {}\n", .{next_token});
-        parser_error("Expected semicolon to end statement\n", .{});
+        report_error("Expected semicolon to end statement\n", .{});
     }
 
     fn process_scope(self: *Self, new_current_scope: u32) void
@@ -1142,12 +1164,12 @@ pub const ModuleParser = struct
         const expected_left_brace = self.lexer.tokens[self.lexer.next_index];
         if (expected_left_brace != .sign)
         {
-            parser_error("Expected left brace to open up the scope body\n", .{});
+            report_error("Expected left brace to open up the scope body\n", .{});
         }
 
         if (self.get_token(.sign).value != '{')
         {
-            parser_error("Expected left brace to open up the scope body\n", .{});
+            report_error("Expected left brace to open up the scope body\n", .{});
         }
 
         self.consume_token(.sign);
@@ -1164,7 +1186,7 @@ pub const ModuleParser = struct
 
         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
         {
-            parser_error("Expected closing brace for scope\n", .{});
+            report_error("Expected closing brace for scope\n", .{});
         }
     }
 
@@ -1224,8 +1246,8 @@ pub const ModuleParser = struct
             }
             else
             {
-                if (next_token != .sign) parser_error("Expected comma after array literal element\n", .{});
-                if (self.get_token(.sign).value != ',') parser_error("Expected comma after array literal element\n", .{});
+                if (next_token != .sign) report_error("Expected comma after array literal element\n", .{});
+                if (self.get_token(.sign).value != ',') report_error("Expected comma after array literal element\n", .{});
 
                 self.consume_token(.sign);
             }
@@ -1315,6 +1337,100 @@ pub const ModuleParser = struct
         return Type.new_unresolved_type(i, self.module_builder.index);
     }
 
+    fn parse_struct(self: *Self, name: []const u8) Type
+    {
+        // @Info: here are assuming that token struct has already been consumed
+        if (self.lexer.tokens[self.lexer.next_index] != .sign) report_error("Expected left brace for struct declaration\n", .{});
+        if (self.get_token(.sign).value != '{') report_error("Expected left brace for struct declaration\n", .{});
+        self.consume_token(.sign);
+
+        var field_types = ArrayList(Type).init(self.allocator);
+        var field_names = ArrayList([]const u8).init(self.allocator);
+
+        while (true)
+        {
+            if (self.lexer.tokens[self.lexer.next_index] != .identifier) report_error("Expected identifier\n", .{});
+
+            const struct_field_name = self.get_and_consume_token(.identifier).value;
+
+            if (self.lexer.tokens[self.lexer.next_index] != .operator) report_error("Expected declaration operator after struct field name\n", .{});
+            if (self.get_token(.operator).value != .Declaration) report_error("Expected declaration operator after struct field name\n", .{});
+
+            self.consume_token(.operator);
+
+            const struct_field_type = self.parse_type();
+
+            const after_field_token = self.lexer.tokens[self.lexer.next_index];
+            if (after_field_token != .sign) report_error("Expected comma or right brace\n", .{});
+
+            const after_field_sign = self.get_and_consume_token(.sign).value;
+
+            field_names.append(struct_field_name) catch unreachable;
+            field_types.append(struct_field_type) catch unreachable;
+
+            if (after_field_sign == '}') break
+            else if (after_field_sign != ',') report_error("Expected comma or right brace after struct field declaration\n", .{});
+        }
+
+        const struct_declaration = Type.Struct
+        {
+            .types = field_types.items,
+            .names = field_names.items,
+            .name = name,
+            .alignment = 0,
+        };
+
+        const struct_index = self.module_builder.struct_types.items.len;
+        log("Struct index: {}\n", .{struct_index});
+        self.module_builder.struct_types.append(struct_declaration) catch unreachable;
+
+        const struct_id = Type.Struct.new(struct_index, self.module_builder.index);
+        return struct_id;
+    }
+
+    fn parse_struct_literal(self: *Self) Entity
+    {
+        var field_identifiers = ArrayList(IdentifierExpression).init(self.allocator);
+        var field_expressions = ArrayList(Entity).init(self.allocator);
+
+        if (self.lexer.tokens[self.lexer.next_index] == .sign and self.get_token(.sign).value == '}')
+        {
+            report_error("Empty structs are not allowed\n", .{});
+        }
+
+        while (true)
+        {
+            if (self.lexer.tokens[self.lexer.next_index] != .operator) report_error("Expected dot operator to initialize field in the struct literal\n", .{});
+
+            if (self.get_and_consume_token(.operator).value != .Dot) report_error("Expected dot operator to initialize field in the struct literal\n", .{});
+
+            if (self.lexer.tokens[self.lexer.next_index] != .identifier) report_error("Expected field identifier to relate to the struct declaration\n", .{});
+
+            const field_identifier = self.get_and_consume_token(.identifier).value;
+            log("Field identifier: {s}\n", .{field_identifier});
+            field_identifiers.append(field_identifier) catch unreachable;
+
+            if (self.lexer.tokens[self.lexer.next_index] != .operator) report_error("Expected assignment operator ('=')\n", .{});
+            if (self.get_and_consume_token(.operator).value != .Assignment) report_error("Expected assignment operator ('=')\n", .{});
+
+            const field_expression = self.parse_expression();
+            field_expressions.append(field_expression) catch unreachable;
+
+            const after_field_token = self.lexer.tokens[self.lexer.next_index];
+            if (after_field_token != .sign) report_error("Expected comma or right brace\n", .{});
+
+            const after_field_sign = self.get_and_consume_token(.sign).value;
+
+            if (after_field_sign == '}') break
+            else if (after_field_sign != ',') report_error("Expected comma or right brace after struct literal field initialization\n", .{});
+        }
+
+        const module_index = self.module_builder.index;
+        const struct_literal = StructLiteral.new(&self.module_builder.struct_literals, field_identifiers.items, field_expressions.items, module_index);
+
+        return struct_literal;
+    }
+
     fn parse_type(self: *Self) Type
     {
         const next_token = self.lexer.tokens[self.lexer.next_index];
@@ -1345,8 +1461,8 @@ pub const ModuleParser = struct
                         const array_type_index = self.module_builder.array_types.items.len;
                         const array_length = self.parse_expression();
                         const expected_right_bracket = self.lexer.tokens[self.lexer.next_index];
-                        if (expected_right_bracket != .operator) parser_error("Expected right bracket after array length expression\n", .{});
-                        if (self.get_and_consume_token(.operator).value != Operator.ID.RightBracket) parser_error("Expected right bracket after array length expression\n", .{});
+                        if (expected_right_bracket != .operator) report_error("Expected right bracket after array length expression\n", .{});
+                        if (self.get_and_consume_token(.operator).value != Operator.ID.RightBracket) report_error("Expected right bracket after array length expression\n", .{});
 
                         self.module_builder.array_types.append(.
                             {
@@ -1360,6 +1476,10 @@ pub const ModuleParser = struct
                     else => panic("ni: {}\n", .{operator}),
                 }
             },
+            .keyword =>
+            {
+                unreachable;
+            },
             else => panic("ni: {}\n", .{next_token}),
         }
     }
@@ -1368,7 +1488,7 @@ pub const ModuleParser = struct
     {
         if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_and_consume_token(.operator).value != .LeftParenthesis)
         {
-            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+            report_error("Expected left parenthesis to open expression to switch on\n", .{});
         }
 
         switch (self.lexer.tokens[self.lexer.next_index])
@@ -1383,14 +1503,14 @@ pub const ModuleParser = struct
                     {
                         if (self.lexer.tokens[self.lexer.next_index] != .operator or self.get_and_consume_token(.operator).value != .RightParenthesis)
                         {
-                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                            report_error("Expected left parenthesis to open expression to switch on\n", .{});
                         }
 
                         const os = std.builtin.target.os.tag;
 
                         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '{')
                         {
-                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                            report_error("Expected left parenthesis to open expression to switch on\n", .{});
                         }
 
                         var right_brace_found = false;
@@ -1403,7 +1523,7 @@ pub const ModuleParser = struct
                                 const first_case_token = self.lexer.tokens[self.lexer.next_index];
                                 if (!(first_case_token == .operator and self.get_and_consume_token(.operator).value == .Dot))
                                 {
-                                    parser_error("Expected dot operator\n", .{});
+                                    report_error("Expected dot operator\n", .{});
                                 }
 
                                 assert(self.lexer.tokens[self.lexer.next_index] == .identifier);
@@ -1411,7 +1531,7 @@ pub const ModuleParser = struct
 
                                 const os_enum = std.meta.stringToEnum(std.Target.Os.Tag, os_identifier) orelse
                                 {
-                                    parser_error("Unknown operating system: {s}\n", .{os_identifier});
+                                    report_error("Unknown operating system: {s}\n", .{os_identifier});
                                 };
 
 
@@ -1421,7 +1541,7 @@ pub const ModuleParser = struct
                                     const next_one = self.lexer.tokens[self.lexer.next_index];
                                     if (!(next_one == .operator and self.get_and_consume_token(.operator).value == .Declaration))
                                     {
-                                        parser_error("Expected colon after switch case identifier\n", .{});
+                                        report_error("Expected colon after switch case identifier\n", .{});
                                     }
 
                                     // @TODO: we are trapping here. We should be parsing a new scope but we are not ready to do it yet
@@ -1444,12 +1564,12 @@ pub const ModuleParser = struct
 
                                         if (!(self.lexer.tokens[self.lexer.next_index] == .sign and self.get_and_consume_token(.sign).value == '}'))
                                         {
-                                            parser_error("Expected right brace to close the switch case\n", .{});
+                                            report_error("Expected right brace to close the switch case\n", .{});
                                         }
 
                                         if (!(self.lexer.tokens[self.lexer.next_index] == .sign and self.get_and_consume_token(.sign).value == ','))
                                         {
-                                            parser_error("Expected right brace to close the switch case\n", .{});
+                                            report_error("Expected right brace to close the switch case\n", .{});
                                         }
                                     }
                                     else
@@ -1507,7 +1627,7 @@ pub const ModuleParser = struct
 
                         if (self.lexer.tokens[self.lexer.next_index] != .sign or self.get_and_consume_token(.sign).value != '}')
                         {
-                            parser_error("Expected left parenthesis to open expression to switch on\n", .{});
+                            report_error("Expected left parenthesis to open expression to switch on\n", .{});
                         }
                     }
                     else
@@ -1580,6 +1700,7 @@ pub const Module = struct
 
     integer_literals: []IntegerLiteral,
     array_literals: []ArrayLiteral,
+    struct_literals: []StructLiteral,
 
     unresolved_types: [][]const u8,
     pointer_types: []Type.Pointer,
@@ -1599,6 +1720,7 @@ pub const Module = struct
 
         integer_literals: ArrayList(IntegerLiteral),
         array_literals: ArrayList(ArrayLiteral),
+        struct_literals: ArrayList(StructLiteral),
 
         unresolved_types: ArrayList([]const u8),
         pointer_types: ArrayList(Type.Pointer),
@@ -1721,6 +1843,7 @@ pub const AST = struct
 
                 .integer_literals = ArrayList(IntegerLiteral).init(allocator),
                 .array_literals = ArrayList(ArrayLiteral).init(allocator),
+                .struct_literals = ArrayList(StructLiteral).init(allocator),
 
                 .unresolved_types = ArrayList([]const u8).init(allocator),
                 .pointer_types = ArrayList(Type.Pointer).init(allocator),
@@ -1739,14 +1862,14 @@ pub const AST = struct
             const tld_name_token = parser.lexer.tokens[parser.lexer.next_index];
             if (tld_name_token != .identifier)
             {
-                parser_error("Top level declarations must start with an identifier/name\n", .{});
+                report_error("Top level declarations must start with an identifier/name\n", .{});
             }
 
             const tld_name = parser.get_and_consume_token(.identifier).value;
 
             if (parser.lexer.next_index + 2 >= parser.lexer.tokens.len)
             {
-                parser_error("End of the file while parsing top level declaration\n", .{});
+                report_error("End of the file while parsing top level declaration\n", .{});
             }
 
             const next_token = parser.lexer.tokens[parser.lexer.next_index];
@@ -1785,14 +1908,14 @@ pub const AST = struct
                                 const arg_first_token = parser.lexer.tokens[parser.lexer.next_index];
                                 if (arg_first_token != .identifier)
                                 {
-                                    parser_error("Expected argument name; found: {}\n", .{arg_first_token});
+                                    report_error("Expected argument name; found: {}\n", .{arg_first_token});
                                 }
 
                                 const argument_name = parser.get_and_consume_token(.identifier).value;
                                 const expected_colon = parser.lexer.tokens[parser.lexer.next_index];
                                 if ((expected_colon == .operator and parser.get_token(.operator).value != .Declaration) or expected_colon != .operator)
                                 {
-                                    parser_error("Expected colon, found: {}\n", .{expected_colon});
+                                    report_error("Expected colon, found: {}\n", .{expected_colon});
                                 }
 
                                 parser.consume_token(.operator);
@@ -1813,14 +1936,14 @@ pub const AST = struct
                                             continue;
                                         }
                                     }
-                                    parser_error("Expected comma after function argument\n", .{});
+                                    report_error("Expected comma after function argument\n", .{});
                                 }
                             }
 
                             const expected_right_parenthesis = parser.lexer.tokens[parser.lexer.next_index];
                             if (!(expected_right_parenthesis == .operator and parser.get_token(.operator).value == .RightParenthesis))
                             {
-                                parser_error("Expected right parenthesis after function argument list\n", .{});
+                                report_error("Expected right parenthesis after function argument list\n", .{});
                             }
 
                             parser.consume_token(.operator);
@@ -1855,18 +1978,18 @@ pub const AST = struct
                                         attributes |= 1 << @enumToInt(Type.Function.Attribute.@"extern");
                                         if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .LeftParenthesis)
                                         {
-                                            parser_error("In this language external symbols must be defined along with the library name they belong to\n", .{});
+                                            report_error("In this language external symbols must be defined along with the library name they belong to\n", .{});
                                         }
 
                                         if (parser.lexer.tokens[parser.lexer.next_index] != .str_lit)
                                         {
-                                            parser_error("Expected library name after the function being declared extern, found: {}\n", .{parser.lexer.tokens[parser.lexer.next_index]});
+                                            report_error("Expected library name after the function being declared extern, found: {}\n", .{parser.lexer.tokens[parser.lexer.next_index]});
                                         }
 
                                         extern_library_name = parser.get_and_consume_token(.str_lit).value;
                                         if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .RightParenthesis)
                                         {
-                                            parser_error("Expected right parenthesis after extern declaration\n", .{});
+                                            report_error("Expected right parenthesis after extern declaration\n", .{});
                                         }
 
                                         log("Library name: {s}\n", .{extern_library_name});
@@ -1918,13 +2041,13 @@ pub const AST = struct
                             {
                                 if (parser.lexer.tokens[parser.lexer.next_index] != .sign)
                                 {
-                                    parser_error("Expected semicolon after extern function declaration\n", .{});
+                                    report_error("Expected semicolon after extern function declaration\n", .{});
                                 }
                                 const foo = parser.get_and_consume_token(.sign);
                                 log("Foo value: {c}\n", .{foo.value});
                                 if (foo.value != ';')
                                 {
-                                    parser_error("Expected semicolon after extern function declaration\n", .{});
+                                    report_error("Expected semicolon after extern function declaration\n", .{});
                                 }
 
                                 parser.module_builder.external_functions.append(.
@@ -1994,7 +2117,7 @@ pub const AST = struct
                             const intrinsic_name_token = parser.lexer.tokens[parser.lexer.next_index];
                             if (intrinsic_name_token != .identifier)
                             {
-                                parser_error("Expected identifier after intrinsic operator\n", .{});
+                                report_error("Expected identifier after intrinsic operator\n", .{});
                             }
 
                             const intrinsic_name = parser.get_and_consume_token(.identifier).value;
@@ -2003,13 +2126,13 @@ pub const AST = struct
                             const expected_left_parenthesis = parser.lexer.tokens[parser.lexer.next_index];
                             if (expected_left_parenthesis != .operator or parser.get_and_consume_token(.operator).value != .LeftParenthesis)
                             {
-                                parser_error("Expected left parenthesis after import intrinsic\n", .{});
+                                report_error("Expected left parenthesis after import intrinsic\n", .{});
                             }
 
                             const file_name_token = parser.lexer.tokens[parser.lexer.next_index];
                             if (file_name_token != .str_lit)
                             {
-                                parser_error("Expected string literal with the file name to be imported\n", .{});
+                                report_error("Expected string literal with the file name to be imported\n", .{});
                             }
 
                             const import_file_name = parser.get_and_consume_token(.str_lit).value;
@@ -2017,12 +2140,12 @@ pub const AST = struct
 
                             if (parser.lexer.tokens[parser.lexer.next_index] != .operator or parser.get_and_consume_token(.operator).value != .RightParenthesis)
                             {
-                                parser_error("Expected right parenthesis after import file name\n", .{});
+                                report_error("Expected right parenthesis after import file name\n", .{});
                             }
 
                             if (parser.lexer.tokens[parser.lexer.next_index] != .sign or parser.get_and_consume_token(.sign).value != ';')
                             {
-                                parser_error("Expected semicolon after import statement\n", .{});
+                                report_error("Expected semicolon after import statement\n", .{});
                             }
 
                             const import_module_id = self.import_module(parser.allocator, import_file_name, target, module_id);
@@ -2034,20 +2157,16 @@ pub const AST = struct
                         }
                         else 
                         {
-                            parser_error("Unexpected operator after constant declaration: {}\n", .{after_const_operator});
+                            report_error("Unexpected operator after constant declaration: {}\n", .{after_const_operator});
                         }
                     }
                     else if (after_const_token == .keyword)
                     {
                         const keyword = parser.get_and_consume_token(.keyword);
+
                         if (keyword.value == .@"struct")
                         {
-                            //const struct_type = self.parse_type(parser.allocator, parser, null);
-                            //struct_type.value.type_identifier.value.structure.name = name;
-                            //self.type_declarations.append(struct_type) catch {
-                            //panic("Error allocating memory for type declaration\n", .{});
-                            //};
-                            unreachable;
+                            _ = parser.parse_struct(tld_name);
                         }
                         else
                         {
@@ -2064,12 +2183,12 @@ pub const AST = struct
                     const decl_token = parser.lexer.tokens[parser.lexer.next_index];
                     if (decl_token != .operator)
                     {
-                        parser_error("Expected operator\n",.{});
+                        report_error("Expected operator\n",.{});
                     }
                     const decl_operator = parser.get_and_consume_token(.operator);
                     if (decl_operator.value != .CompilerIntrinsic)
                     {
-                        parser_error("Expected compiler intrinsic operator\n", .{});
+                        report_error("Expected compiler intrinsic operator\n", .{});
                     }
                     const intrinsic_token = parser.lexer.tokens[parser.lexer.next_index];
                     _ = intrinsic_token;
@@ -2083,7 +2202,7 @@ pub const AST = struct
             }
             else
             {
-                parser_error("unexpected token\n", .{});
+                report_error("unexpected token\n", .{});
             }
         }
 
@@ -2096,6 +2215,7 @@ pub const AST = struct
             .imported_modules = parser.module_builder.imported_modules.items,
             .integer_literals = parser.module_builder.integer_literals.items,
             .array_literals = parser.module_builder.array_literals.items,
+            .struct_literals = parser.module_builder.struct_literals.items,
             .unresolved_types = parser.module_builder.unresolved_types.items,
             .pointer_types = parser.module_builder.pointer_types.items,
             .slice_types = parser.module_builder.slice_types.items,
@@ -2166,89 +2286,6 @@ pub const AST = struct
     //const Self = @This();
 
 
-    //fn parse_struct_literal(self: *Parser, allocator: *Allocator, parser: *ModuleParser, parent_node: *Node) *Node
-    //{
-        //var struct_lit_node_value = Node
-        //{
-            //.value = Node.Value {
-                //.struct_lit = StructLiteral {
-                    //.field_names = NodeRefBuffer.init(allocator),
-                    //.field_expressions = NodeRefBuffer.init(allocator),
-                //},
-            //},
-            //.parent = parent_node,
-            //.value_type = Node.ValueType.RValue,
-            //.type = undefined,
-        //};
-
-        //var struct_lit_node = self.append_and_get(struct_lit_node_value);
-
-        //if (parser.expect_and_consume_sign('}') != null)
-        //{
-            //panic("Empty struct initialization is not implemented yet\n", .{});
-        //}
-
-        //while (true)
-        //{
-            //if (parser.expect_and_consume_operator(Operator.Dot) != null)
-            //{
-                //if (parser.expect_and_consume(Token.ID.identifier)) |field_identifier_token|
-                //{
-                    //const field_identifier = field_identifier_token.value.identifier;
-                    //const field_id_node = Node {
-                        //.value = Node.Value {
-                            //.identifier_expr = IdentifierExpression {
-                                //.name = field_identifier,
-                            //},
-                        //},
-                        //.parent = struct_lit_node,
-                        //.value_type = Node.ValueType.RValue,
-                        //.type = undefined,
-                    //};
-
-                    //struct_lit_node.value.struct_lit.field_names.append(self.append_and_get(field_id_node)) catch {
-                        //panic("Error appending field identifier in struct literal node\n", .{});
-                    //};
-
-                    //if (parser.expect_and_consume_operator(Operator.Assignment) == null)
-                    //{
-                        //panic("Error: expected assignment token '='\n", .{});
-                    //}
-
-                    //struct_lit_node.value.struct_lit.field_expressions.append(self.parse_expression(allocator, parser, struct_lit_node)) catch {
-                        //panic("Error appending field initialization expression in struct literal node\n", .{});
-                    //};
-
-                    //if (parser.expect_and_consume_sign('}') != null)
-                    //{
-                        //break;
-                    //}
-                    //else if (parser.expect_and_consume_sign(',') != null)
-                    //{
-                        //if (parser.expect_and_consume_sign('}') != null)
-                        //{
-                            //log("end of struct initializer\n", .{});
-                            //break;
-                        //}
-                    //}
-                    //else
-                    //{
-                        //panic("Not implemented\n", .{});
-                    //}
-                //}
-                //else
-                //{
-                    //panic("Expecting identifier token\n", .{});
-                //}
-            //}
-            //else
-            //{
-                //panic("No Dot\n", .{});
-            //}
-        //}
-
-        //return struct_lit_node;
-    //}
 
     //fn parse_intrinsic(self: *Parser, allocator: *Allocator, parser: *ModuleParser, intrinsic_name: []const u8) void
     //{
@@ -2413,8 +2450,3 @@ pub const AST = struct
     //}
 //};
 
-//const StructLiteral = struct
-//{
-    //field_names: NodeRefBuffer,
-    //field_expressions: NodeRefBuffer,
-//};

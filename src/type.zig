@@ -111,6 +111,11 @@ pub const Struct = struct
     names: [][]const u8,
     name: []const u8,
     alignment: u64,
+
+    pub fn new(index: u64, module_index: u64) Type
+    {
+        return .{ .value = (@as(u64, @enumToInt(Type.ID.structure)) << Type.ID.position) | (module_index << Module.position) | index };
+    }
 };
 
 pub const Array = struct
@@ -209,6 +214,18 @@ pub fn get_size(self: Type, builder: *IR.Program.Builder) u64
             const array_size = array_type.type.get_size(builder) * array_type.length_expression;
             return array_size;
         },
+        .structure =>
+        {
+            var struct_size: u32 = 0;
+            const struct_type = builder.struct_types.items[self.get_index()];
+            for (struct_type.types) |field_type|
+            {
+                const field_size = field_type.get_size(builder);
+                struct_size += @intCast(u32, field_size);
+            }
+
+            return struct_size;
+        },
         else => panic("ID: {}\n", .{id}),
     }
 }
@@ -225,6 +242,18 @@ pub fn get_size_resolved(self: Type, program: *const IR.Program) u64
             const array_type = &program.array_types[self.get_index()];
             const array_size = array_type.type.get_size_resolved(program) * array_type.length_expression;
             return array_size;
+        },
+        .structure =>
+        {
+            var struct_size: u32 = 0;
+            const struct_type = program.struct_types[self.get_index()];
+            for (struct_type.types) |field_type|
+            {
+                const field_size = field_type.get_size_resolved(program);
+                struct_size += @intCast(u32, field_size);
+            }
+
+            return struct_size;
         },
         else => panic("ID: {}\n", .{id}),
     }
@@ -269,6 +298,11 @@ pub fn to_string(self: Type, formatter: *const IR.Formatter) []const u8
             const array_type = &formatter.builder.array_types.items[self.get_index()];
             const array_str = std.fmt.allocPrint(formatter.allocator, "[{} x {s}]", .{array_type.length_expression, array_type.type.to_string(formatter)}) catch unreachable;
             return array_str;
+        },
+        .structure =>
+        {
+            const structure_type = &formatter.builder.struct_types.items[self.get_index()];
+            return structure_type.name;
         },
         else => panic("{}\n", .{self.get_ID()}),
     }

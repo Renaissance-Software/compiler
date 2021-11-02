@@ -49,7 +49,8 @@ pub fn get_module_item_slice_range(comptime module_stats_id: ModuleStats.ID, ana
             .external_functions => analyzer.external_functions.items.len,
             .integer_literals => analyzer.integer_literals.items.len,
             .array_literals => analyzer.array_literals.items.len,
-            else => unreachable,
+            .imported_modules => analyzer.imported_modules.items.len,
+            else => panic("here: {}\n", .{module_stats_id}),
         };
 
     return .{ .start = internal_item_start, .end = internal_item_end };
@@ -70,13 +71,14 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
             const unresolved_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.unresolved_types)];
             const index = unresolved_type.get_index();
             const unresolved_type_identifier = analyzer.unresolved_types.items[unresolved_type_module_offset + index];
+
+            log("Unresolved type identifier: {s}\n", .{unresolved_type_identifier});
             if (unresolved_type_identifier[0] == 'u')
             {
-                
                 if (std.fmt.parseUnsigned(u16, unresolved_type_identifier[1..], 10)) |bit_count|
                 {
                     const unsigned_integer_type = Type.Integer.new(bit_count, .unsigned);
-                    log("{}\n", .{unsigned_integer_type.get_ID()});
+                    log("{}. Bit count: {}\n", .{unsigned_integer_type.get_ID(), bit_count});
                     return unsigned_integer_type;
                 }
                 else |_| {}
@@ -86,10 +88,30 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
                 if (std.fmt.parseUnsigned(u16, unresolved_type_identifier[1..], 10)) |bit_count|
                 {
                     const signed_integer_type = Type.Integer.new(bit_count, .signed);
-                    log("{}\n", .{signed_integer_type.get_ID()});
+                    log("{}. Bit count: {}\n", .{signed_integer_type.get_ID(), bit_count});
                     return signed_integer_type;
                 }
                 else |_| {}
+            }
+
+            for (analyzer.struct_types.items) |*struct_type, struct_i|
+            {
+                if (std.mem.eql(u8, struct_type.name, unresolved_type_identifier))
+                {
+                    const struct_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.struct_types)];
+                    log("Module offset: {}. Unresolved index: {}\n", .{struct_type_module_offset, unresolved_type.get_index()});
+
+                    const resolved_index = struct_i;
+                    const resolved_struct_type = Type.Struct.new(resolved_index, module_index);
+
+                    var target_struct_type = &analyzer.struct_types.items[resolved_index];
+                    for (target_struct_type.types) |*field_type|
+                    {
+                        field_type.* = analyze_type(analyzer, field_type.*);
+                    }
+                
+                    return resolved_struct_type;
+                }
             }
 
             unreachable;
@@ -99,7 +121,9 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
             const pointer_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.pointer_types)];
             const resolved_index = pointer_type_module_offset + unresolved_type.get_index();
             var resolved_pointer_type = resolve_type(unresolved_type, resolved_index);
-            analyzer.pointer_types.items[resolved_index].type = analyze_type(analyzer, analyzer.pointer_types.items[resolved_index].type);
+            var pointer_type = &analyzer.pointer_types.items[resolved_index];
+            pointer_type.type = analyze_type(analyzer, pointer_type.type);
+            log("Pointer type base type: {}\n", .{pointer_type.type.get_ID()});
 
             log("{}\n", .{resolved_pointer_type.get_ID()});
 
@@ -142,6 +166,34 @@ fn analyze_type(analyzer: *Analyzer, unresolved_type: Type) Type
 
             return resolved_array_type;
         },
+        .structure =>
+        {
+            const struct_type_module_offset = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.struct_types)];
+            const resolved_index = struct_type_module_offset + unresolved_type.get_index();
+            var resolved_struct_type = resolve_type(unresolved_type, resolved_index);
+
+            if (!analyzer.is_struct_type_resolved(resolved_index))
+            {
+                var struct_type = &analyzer.struct_types.items[resolved_index];
+                log("struct type resolved index: {}\n", .{resolved_index});
+
+                log("Alignment can't be computed here\n", .{});
+                //var max_field_size: u32 = 0;
+                //for (struct_type.types) |*field_type|
+                //{
+                    //field_type.* = analyze_type(analyzer, field_type.*);
+                    //const field_size = field_type.get_size();
+                    //if (field_size > max_field_size) max_field_size = field_size;
+                //}
+                //struct_type.alignment = max_field_size;
+
+                log("Resolved struct type: {}\n", .{struct_type});
+
+                analyzer.set_struct_type_resolved(resolved_index);
+            }
+
+            return resolved_struct_type;
+        },
         else => panic("Type ID: {}\n", .{type_id}),
     }
 }
@@ -158,6 +210,7 @@ const ModuleStats = struct
 
         integer_literals,
         array_literals,
+        struct_literals,
 
         unresolved_types,
         pointer_types,
@@ -403,6 +456,40 @@ pub fn analyze_expression_typed(analyzer: *Analyzer, function: *Parser.Function.
                         var array_subscript_expression = &function.scopes[scope_index].array_subscript_expressions[expression_index];
                         break :blk analyze_array_subscript_expression(analyzer, function, array_subscript_expression, module_index, expected_type);
                     },
+                    .field_access_expressions =>
+                    {
+                        var field_access_expression = &function.scopes[scope_index].field_access_expressions[expression_index];
+                        break :blk analyze_field_access_expression(analyzer, function, &function.scopes[scope_index], field_access_expression, module_index);
+                    },
+                    .struct_literals =>
+                    {
+                        const struct_type_ref = expected_type orelse unreachable;
+                        assert(struct_type_ref.get_ID() == .structure);
+                        assert(struct_type_ref.is_resolved());
+                        assert(analyzer.is_struct_type_resolved(struct_type_ref.get_index()));
+
+                        const resolved_index = analyzer.module_offsets[module_index].counters[@enumToInt(ModuleStats.ID.struct_literals)] + expression_index;
+                        log("Resolved struct literal index: {}\n", .{resolved_index});
+                        var struct_literal = &analyzer.struct_literals.items[resolved_index];
+                        struct_literal.type = struct_type_ref;
+                        const struct_type = &analyzer.struct_types.items[struct_type_ref.get_index()];
+
+                        lit_field: for (struct_literal.fields.names) |field_name, field_literal_i|
+                        {
+                            for (struct_type.names) |field_name_candidate, field_index|
+                            {
+                                if (std.mem.eql(u8, field_name_candidate, field_name))
+                                {
+                                    _ = analyze_expression_typed(analyzer, function, &struct_literal.fields.initialization_expressions[field_literal_i], module_index, struct_type.types[field_index]);
+                                    continue :lit_field;
+                                }
+                            }
+
+                            report_error("No field {s} in struct type {s}\n", .{field_name, struct_type.name});
+                        }
+
+                        break :blk struct_type_ref;
+                    },
                     else => panic("NI: {}\n", .{array_id}),
                 }
             },
@@ -506,6 +593,139 @@ pub fn analyze_assignment_expression(analyzer: *Analyzer, function: *Parser.Func
 fn analyze_compound_assignment(analyzer: *Analyzer, function: *Parser.Function.Internal, compound_assignment: *Parser.CompoundAssignment, module_index: u64) void
 {
     _ = analyze_binary_expression(analyzer, function, &compound_assignment.left, &compound_assignment.right, module_index);
+}
+
+fn analyze_field_access_expression(analyzer: *Analyzer, current_function: *Parser.Function.Internal, scope: *Parser.Scope, field_access_expression: *Parser.FieldAccessExpression, module_index: u64) Type
+{
+    _ = module_index;
+    _ = current_function;
+
+    const left = field_access_expression.left_expression;
+    const left_level = left.get_level();
+    assert(left_level == .scope);
+    const left_array_id = left.get_array_id(.scope);
+    assert(left_array_id == .identifier_expressions);
+    const left_index = left.get_index();
+    const left_name = scope.identifier_expressions[left_index];
+
+    const field = field_access_expression.field_expression;
+    const field_level = field.get_level();
+    assert(field_level == .scope);
+    const field_array_id = field.get_array_id(.scope);
+    assert(field_array_id == .identifier_expressions);
+    const field_index = field.get_index();
+    const field_name = scope.identifier_expressions[field_index];
+
+    const imported_module_range = get_module_item_slice_range(.imported_modules, analyzer, module_index);
+    const imported_modules = analyzer.imported_modules.items[imported_module_range.start..imported_module_range.end];
+
+    log("Looking for left side of field access expression: {s}\n", .{left_name});
+
+    var left_type: Type = undefined;
+    const left_part = blk:
+    {
+        for (current_function.declaration.argument_names) |argument_name, argument_i|
+        {
+            log("Comparing with argument name: {s}\n", .{argument_name});
+            if (std.mem.eql(u8, argument_name, left_name)) 
+            {
+                log("argument #{}\n", .{argument_i});
+                left_type = current_function.declaration.type.argument_types[argument_i];
+                break :blk Entity.new(argument_i, Entity.ScopeID.arguments, module_index);
+            }
+        }
+
+        for (scope.variable_declarations) |*variable_declaration|
+        {
+            log("Comparing with variable name: {s}\n", .{variable_declaration.name});
+            if (std.mem.eql(u8, variable_declaration.name, left_name)) 
+            {
+                panic("Found\n", .{});
+            }
+        }
+
+        if (true) unreachable;
+
+        for (imported_modules) |imported_module|
+        {
+            assert(imported_module.alias != null);
+            if (!std.mem.eql(u8, imported_module.alias.?, left_name))
+            {
+                continue;
+            }
+
+            const imported_module_index = imported_module.module.get_index();
+
+            const internal_functions_range = get_module_item_slice_range(.internal_functions, analyzer, imported_module_index);
+            const internal_functions = analyzer.functions.items[internal_functions_range.start..internal_functions_range.end];
+
+            for (internal_functions) |function, function_i|
+            {
+                if (!std.mem.eql(u8, function.declaration.name, field_name))
+                {
+                    continue;
+                }
+
+                break :blk Entity.new(function_i + internal_functions_range.start, Entity.GlobalID.resolved_internal_functions, 0);
+            }
+
+            const external_functions_range = get_module_item_slice_range(.external_functions, analyzer, imported_module_index);
+            const external_functions = analyzer.external_functions.items[external_functions_range.start..external_functions_range.end];
+
+            // @TODO: is this faster than double for loop [library_i, symbol_i]?
+            for (external_functions) |function, function_i|
+            {
+                if (!std.mem.eql(u8, function.declaration.name, field_name))
+                {
+                    continue;
+                }
+
+                break :blk Entity.new(function_i + external_functions_range.start, Entity.GlobalID.resolved_external_functions, 0);
+            }
+        }
+
+        unreachable;
+        // not found
+    };
+    _ = left_part;
+
+    var right_type: Type = undefined;
+    _ = right_type;
+
+    const right_part = blk:
+    {
+        switch (left_type.get_ID())
+        {
+            // If we are accessing a pointer field, we have to get pointer base type and then get the field type from the child type
+            .pointer =>
+            {
+                const pointer_base_type = Type.Pointer.get_base_type(left_type, analyzer.pointer_types.items);
+                log("pointer base type id: {}\n", .{pointer_base_type.get_ID()});
+                assert(pointer_base_type.get_ID() == .structure);
+                const struct_type = analyzer.struct_types.items[pointer_base_type.get_index()];
+
+                for (struct_type.names) |field_name_candidate, field_i|
+                {
+                    _ = field_i;
+
+                    if (std.mem.eql(u8, field_name_candidate, field_name))
+                    {
+                        right_type = struct_type.types[field_i];
+                        break :blk Entity.new(field_i, Entity.ScopeID.field, module_index);
+                    }
+                }
+
+                unreachable;
+            },
+            else => panic("Ni: {}\n", .{left_type.get_ID()}),
+        }
+    };
+
+    field_access_expression.type = right_type;
+    field_access_expression.left_expression = left_part;
+    field_access_expression.field_expression = right_part;
+
+    return right_type;
 }
 
 fn analyze_invoke_expression(analyzer: *Analyzer, current_function: *Parser.Function.Internal, scope: *Parser.Scope, invoke_expression: *Parser.InvokeExpression, module_index: u64) Type
@@ -832,33 +1052,51 @@ pub const Analyzer = struct
 
     integer_literals: ArrayList(Parser.IntegerLiteral),
     array_literals: ArrayList(Parser.ArrayLiteral),
+    struct_literals: ArrayList(Parser.StructLiteral),
 
     unresolved_types: ArrayList([]const u8),
     pointer_types: ArrayList(Type.Pointer),
     function_types: ArrayList(Type.Function),
     slice_types: ArrayList(Type.Slice),
     array_types: ArrayList(Type.Array),
-    array_type_resolution_bitsets: ArrayList([ArrayResolutionBitsetSize]u1),
+    array_type_resolution_bitsets: ArrayList([ResolutionBitsetSize]u1),
+    struct_type_resolution_bitsets: ArrayList([ResolutionBitsetSize]u1),
     struct_types: ArrayList(Type.Struct),
 
     module_offsets: []ModuleStats,
 
-    const ArrayResolutionBitsetSize = 64;
+    const ResolutionBitsetSize = 64;
 
     fn is_array_type_resolved(self: *Analyzer, resolved_array_type_index: u64) bool
     {
-        const bitset_index = resolved_array_type_index / ArrayResolutionBitsetSize;
-        const array_type_index_in_bitset = resolved_array_type_index % ArrayResolutionBitsetSize;
+        const bitset_index = resolved_array_type_index / ResolutionBitsetSize;
+        const array_type_index_in_bitset = resolved_array_type_index % ResolutionBitsetSize;
 
         return self.array_type_resolution_bitsets.items[bitset_index][array_type_index_in_bitset] == 1;
     }
 
     fn set_array_type_resolved(self: *Analyzer, resolved_array_type_index: u64) void
     {
-        const bitset_index = resolved_array_type_index / ArrayResolutionBitsetSize;
-        const array_index_in_bitset = resolved_array_type_index % ArrayResolutionBitsetSize;
+        const bitset_index = resolved_array_type_index / ResolutionBitsetSize;
+        const array_index_in_bitset = resolved_array_type_index % ResolutionBitsetSize;
 
         self.array_type_resolution_bitsets.items[bitset_index][array_index_in_bitset] = 1;
+    }
+
+    fn is_struct_type_resolved(self: *Analyzer, resolved_struct_type_index: u64) bool
+    {
+        const bitset_index = resolved_struct_type_index / ResolutionBitsetSize;
+        const struct_type_index_in_bitset = resolved_struct_type_index % ResolutionBitsetSize;
+
+        return self.struct_type_resolution_bitsets.items[bitset_index][struct_type_index_in_bitset] == 1;
+    }
+
+    fn set_struct_type_resolved(self: *Analyzer, resolved_struct_type_index: u64) void
+    {
+        const bitset_index = resolved_struct_type_index / ResolutionBitsetSize;
+        const struct_index_in_bitset = resolved_struct_type_index % ResolutionBitsetSize;
+
+        self.struct_type_resolution_bitsets.items[bitset_index][struct_index_in_bitset] = 1;
     }
 };
 
@@ -867,8 +1105,10 @@ pub const Result = struct
     functions: []Parser.Function.Internal,
     external: External,
     imported_modules: []Parser.ImportedModule,
+
     integer_literals: []Parser.IntegerLiteral,
     array_literals: []Parser.ArrayLiteral,
+    struct_literals: []Parser.StructLiteral,
 
     pointer_types: []Type.Pointer,
     slice_types: []Type.Slice,
@@ -908,6 +1148,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
 
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.integer_literals)] = total.counters[@enumToInt(ModuleStats.ID.integer_literals)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.array_literals)] = total.counters[@enumToInt(ModuleStats.ID.array_literals)];
+        module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.struct_literals)] = total.counters[@enumToInt(ModuleStats.ID.struct_literals)];
 
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.unresolved_types)] = total.counters[@enumToInt(ModuleStats.ID.unresolved_types)];
         module_offsets.items[i].counters[@enumToInt(ModuleStats.ID.pointer_types)] = total.counters[@enumToInt(ModuleStats.ID.pointer_types)];
@@ -921,6 +1162,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         total.counters[@enumToInt(ModuleStats.ID.imported_modules)] += module.imported_modules.len;
         total.counters[@enumToInt(ModuleStats.ID.integer_literals)] += module.integer_literals.len;
         total.counters[@enumToInt(ModuleStats.ID.array_literals)] += module.array_literals.len;
+        total.counters[@enumToInt(ModuleStats.ID.struct_literals)] += module.struct_literals.len;
 
         total.counters[@enumToInt(ModuleStats.ID.unresolved_types)] += module.unresolved_types.len;
         total.counters[@enumToInt(ModuleStats.ID.pointer_types)] += module.pointer_types.len;
@@ -934,8 +1176,10 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     {
         .functions = ArrayList(Parser.Function.Internal).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.internal_functions)]) catch unreachable,
         .imported_modules = ArrayList(Parser.ImportedModule).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.imported_modules)]) catch unreachable,
+
         .integer_literals = ArrayList(Parser.IntegerLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.integer_literals)]) catch unreachable,
         .array_literals = ArrayList(Parser.ArrayLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_literals)]) catch unreachable,
+        .struct_literals = ArrayList(Parser.StructLiteral).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.struct_literals)]) catch unreachable,
 
         .external_functions = ArrayList(Parser.Function.External).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.external_functions)]) catch unreachable,
         .external_library_names = ArrayList([]const u8).init(allocator),
@@ -947,8 +1191,9 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         .slice_types = ArrayList(Type.Slice).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.slice_types)]) catch unreachable,
         .function_types = ArrayList(Type.Function).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.function_types)]) catch unreachable,
         .array_types = ArrayList(Type.Array).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.array_types)]) catch unreachable,
-        .array_type_resolution_bitsets = ArrayList([Analyzer.ArrayResolutionBitsetSize]u1).initCapacity(allocator, (total.counters[@enumToInt(ModuleStats.ID.array_types)] / Analyzer.ArrayResolutionBitsetSize) + @boolToInt(total.counters[@enumToInt(ModuleStats.ID.array_types)] % Analyzer.ArrayResolutionBitsetSize != 0)) catch unreachable,
+        .array_type_resolution_bitsets = ArrayList([Analyzer.ResolutionBitsetSize]u1).initCapacity(allocator, (total.counters[@enumToInt(ModuleStats.ID.array_types)] / Analyzer.ResolutionBitsetSize) + @boolToInt(total.counters[@enumToInt(ModuleStats.ID.array_types)] % Analyzer.ResolutionBitsetSize != 0)) catch unreachable,
         .struct_types = ArrayList(Type.Struct).initCapacity(allocator, total.counters[@enumToInt(ModuleStats.ID.struct_types)]) catch unreachable,
+        .struct_type_resolution_bitsets = ArrayList([Analyzer.ResolutionBitsetSize]u1).initCapacity(allocator, (total.counters[@enumToInt(ModuleStats.ID.struct_types)] / Analyzer.ResolutionBitsetSize) + @boolToInt(total.counters[@enumToInt(ModuleStats.ID.struct_types)] % Analyzer.ResolutionBitsetSize != 0)) catch unreachable,
         .module_offsets = module_offsets.items,
     };
 
@@ -1096,6 +1341,7 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         analyzer.imported_modules.appendSlice(module.imported_modules) catch unreachable;
         analyzer.integer_literals.appendSlice(module.integer_literals) catch unreachable;
         analyzer.array_literals.appendSlice(module.array_literals) catch unreachable;
+        analyzer.struct_literals.appendSlice(module.struct_literals) catch unreachable;
         analyzer.unresolved_types.appendSlice(module.unresolved_types) catch unreachable;
         analyzer.pointer_types.appendSlice(module.pointer_types) catch unreachable;
         analyzer.slice_types.appendSlice(module.slice_types) catch unreachable;
@@ -1103,8 +1349,11 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         analyzer.array_types.appendSlice(module.array_types) catch unreachable;
         analyzer.struct_types.appendSlice(module.struct_types) catch unreachable;
     }
-    analyzer.array_type_resolution_bitsets.items.len = analyzer.array_literals.items.len;
+    analyzer.array_type_resolution_bitsets.items.len = analyzer.array_types.items.len;
     std.mem.set([64]u1, analyzer.array_type_resolution_bitsets.items, std.mem.zeroes([64]u1));
+
+    analyzer.struct_type_resolution_bitsets.items.len = analyzer.struct_types.items.len;
+    std.mem.set([64]u1, analyzer.struct_type_resolution_bitsets.items, std.mem.zeroes([64]u1));
 
     log("Internal:\t{}\n", .{analyzer.functions.items.len});
     log("External libraries:\t{}\n", .{analyzer.external_library_names.items.len});
@@ -1128,23 +1377,29 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
         }
     }
 
-    for (analyzer.external_functions.items) |*function|
+    for (analyzer.external_functions.items) |*function, function_i|
     {
+        log("External function #{}: {s}\n", .{function_i, function.declaration.name});
         function.declaration.type.return_type = analyze_type(&analyzer, function.declaration.type.return_type);
 
-        for (function.declaration.type.argument_types) |*argument_type|
+        for (function.declaration.type.argument_types) |*argument_type, argument_i|
         {
             argument_type.* = analyze_type(&analyzer, argument_type.*);
+            log("Argument #{}: {}\n", .{argument_i, argument_type.get_ID()});
+            assert(argument_type.get_ID() != .unresolved);
         }
     }
 
-    for (analyzer.functions.items) |*function|
+    for (analyzer.functions.items) |*function, function_i|
     {
+        log("Function #{}: {s}\n", .{function_i, function.declaration.name});
         function.declaration.type.return_type = analyze_type(&analyzer, function.declaration.type.return_type);
 
-        for (function.declaration.type.argument_types) |*argument_type|
+        for (function.declaration.type.argument_types) |*argument_type, argument_i|
         {
             argument_type.* = analyze_type(&analyzer, argument_type.*);
+            log("Argument #{}: {}\n", .{argument_i, argument_type.get_ID()});
+            assert(argument_type.get_ID() != .unresolved);
         }
     }
 
@@ -1165,8 +1420,10 @@ pub fn analyze(allocator: *Allocator, ast: Parser.AST) Result
     {
         .functions = analyzer.functions.items,
         .imported_modules = analyzer.imported_modules.items,
+
         .integer_literals = analyzer.integer_literals.items,
         .array_literals = analyzer.array_literals.items,
+        .struct_literals = analyzer.struct_literals.items,
 
         .external = .
         {

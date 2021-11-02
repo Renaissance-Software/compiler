@@ -60,9 +60,9 @@ pub const Entity = packed struct
         field_access_expressions,
         integer_literals,
         array_literals,
+        struct_literals,
         return_expressions,
         assignments,
-        argument,
         comparisons,
         compound_assignments,
         loops,
@@ -73,6 +73,7 @@ pub const Entity = packed struct
         dereference_expressions,
         arguments,
         array_subscript_expressions,
+        field,
     };
 
     const LevelToArrayIDMap = blk:

@@ -168,7 +168,6 @@ pub const Operator = packed struct
 
 pub const StringLiteral = Identifier;
 
-
 pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
 {
     log("\n==============\nLEXER\n==============\n\n", .{});
@@ -683,4 +682,8 @@ pub fn lexical_analyze(allocator: *Allocator, src_file: [] const u8) LexerResult
     }
 
     return result;
+}
+
+fn lex2(source_file: []const u8) void
+{
 }
